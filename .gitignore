@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+
+# Data
+data/inbox/*
+!data/inbox/.gitkeep
+
+data/processed/*
+data/papers/*
+
+# Docker volumes
+docker_volumes/
+
+# OS
+.DS_Store
+Thumbs.db
