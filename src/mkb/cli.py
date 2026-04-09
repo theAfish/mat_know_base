@@ -643,6 +643,24 @@ def cmd_knowledge_list(args):
         print(f"\nShowing {len(nodes)} entities.")
 
 
+# ── UI Command ──────────────────────────────────────────────────
+
+def cmd_ui(args):
+    """Launch the Streamlit knowledge-graph explorer."""
+    import subprocess
+    from pathlib import Path
+
+    app_path = Path(__file__).parent / "ui" / "app.py"
+    cmd = [
+        sys.executable, "-m", "streamlit", "run",
+        str(app_path),
+        "--server.port", str(args.port),
+        "--server.headless", "true",
+    ]
+    print(f"Starting Knowledge Graph UI on http://localhost:{args.port}")
+    subprocess.run(cmd)
+
+
 def cmd_knowledge_graph(args):
     """Show entities + relationships for a batch."""
     import uuid
@@ -903,6 +921,11 @@ def main():
     scope_kg.add_argument("--batch-id", help="Delete knowledge for one batch UUID")
     p_clear_kg.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     p_clear_kg.set_defaults(func=cmd_clear_knowledge)
+
+    # ── ui ──────────────────────────────────────────────────
+    p_ui = sub.add_parser("ui", help="Launch the Streamlit knowledge-graph explorer")
+    p_ui.add_argument("--port", type=int, default=8501, help="Port (default 8501)")
+    p_ui.set_defaults(func=cmd_ui)
 
     args = parser.parse_args()
     if not args.command:

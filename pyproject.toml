@@ -26,6 +26,8 @@ dependencies = [
     "mineru>=2.0",
     "google-adk",
     "litellm>=1.75.5",
+    "streamlit>=1.38",
+    "streamlit-agraph>=0.0.45",
 ]
 
 [project.optional-dependencies]
