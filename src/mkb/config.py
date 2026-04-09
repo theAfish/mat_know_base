@@ -1,5 +1,6 @@
 """Central configuration loaded from environment / .env file."""
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -36,6 +37,18 @@ class Settings(BaseSettings):
 
     # Local mirror for processed outputs (organized by batch/asset)
     processed_local_root: str = "data/processed"
+
+    # ── LLM / Agent ─────────────────────────────────────────────
+    extraction_model: str = "openai/qwen-plus"
+    google_api_key: str = ""
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENAI_API_KEY", "MKB_OPENAI_API_KEY"),
+    )
+    openai_api_base: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENAI_API_BASE", "MKB_OPENAI_API_BASE"),
+    )
 
     model_config = {"env_prefix": "MKB_", "env_file": ".env", "extra": "ignore"}
 

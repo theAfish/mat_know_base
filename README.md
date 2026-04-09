@@ -60,6 +60,22 @@ make migrate
 
 ## Usage
 
+### LLM Extraction Configuration (LiteLLM)
+
+Knowledge extraction uses google-adk with the LiteLLM adapter and an
+OpenAI-compatible API endpoint. Configure these in your environment or `.env`:
+
+```bash
+MKB_EXTRACTION_MODEL=openai/qwen-plus
+OPENAI_API_KEY=<your_key>
+OPENAI_API_BASE=<your_openai_compatible_base_url>
+```
+
+Notes:
+- `OPENAI_API_KEY` / `OPENAI_API_BASE` are read directly.
+- `MKB_OPENAI_API_KEY` / `MKB_OPENAI_API_BASE` are also supported as aliases.
+- Model names should use LiteLLM format like `openai/<model_name>`.
+
 ### Ingesting Files
 
 The standard workflow for scientific papers: **put all related files for one paper in a single folder**, then ingest that folder. The ingestion worker automatically creates a **batch** that groups them together.
@@ -147,6 +163,12 @@ So for one raw batch with 3 PDFs, you get 3 subfolders (one per PDF asset UUID),
 # List all processed assets
 python -m mkb.cli processed-list
 
+# List processed assets for one ingestion batch
+python -m mkb.cli processed-list --batch-id <batch_id>
+
+# Show batch-level processed summary + per-asset outputs
+python -m mkb.cli processed-batch-info <batch_id>
+
 # Show full details (S3 path, type, metadata) for one processed asset
 python -m mkb.cli processed-info <processed_asset_id>
 
@@ -207,6 +229,13 @@ make down        # Stop Docker services
 make logs        # Tail service logs
 make migrate     # Apply DB migrations
 make test        # Run tests
+
+# Knowledge extraction
+python -m mkb.cli extract-batch <batch_id>
+python -m mkb.cli extract-all --limit 5
+python -m mkb.cli knowledge-list --batch-id <batch_id>
+python -m mkb.cli knowledge-graph <batch_id>
+python -m mkb.cli clear-knowledge --batch-id <batch_id> -y
 ```
 
 ## Project Structure

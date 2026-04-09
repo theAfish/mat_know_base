@@ -1,55 +1,571 @@
 """
-Agent tool interfaces – functions that google-adk agents can call.
+Agent tool functions for knowledge extraction.
 
-These are the building blocks for Phase 3.
-Each function is designed to be registered as a Tool in the ADK framework.
+These plain functions are registered as google-adk FunctionTools.
+They give the LLM agent the ability to *read* batch data (processed
+markdown, dataframes, images) and *write* structured knowledge
+(entities + relationships) into the knowledge graph.
 """
 
+from __future__ import annotations
+
+import base64
+import logging
+import re
 import uuid
+from pathlib import Path
 
+import pandas as pd
+
+from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import Asset, KnowledgeNode, ProcessingStatus
-from mkb.storage.s3 import download_bytes
+from mkb.db.models import (
+    Asset,
+    BatchAsset,
+    IngestionBatch,
+    KnowledgeEdge,
+    KnowledgeNode,
+    ProcessedAsset,
+    ProcessingType,
+)
+from mkb.storage.s3 import download_bytes, object_exists
+
+logger = logging.getLogger(__name__)
 
 
-def list_unprocessed_assets(status: str = "STORED") -> list[dict]:
-    """Return assets that have not yet been fully processed."""
+def _select_processed_asset(
+    session,
+    asset_id: uuid.UUID,
+    processing_type: ProcessingType,
+) -> ProcessedAsset | None:
+    """Choose the newest processed row with an existing S3 object when possible."""
+    rows = (
+        session.query(ProcessedAsset)
+        .filter_by(asset_id=asset_id, processing_type=processing_type)
+        .order_by(ProcessedAsset.created_at.desc())
+        .all()
+    )
+    if not rows:
+        return None
+
+    for row in rows:
+        if object_exists(row.s3_bucket, row.s3_key):
+            return row
+
+    # Fallback to newest row even if S3 object is missing; caller can use local fallback.
+    return rows[0]
+
+
+def _read_processed_bytes(pa: ProcessedAsset) -> bytes:
+    """Read processed bytes from S3, falling back to local mirror if needed."""
+    try:
+        return download_bytes(pa.s3_bucket, pa.s3_key)
+    except Exception:
+        metadata = pa.conversion_metadata or {}
+        local_dir = metadata.get("local_dir")
+        primary_relpath = metadata.get("primary_relpath")
+        if local_dir and primary_relpath:
+            local_path = Path(local_dir) / primary_relpath
+            if local_path.exists():
+                return local_path.read_bytes()
+        raise
+
+
+# =====================================================================
+# Reading tools — let the agent explore the batch data
+# =====================================================================
+
+
+def list_batch_files(batch_id: str) -> list[dict]:
+    """List every file in an ingestion batch with its processing status.
+
+    Returns a list of dicts with keys: asset_id, filename, mime_type,
+    size_bytes, processing_type, has_processed_output.
+    """
+    bid = uuid.UUID(batch_id)
     with SyncSessionLocal() as session:
-        target = ProcessingStatus(status)
-        assets = session.query(Asset).filter_by(status=target).all()
-        return [
-            {
-                "asset_id": str(a.asset_id),
-                "filename": a.filename,
-                "mime_type": a.mime_type,
-                "sha256": a.sha256,
-            }
-            for a in assets
-        ]
+        links = session.query(BatchAsset).filter_by(batch_id=bid).all()
+        asset_ids = [l.asset_id for l in links]
+        if not asset_ids:
+            return []
+
+        assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all()
+        result = []
+        for a in assets:
+            pa = (
+                session.query(ProcessedAsset)
+                .filter_by(asset_id=a.asset_id)
+                .first()
+            )
+            result.append(
+                {
+                    "asset_id": str(a.asset_id),
+                    "filename": a.filename,
+                    "mime_type": a.mime_type,
+                    "size_bytes": a.size_bytes,
+                    "processing_type": pa.processing_type.value if pa else None,
+                    "has_processed_output": pa is not None,
+                }
+            )
+        return result
 
 
-def fetch_raw_binary(asset_id: str) -> bytes:
-    """Fetch the raw bytes of an asset from object storage."""
+def read_processed_markdown(asset_id: str) -> str:
+    """Read the full processed Markdown content for a given asset.
+
+    Works for PDFs, DOCX, and plain-text assets that were converted to
+    Markdown during the processing pipeline.  Returns the Markdown string
+    or an error message if not found.
+    """
+    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
-        asset = session.query(Asset).filter_by(asset_id=uuid.UUID(asset_id)).one()
-        return download_bytes(asset.s3_bucket, asset.s3_key)
+        pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN)
+        if not pa:
+            return f"No processed markdown found for asset {asset_id}."
+
+        try:
+            data = _read_processed_bytes(pa)
+        except Exception as exc:
+            return f"Processed markdown exists but cannot be read for asset {asset_id}: {exc}"
+        return data.decode("utf-8", errors="replace")
 
 
-def update_knowledge_node(
+def read_markdown_section(asset_id: str, section_heading: str) -> str:
+    """Read a specific section from a processed Markdown file.
+
+    Searches for a heading matching `section_heading` (case-insensitive)
+    and returns everything from that heading to the next heading of same
+    or higher level.  Useful for large papers where you only need one
+    section (e.g. "Methods", "Results").
+    """
+    full_md = read_processed_markdown(asset_id)
+    if full_md.startswith("No processed markdown"):
+        return full_md
+
+    lines = full_md.splitlines(keepends=True)
+    pattern = re.compile(
+        r"^(#{1,6})\s+" + re.escape(section_heading),
+        re.IGNORECASE,
+    )
+
+    start_idx = None
+    start_level = 0
+    for i, line in enumerate(lines):
+        m = pattern.match(line)
+        if m:
+            start_idx = i
+            start_level = len(m.group(1))
+            break
+
+    if start_idx is None:
+        # Try fuzzy match: heading contains the query as substring
+        for i, line in enumerate(lines):
+            m2 = re.match(r"^(#{1,6})\s+(.+)", line)
+            if m2 and section_heading.lower() in m2.group(2).lower():
+                start_idx = i
+                start_level = len(m2.group(1))
+                break
+
+    if start_idx is None:
+        return (
+            f"Section '{section_heading}' not found.  "
+            f"Available headings: {_list_headings(lines)}"
+        )
+
+    # Collect lines until next heading of same or higher level
+    end_idx = len(lines)
+    for j in range(start_idx + 1, len(lines)):
+        m3 = re.match(r"^(#{1,6})\s+", lines[j])
+        if m3 and len(m3.group(1)) <= start_level:
+            end_idx = j
+            break
+
+    return "".join(lines[start_idx:end_idx])
+
+
+def list_markdown_headings(asset_id: str) -> list[str]:
+    """List all headings in a processed Markdown file.
+
+    Useful for deciding which section to read in detail.
+    """
+    full_md = read_processed_markdown(asset_id)
+    if full_md.startswith("No processed markdown"):
+        return [full_md]
+    return _list_headings(full_md.splitlines())
+
+
+def _list_headings(lines: list[str]) -> list[str]:
+    headings = []
+    for line in lines:
+        m = re.match(r"^(#{1,6})\s+(.+)", line)
+        if m:
+            headings.append(f"{'#' * len(m.group(1))} {m.group(2).strip()}")
+    return headings
+
+
+def read_raw_text(asset_id: str) -> str:
+    """Read the raw text content of an asset directly from object storage.
+
+    Only useful for text-based assets (text/plain, text/markdown, etc.).
+    Binary files will return a warning instead of garbage.
+    """
+    aid = uuid.UUID(asset_id)
+    with SyncSessionLocal() as session:
+        asset = session.query(Asset).filter_by(asset_id=aid).first()
+        if not asset:
+            return f"Asset {asset_id} not found."
+
+        if not (
+            asset.mime_type.startswith("text/")
+            or asset.mime_type in ("application/json", "application/xml")
+        ):
+            return (
+                f"Asset is binary ({asset.mime_type}). Use a processed "
+                "output instead, or use get_image_base64 for images."
+            )
+
+        data = download_bytes(asset.s3_bucket, asset.s3_key)
+        return data.decode("utf-8", errors="replace")
+
+
+def read_dataframe_summary(asset_id: str) -> str:
+    """Read a summary of a processed dataframe (Parquet) for an asset.
+
+    Returns column names, dtypes, row count, and basic statistics.
+    """
+    aid = uuid.UUID(asset_id)
+    with SyncSessionLocal() as session:
+        pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
+        if not pa:
+            return f"No processed dataframe found for asset {asset_id}."
+
+        try:
+            data = _read_processed_bytes(pa)
+        except Exception as exc:
+            return f"Processed dataframe exists but cannot be read for asset {asset_id}: {exc}"
+
+    import io
+
+    df = pd.read_parquet(io.BytesIO(data))
+
+    parts = [
+        f"Shape: {df.shape[0]} rows × {df.shape[1]} columns",
+        f"\nColumns and dtypes:\n{df.dtypes.to_string()}",
+        f"\nFirst 5 rows:\n{df.head().to_string()}",
+    ]
+    # Include describe only for small-ish frames
+    if df.shape[1] <= 30:
+        parts.append(f"\nStatistics:\n{df.describe(include='all').to_string()}")
+
+    return "\n".join(parts)
+
+
+def read_dataframe_rows(
+    asset_id: str, start_row: int = 0, end_row: int = 20
+) -> str:
+    """Read specific rows from a processed dataframe.
+
+    Returns the requested rows as a formatted string table.
+    Capped at 100 rows per call to avoid overwhelming context.
+    """
+    end_row = min(end_row, start_row + 100)
+    aid = uuid.UUID(asset_id)
+    with SyncSessionLocal() as session:
+        pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
+        if not pa:
+            return f"No processed dataframe found for asset {asset_id}."
+
+        try:
+            data = _read_processed_bytes(pa)
+        except Exception as exc:
+            return f"Processed dataframe exists but cannot be read for asset {asset_id}: {exc}"
+
+    import io
+
+    df = pd.read_parquet(io.BytesIO(data))
+    subset = df.iloc[start_row:end_row]
+    return (
+        f"Rows {start_row}–{min(end_row, len(df))} of {len(df)}:\n"
+        f"{subset.to_string()}"
+    )
+
+
+def read_image_metadata(asset_id: str) -> str:
+    """Read the processed image metadata JSON for an image asset.
+
+    Returns dimensions, format, mode, file size, and any OCR text if
+    available.
+    """
+    aid = uuid.UUID(asset_id)
+    with SyncSessionLocal() as session:
+        pa = _select_processed_asset(session, aid, ProcessingType.IMAGE)
+        if not pa:
+            return f"No processed image metadata found for asset {asset_id}."
+
+        try:
+            data = _read_processed_bytes(pa)
+        except Exception as exc:
+            return f"Processed image metadata exists but cannot be read for asset {asset_id}: {exc}"
+        return data.decode("utf-8", errors="replace")
+
+
+def get_image_base64(asset_id: str) -> dict:
+    """Get the raw image bytes as a base64-encoded string.
+
+    Returns a dict with keys: mime_type, base64_data, filename.
+    Useful if a multimodal model needs to visually inspect a figure.
+    """
+    aid = uuid.UUID(asset_id)
+    with SyncSessionLocal() as session:
+        asset = session.query(Asset).filter_by(asset_id=aid).first()
+        if not asset:
+            return {"error": f"Asset {asset_id} not found."}
+
+        if not asset.mime_type.startswith("image/"):
+            return {"error": f"Asset is not an image ({asset.mime_type})."}
+
+        data = download_bytes(asset.s3_bucket, asset.s3_key)
+        return {
+            "mime_type": asset.mime_type,
+            "base64_data": base64.b64encode(data).decode("ascii"),
+            "filename": asset.filename,
+        }
+
+
+def search_in_batch(batch_id: str, query: str) -> list[dict]:
+    """Search for a text pattern across all processed Markdown files in a batch.
+
+    Returns a list of matches with asset_id, filename, and matching
+    context snippets (up to 5 per file).
+    """
+    bid = uuid.UUID(batch_id)
+    query_lower = query.lower()
+
+    with SyncSessionLocal() as session:
+        links = session.query(BatchAsset).filter_by(batch_id=bid).all()
+        asset_ids = [l.asset_id for l in links]
+        if not asset_ids:
+            return []
+
+        processed = (
+            session.query(ProcessedAsset)
+            .filter(
+                ProcessedAsset.asset_id.in_(asset_ids),
+                ProcessedAsset.processing_type == ProcessingType.MARKDOWN,
+            )
+            .all()
+        )
+
+        results = []
+        for pa in processed:
+            asset = session.query(Asset).filter_by(asset_id=pa.asset_id).first()
+            try:
+                data = _read_processed_bytes(pa)
+                text = data.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+
+            all_lines = text.splitlines()
+            snippets = []
+            for i, line in enumerate(all_lines):
+                if query_lower in line.lower():
+                    start = max(0, i - 1)
+                    end = min(len(all_lines), i + 2)
+                    snippets.append("\n".join(all_lines[start:end]))
+                    if len(snippets) >= 5:
+                        break
+
+            if snippets:
+                results.append(
+                    {
+                        "asset_id": str(pa.asset_id),
+                        "filename": asset.filename if asset else "unknown",
+                        "matches": snippets,
+                    }
+                )
+
+        return results
+
+
+# =====================================================================
+# Knowledge-writing tools — let the agent build the knowledge graph
+# =====================================================================
+
+
+def create_entity(
     entity_type: str,
     label: str,
-    source_asset_id: str | None = None,
     properties: dict | None = None,
-) -> str:
-    """Create or update a knowledge node. Returns the node_id."""
+    source_asset_id: str | None = None,
+    source_batch_id: str | None = None,
+) -> dict:
+    """Create a knowledge-graph entity (node).
+
+    entity_type examples: Material, Property, Method, Parameter, Author,
+    Institution, Measurement, Device, ChemicalFormula, CrystalStructure.
+
+    Properties is a free-form dict for domain-specific attributes
+    (e.g. {"value": "4e-12", "unit": "A", "temperature": "300K"}).
+
+    Returns the created node_id and whether a duplicate was found.
+    """
     with SyncSessionLocal() as session:
+        # De-duplicate: same type + label + batch → reuse node
+        q = session.query(KnowledgeNode).filter_by(
+            entity_type=entity_type, label=label
+        )
+        if source_batch_id:
+            q = q.filter_by(source_batch_id=uuid.UUID(source_batch_id))
+
+        existing = q.first()
+        if existing:
+            # Merge properties
+            if properties:
+                merged = dict(existing.properties or {})
+                merged.update(properties)
+                existing.properties = merged
+                session.commit()
+            return {
+                "node_id": str(existing.node_id),
+                "status": "existing_updated" if properties else "already_exists",
+            }
+
         node = KnowledgeNode(
             node_id=uuid.uuid4(),
             entity_type=entity_type,
             label=label,
-            source_asset_id=uuid.UUID(source_asset_id) if source_asset_id else None,
             properties=properties or {},
+            source_asset_id=uuid.UUID(source_asset_id) if source_asset_id else None,
+            source_batch_id=uuid.UUID(source_batch_id) if source_batch_id else None,
         )
         session.add(node)
         session.commit()
-        return str(node.node_id)
+        return {"node_id": str(node.node_id), "status": "created"}
+
+
+def create_relationship(
+    source_node_id: str,
+    target_node_id: str,
+    relation_type: str,
+    properties: dict | None = None,
+) -> dict:
+    """Create a directed relationship (edge) between two knowledge nodes.
+
+    relation_type examples: HAS_PROPERTY, MEASURED, SIMULATED_BY,
+    CONTAINS_ELEMENT, HAS_STRUCTURE, STUDIED_IN, AUTHORED_BY,
+    AFFILIATED_WITH, CITES, EXHIBITS, FABRICATED_WITH, CHARACTERIZED_BY.
+
+    Returns the edge_id.
+    """
+    sid = uuid.UUID(source_node_id)
+    tid = uuid.UUID(target_node_id)
+
+    with SyncSessionLocal() as session:
+        # De-duplicate: same source + target + relation → reuse edge
+        existing = (
+            session.query(KnowledgeEdge)
+            .filter_by(
+                source_node_id=sid,
+                target_node_id=tid,
+                relation_type=relation_type,
+            )
+            .first()
+        )
+        if existing:
+            if properties:
+                merged = dict(existing.properties or {})
+                merged.update(properties)
+                existing.properties = merged
+                session.commit()
+            return {
+                "edge_id": str(existing.edge_id),
+                "status": "existing_updated" if properties else "already_exists",
+            }
+
+        edge = KnowledgeEdge(
+            edge_id=uuid.uuid4(),
+            source_node_id=sid,
+            target_node_id=tid,
+            relation_type=relation_type,
+            properties=properties or {},
+        )
+        session.add(edge)
+        session.commit()
+        return {"edge_id": str(edge.edge_id), "status": "created"}
+
+
+def find_existing_entities(
+    entity_type: str | None = None,
+    label_contains: str | None = None,
+    batch_id: str | None = None,
+) -> list[dict]:
+    """Search for existing knowledge-graph entities.
+
+    Useful for checking whether an entity already exists before creating
+    duplicates, or for finding node_ids to link relationships to.
+    All filter parameters are optional and combine with AND logic.
+    """
+    with SyncSessionLocal() as session:
+        q = session.query(KnowledgeNode)
+        if entity_type:
+            q = q.filter_by(entity_type=entity_type)
+        if label_contains:
+            q = q.filter(KnowledgeNode.label.ilike(f"%{label_contains}%"))
+        if batch_id:
+            q = q.filter_by(source_batch_id=uuid.UUID(batch_id))
+
+        nodes = q.limit(50).all()
+        return [
+            {
+                "node_id": str(n.node_id),
+                "entity_type": n.entity_type,
+                "label": n.label,
+                "properties": n.properties,
+            }
+            for n in nodes
+        ]
+
+
+def mark_batch_extracted(batch_id: str, summary: str = "") -> str:
+    """Mark a batch as fully extracted.
+
+    Call this when you have finished extracting all knowledge from
+    the batch's files.  Optionally provide a summary of what was
+    extracted.
+    """
+    bid = uuid.UUID(batch_id)
+    with SyncSessionLocal() as session:
+        batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
+        if not batch:
+            return f"Batch {batch_id} not found."
+
+        from mkb.db.models import ExtractionStatus
+
+        batch.extraction_status = ExtractionStatus.COMPLETED
+        meta = dict(batch.extraction_metadata or {})
+        meta["summary"] = summary
+        batch.extraction_metadata = meta
+        session.commit()
+        return f"Batch {batch_id} marked as COMPLETED."
+
+
+# =====================================================================
+# Convenience: collect all tools into a list for agent registration
+# =====================================================================
+
+ALL_TOOLS = [
+    list_batch_files,
+    read_processed_markdown,
+    read_markdown_section,
+    list_markdown_headings,
+    read_raw_text,
+    read_dataframe_summary,
+    read_dataframe_rows,
+    read_image_metadata,
+    get_image_base64,
+    search_in_batch,
+    create_entity,
+    create_relationship,
+    find_existing_entities,
+    mark_batch_extracted,
+]

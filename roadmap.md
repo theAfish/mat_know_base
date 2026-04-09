@@ -55,9 +55,12 @@ Building a self-hosted, scalable infrastructure to transform heterogeneous scien
 **Goal:** Constructing the first iteration of the Knowledge Graph.
 
 * [ ] **Entity Extraction:**
-    * Deploy agents to identify scientific entities (Materials, Methods, Parameters, Authors).
-* [ ] **Relationship Mapping:**
-    * Define basic edge types: `MEASURED`, `CITES`, `SIMULATED_BY`.
+    * Deploy agents to identify scientific entities (Materials, Methods, Parameters, Authors, etc.).
+* [ ] **Relationship Mapping AND Reification:**
+    * Define basic edge types: `MEASURED`, `HAS_PROPERTY`, `SIMULATED_BY`, `CONTAINS_ELEMENT`, `HAS_STRUCTURE`, `STUDIED_IN`.
+* [ ] **Attributes & Provenance:**
+    * Ensure every node and edge has a link back to its source `asset_id` for full traceability.
+    * Value nodes with attributes like `confidence_score`, `data`, `timestamp`, etc.
 * [ ] **Graph Visualization:**
     * Implement a basic local UI (e.g., Streamlit or a Three.js-based graph) to verify connections.
 

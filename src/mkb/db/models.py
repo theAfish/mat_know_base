@@ -31,6 +31,14 @@ class ProcessingType(str, enum.Enum):
     UNPROCESSABLE = "UNPROCESSABLE"  # Data that couldn't be converted
 
 
+class ExtractionStatus(str, enum.Enum):
+    """Tracks knowledge extraction status at the batch level."""
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 # ── Assets (core raw-data table) ───────────────────────────────
 class Asset(Base):
     """
@@ -77,6 +85,15 @@ class IngestionBatch(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction_status: Mapped[ExtractionStatus] = mapped_column(
+        Enum(ExtractionStatus, name="extraction_status"),
+        default=ExtractionStatus.PENDING,
+        nullable=False,
+        server_default="PENDING",
+    )
+    extraction_metadata: Mapped[dict | None] = mapped_column(
+        "extraction_metadata", JSONB, default=dict
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -111,6 +128,7 @@ class KnowledgeNode(Base):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     properties: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     source_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source_batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     embedding: Mapped[list | None] = mapped_column(Vector(1536), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

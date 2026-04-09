@@ -322,11 +322,26 @@ def cmd_process_all(args):
 
 def cmd_processed_list(args):
     """List processed assets."""
+    import uuid
+
     from mkb.db.engine import SyncSessionLocal
-    from mkb.db.models import ProcessedAsset, Asset
+    from mkb.db.models import ProcessedAsset, Asset, BatchAsset
 
     with SyncSessionLocal() as session:
         query = session.query(ProcessedAsset).order_by(ProcessedAsset.created_at.desc())
+
+        if args.batch_id:
+            try:
+                batch_id = uuid.UUID(args.batch_id)
+            except ValueError:
+                print(f"Error: invalid batch ID: {args.batch_id}")
+                sys.exit(1)
+
+            asset_ids = [
+                row.asset_id for row in session.query(BatchAsset).filter_by(batch_id=batch_id).all()
+            ]
+            query = query.filter(ProcessedAsset.asset_id.in_(asset_ids)) if asset_ids else query.filter(False)
+
         if args.limit > 0:
             query = query.limit(args.limit)
 
@@ -345,6 +360,73 @@ def cmd_processed_list(args):
             print(f"{str(p.processed_asset_id):<36} {p.processing_type.value:<12} {p.output_format:<10} {size_str:<10} {asset_short}... {filename}")
 
         print(f"\nShowing {len(processed)} processed assets.")
+
+
+def cmd_processed_batch_info(args):
+    """Show processed-data details for a single ingestion batch."""
+    import uuid
+    from mkb.db.engine import SyncSessionLocal
+    from mkb.db.models import ProcessedAsset, Asset, BatchAsset, IngestionBatch
+
+    try:
+        bid = uuid.UUID(args.batch_id)
+    except ValueError:
+        print(f"Error: invalid batch ID: {args.batch_id}")
+        sys.exit(1)
+
+    with SyncSessionLocal() as session:
+        batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
+        if not batch:
+            print(f"Batch not found: {bid}")
+            sys.exit(1)
+
+        asset_ids = [row.asset_id for row in session.query(BatchAsset).filter_by(batch_id=bid).all()]
+        assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all() if asset_ids else []
+        processed_rows = (
+            session.query(ProcessedAsset)
+            .filter(ProcessedAsset.asset_id.in_(asset_ids))
+            .order_by(ProcessedAsset.created_at.desc())
+            .all()
+            if asset_ids
+            else []
+        )
+
+        processed_by_asset = {aid: [] for aid in asset_ids}
+        for row in processed_rows:
+            processed_by_asset.setdefault(row.asset_id, []).append(row)
+
+        processed_asset_count = sum(1 for aid in asset_ids if processed_by_asset.get(aid))
+        unprocessed_count = len(asset_ids) - processed_asset_count
+        total_size = sum(row.size_bytes for row in processed_rows)
+
+        print(f"Batch ID:           {batch.batch_id}")
+        print(f"Label:              {batch.label or '(none)'}")
+        print(f"Created:            {batch.created_at}")
+        print(f"Raw assets:         {len(asset_ids)}")
+        print(f"Assets processed:   {processed_asset_count}")
+        print(f"Assets pending:     {unprocessed_count}")
+        print(f"Processed outputs:  {len(processed_rows)}")
+        print(f"Total output size:  {_human_size(total_size)} ({total_size} bytes)")
+
+        if not assets:
+            print("\nNo raw assets are linked to this batch.")
+            return
+
+        print("\nPer-asset details:")
+        for asset in assets:
+            rows = processed_by_asset.get(asset.asset_id, [])
+            print(f"\n  Raw Asset:  {asset.asset_id}")
+            print(f"    Filename:  {asset.filename}")
+            print(f"    MIME:      {asset.mime_type}")
+            print(f"    Processed: {len(rows)} output(s)")
+
+            if not rows:
+                print("    Status:    pending / no processed outputs")
+                continue
+
+            for row in rows:
+                print(f"    - {row.processed_asset_id}  [{row.processing_type.value}]  {row.output_format}  {_human_size(row.size_bytes)}")
+                print(f"      s3://{row.s3_bucket}/{row.s3_key}")
 
 
 def cmd_processed_info(args):
@@ -479,6 +561,223 @@ def cmd_clear_processed(args):
         print("Raw assets were preserved.")
 
 
+# ── Extraction Commands ─────────────────────────────────────────
+
+def cmd_extract_batch(args):
+    """Run knowledge extraction agent on a single batch."""
+    import uuid
+    from mkb.agents.extraction import run_extraction
+
+    try:
+        bid = uuid.UUID(args.batch_id)
+    except ValueError:
+        print(f"Error: invalid batch ID: {args.batch_id}")
+        sys.exit(1)
+
+    print(f"Starting knowledge extraction for batch {bid} ...")
+    result = run_extraction(bid, model=args.model, verbose=args.verbose)
+
+    print(f"\nExtraction Result:")
+    print(f"  Status:         {result['status']}")
+    if result.get("entities_created") is not None:
+        print(f"  Entities:       {result['entities_created']}")
+    if result.get("relationships_created") is not None:
+        print(f"  Relationships:  {result['relationships_created']}")
+    if result.get("message"):
+        print(f"  Message:        {result['message']}")
+    if result.get("agent_summary"):
+        print(f"\nAgent summary:\n{result['agent_summary'][:2000]}")
+
+
+def cmd_extract_all(args):
+    """Run extraction on all pending/failed batches."""
+    from mkb.agents.extraction import run_extraction_all
+
+    limit = args.limit if args.limit > 0 else None
+    print("Starting extraction on pending batches ...")
+    stats = run_extraction_all(limit=limit, model=args.model, verbose=args.verbose)
+
+    print(f"\nExtraction Summary:")
+    print(f"  Total batches:       {stats['total_batches']}")
+    print(f"  Completed:           {stats['completed']}")
+    print(f"  Failed:              {stats['failed']}")
+    print(f"  Total entities:      {stats['total_entities']}")
+    print(f"  Total relationships: {stats['total_relationships']}")
+
+
+def cmd_knowledge_list(args):
+    """List extracted knowledge entities."""
+    import uuid
+
+    from mkb.db.engine import SyncSessionLocal
+    from mkb.db.models import KnowledgeNode
+
+    with SyncSessionLocal() as session:
+        q = session.query(KnowledgeNode).order_by(KnowledgeNode.created_at.desc())
+
+        if args.batch_id:
+            try:
+                bid = uuid.UUID(args.batch_id)
+            except ValueError:
+                print(f"Error: invalid batch ID: {args.batch_id}")
+                sys.exit(1)
+            q = q.filter_by(source_batch_id=bid)
+
+        if args.type:
+            q = q.filter_by(entity_type=args.type)
+
+        nodes = q.limit(args.limit).all()
+        if not nodes:
+            print("No knowledge entities found.")
+            return
+
+        print(f"{'Node ID':<36}  {'Type':<20}  {'Label'}")
+        print("-" * 100)
+        for n in nodes:
+            props_summary = ""
+            if n.properties:
+                items = list(n.properties.items())[:3]
+                props_summary = "  " + ", ".join(f"{k}={v}" for k, v in items)
+            print(f"{str(n.node_id):<36}  {n.entity_type:<20}  {n.label}{props_summary}")
+
+        print(f"\nShowing {len(nodes)} entities.")
+
+
+def cmd_knowledge_graph(args):
+    """Show entities + relationships for a batch."""
+    import uuid
+
+    from mkb.db.engine import SyncSessionLocal
+    from mkb.db.models import KnowledgeEdge, KnowledgeNode
+
+    try:
+        bid = uuid.UUID(args.batch_id)
+    except ValueError:
+        print(f"Error: invalid batch ID: {args.batch_id}")
+        sys.exit(1)
+
+    with SyncSessionLocal() as session:
+        nodes = session.query(KnowledgeNode).filter_by(source_batch_id=bid).all()
+        if not nodes:
+            print(f"No entities found for batch {bid}.")
+            return
+
+        node_map = {n.node_id: n for n in nodes}
+        node_ids = list(node_map.keys())
+
+        edges = (
+            session.query(KnowledgeEdge)
+            .filter(KnowledgeEdge.source_node_id.in_(node_ids))
+            .all()
+        )
+
+        print(f"=== Knowledge Graph for batch {bid} ===\n")
+        print(f"Entities ({len(nodes)}):")
+        for n in nodes:
+            props_str = ""
+            if n.properties:
+                items = list(n.properties.items())[:4]
+                props_str = " | " + ", ".join(f"{k}={v}" for k, v in items)
+            print(f"  [{n.entity_type}] {n.label}{props_str}")
+
+        print(f"\nRelationships ({len(edges)}):")
+        for e in edges:
+            src = node_map.get(e.source_node_id)
+            tgt = node_map.get(e.target_node_id)
+            src_label = src.label if src else str(e.source_node_id)[:8]
+            tgt_label = tgt.label if tgt else str(e.target_node_id)[:8]
+            props_str = ""
+            if e.properties:
+                items = list(e.properties.items())[:3]
+                props_str = "  (" + ", ".join(f"{k}={v}" for k, v in items) + ")"
+            print(f"  {src_label} --[{e.relation_type}]--> {tgt_label}{props_str}")
+
+
+def cmd_clear_knowledge(args):
+    """Delete extracted knowledge (nodes + edges) and reset extraction status."""
+    import uuid
+
+    from mkb.db.engine import SyncSessionLocal
+    from mkb.db.models import ExtractionStatus, KnowledgeEdge, KnowledgeNode, IngestionBatch
+
+    with SyncSessionLocal() as session:
+        if args.batch_id:
+            try:
+                bid = uuid.UUID(args.batch_id)
+            except ValueError:
+                print(f"Error: invalid batch ID: {args.batch_id}")
+                sys.exit(1)
+
+            nodes = session.query(KnowledgeNode).filter_by(source_batch_id=bid).all()
+            node_ids = [n.node_id for n in nodes]
+            scope_label = f"batch {bid}"
+        elif args.all:
+            nodes = session.query(KnowledgeNode).all()
+            node_ids = [n.node_id for n in nodes]
+            scope_label = "ALL batches"
+        else:
+            print("Error: one of --all or --batch-id is required")
+            sys.exit(1)
+
+        if not nodes:
+            print(f"No knowledge data found for {scope_label}.")
+            return
+
+        # Count edges
+        edge_count = 0
+        if node_ids:
+            edge_count = (
+                session.query(KnowledgeEdge)
+                .filter(
+                    (KnowledgeEdge.source_node_id.in_(node_ids))
+                    | (KnowledgeEdge.target_node_id.in_(node_ids))
+                )
+                .count()
+            )
+
+        if not args.yes:
+            resp = input(
+                f"Delete {len(nodes)} entities and ~{edge_count} relationships "
+                f"from {scope_label}? [y/N] "
+            )
+            if resp.lower() != "y":
+                print("Cancelled.")
+                return
+
+        # Delete edges first
+        if node_ids:
+            session.query(KnowledgeEdge).filter(
+                (KnowledgeEdge.source_node_id.in_(node_ids))
+                | (KnowledgeEdge.target_node_id.in_(node_ids))
+            ).delete(synchronize_session=False)
+
+        # Delete nodes
+        if args.batch_id:
+            session.query(KnowledgeNode).filter_by(source_batch_id=bid).delete(
+                synchronize_session=False
+            )
+            # Reset extraction status
+            batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
+            if batch:
+                batch.extraction_status = ExtractionStatus.PENDING
+                batch.extraction_metadata = {}
+        elif args.all:
+            session.query(KnowledgeEdge).delete(synchronize_session=False)
+            session.query(KnowledgeNode).delete(synchronize_session=False)
+            # Reset all batches
+            session.query(IngestionBatch).update(
+                {
+                    IngestionBatch.extraction_status: ExtractionStatus.PENDING,
+                    IngestionBatch.extraction_metadata: {},
+                },
+                synchronize_session=False,
+            )
+
+        session.commit()
+        print(f"Deleted {len(nodes)} entities and {edge_count} relationships from {scope_label}.")
+        print("Extraction status reset to PENDING.")
+
+
 # ── CLI Main ────────────────────────────────────────────────────
 
 def main():
@@ -540,8 +839,16 @@ def main():
 
     # ── processed-list ──────────────────────────────────────
     p_proc_list = sub.add_parser("processed-list", help="List processed assets")
+    p_proc_list.add_argument("--batch-id", default=None, help="Filter by batch UUID")
     p_proc_list.add_argument("--limit", type=int, default=50)
     p_proc_list.set_defaults(func=cmd_processed_list)
+
+    # ── processed-batch-info ────────────────────────────────
+    p_proc_batch_info = sub.add_parser(
+        "processed-batch-info", help="Show processed-data details for a batch"
+    )
+    p_proc_batch_info.add_argument("batch_id", help="Batch UUID")
+    p_proc_batch_info.set_defaults(func=cmd_processed_batch_info)
 
     # ── processed-info ─────────────────────────────────────
     p_proc_info = sub.add_parser("processed-info", help="Show details of a processed asset")
@@ -559,6 +866,44 @@ def main():
     scope.add_argument("--batch-id", help="Delete processed outputs for all assets in a batch UUID")
     p_clear_processed.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     p_clear_processed.set_defaults(func=cmd_clear_processed)
+
+    # ── extract-batch ───────────────────────────────────────
+    p_extract = sub.add_parser("extract-batch", help="Run knowledge extraction on one batch")
+    p_extract.add_argument("batch_id", help="Batch UUID")
+    p_extract.add_argument("--model", default=None, help="Override LLM model name")
+    p_extract.add_argument("-v", "--verbose", action="store_true", help="Log agent actions")
+    p_extract.set_defaults(func=cmd_extract_batch)
+
+    # ── extract-all ─────────────────────────────────────────
+    p_extract_all = sub.add_parser("extract-all", help="Extract knowledge from all pending batches")
+    p_extract_all.add_argument("--limit", type=int, default=0, help="Max batches (0=all)")
+    p_extract_all.add_argument("--model", default=None, help="Override LLM model name")
+    p_extract_all.add_argument("-v", "--verbose", action="store_true", help="Log agent actions")
+    p_extract_all.set_defaults(func=cmd_extract_all)
+
+    # ── knowledge-list ──────────────────────────────────────
+    p_kg_list = sub.add_parser("knowledge-list", help="List extracted knowledge entities")
+    p_kg_list.add_argument("--batch-id", default=None, help="Filter by batch UUID")
+    p_kg_list.add_argument("--type", default=None, help="Filter by entity type")
+    p_kg_list.add_argument("--limit", type=int, default=50)
+    p_kg_list.set_defaults(func=cmd_knowledge_list)
+
+    # ── knowledge-graph ─────────────────────────────────────
+    p_kg_graph = sub.add_parser("knowledge-graph", help="Show entities + relationships for a batch")
+    p_kg_graph.add_argument("batch_id", help="Batch UUID")
+    p_kg_graph.set_defaults(func=cmd_knowledge_graph)
+
+    # ── clear-knowledge ─────────────────────────────────────
+    p_clear_kg = sub.add_parser(
+        "clear-knowledge",
+        help="Delete extracted knowledge (nodes + edges) and reset extraction status",
+    )
+    scope_kg = p_clear_kg.add_mutually_exclusive_group(required=True)
+    scope_kg.add_argument("--all", action="store_true", help="Delete ALL knowledge data")
+    scope_kg.add_argument("--batch-id", help="Delete knowledge for one batch UUID")
+    p_clear_kg.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_clear_kg.set_defaults(func=cmd_clear_knowledge)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
