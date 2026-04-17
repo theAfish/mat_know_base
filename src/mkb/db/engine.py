@@ -3,6 +3,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import text
 
 from mkb.config import settings
 
@@ -18,4 +19,9 @@ SyncSessionLocal = sessionmaker(sync_engine, class_=Session, expire_on_commit=Fa
 def init_db() -> None:
     """Create all tables from ORM metadata (idempotent)."""
     from mkb.db.models import Base
+    # Ensure the pgvector extension is available for the `vector` column type.
+    with sync_engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        conn.commit()
+
     Base.metadata.create_all(sync_engine)

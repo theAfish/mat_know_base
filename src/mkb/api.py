@@ -47,7 +47,7 @@ def ingest(directory: str | Path, label: str | None = None) -> dict:
     """
     from mkb.ingest.worker import ingest_directory
 
-    return ingest_directory(directory, project_label=label)
+    return ingest_directory(directory, label=label)
 
 
 def sync(root_dir: str | Path) -> dict:

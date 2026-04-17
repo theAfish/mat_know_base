@@ -10,8 +10,6 @@ build/
 
 # Virtual environments
 .venv/
-venv/
-env/
 
 # IDE
 .idea/
@@ -35,3 +33,8 @@ docker_volumes/
 # OS
 .DS_Store
 Thumbs.db
+
+
+# local usage
+
+.debug/

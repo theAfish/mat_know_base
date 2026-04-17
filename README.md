@@ -59,6 +59,46 @@ Every extracted item is tagged with an **evidence level**:
 - Docker & Docker Compose
 - `libmagic` (usually pre-installed on Linux; `brew install libmagic` on macOS)
 
+## Using Docker
+
+This project includes a `docker-compose.yaml` to run the required infrastructure (PostgreSQL + `pgvector` and MinIO). You can use the provided `Makefile` targets or `docker compose` directly to manage the services.
+
+Start services:
+```bash
+make up
+# or
+docker compose up -d
+```
+
+Stop services:
+```bash
+make down
+# or
+docker compose down
+```
+
+View status and logs:
+```bash
+docker compose ps
+make logs
+# or
+docker compose logs -f
+```
+
+Service endpoints:
+- MinIO console: http://localhost:9001  (minioadmin / minioadmin)
+- MinIO S3 API: http://localhost:9000
+- PostgreSQL: localhost:5432 (user: `mkb`, password: `mkb_dev`, database: `mkb`)
+
+MinIO buckets: the compose file includes a one-shot `minio-init` service which creates the required buckets. It runs during `make up` when the `minio` service becomes healthy. To re-run it manually:
+```bash
+docker compose run --rm minio-init
+```
+
+Notes:
+- Copy `.env.example` to `.env` before starting the stack (see Quick Start below).
+- The Python application is not containerized by default. If you'd like, I can add a `Dockerfile` and a `docker-compose` service for the app so the whole stack runs in containers.
+
 ## Quick Start
 
 ```bash
