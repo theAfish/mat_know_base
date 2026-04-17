@@ -379,8 +379,8 @@ async def _run_extraction_async(
     session_id = f"extract_{batch_id}"
 
     # Session creation registers session_id in the ADK session service;
-    # runner.run_async references it by ID and does not require this object.
-    await session_service.create_session(
+    # runner.run_async references it by ID, so the object is intentionally unused.
+    _session = await session_service.create_session(
         app_name=APP_NAME,
         user_id=user_id,
         session_id=session_id,

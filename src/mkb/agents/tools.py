@@ -192,7 +192,7 @@ def list_batch_files(batch_id: str) -> list[dict]:
     bid = uuid.UUID(batch_id)
     with SyncSessionLocal() as session:
         links = session.query(BatchAsset).filter_by(batch_id=bid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
 
@@ -450,7 +450,7 @@ def search_in_batch(batch_id: str, query: str) -> list[dict]:
 
     with SyncSessionLocal() as session:
         links = session.query(BatchAsset).filter_by(batch_id=bid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
 
@@ -551,7 +551,15 @@ def add_knowledge_frame_items(
 
     ev = _normalize_evidence_level(evidence_level)
     now = datetime.now(timezone.utc).isoformat()
-    src_asset = str(uuid.UUID(source_asset_id)) if source_asset_id else None
+    src_asset = None
+    if source_asset_id:
+        try:
+            src_asset = str(uuid.UUID(source_asset_id))
+        except ValueError:
+            return {
+                "status": "error",
+                "message": f"Invalid source_asset_id UUID: {source_asset_id}",
+            }
 
     with SyncSessionLocal() as session:
         frame = _ensure_kb_frame(session, bid)
