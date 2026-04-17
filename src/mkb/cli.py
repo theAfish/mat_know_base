@@ -246,7 +246,14 @@ def cmd_delete_batch(args):
 def cmd_purge(args):
     """Wipe ALL data from DB and MinIO. For development only."""
     from mkb.db.engine import SyncSessionLocal
-    from mkb.db.models import Asset, BatchAsset, IngestionBatch, KnowledgeEdge, KnowledgeNode
+    from mkb.db.models import (
+        Asset,
+        BatchAsset,
+        IngestionBatch,
+        KnowledgeBaseFrame,
+        KnowledgeEdge,
+        KnowledgeNode,
+    )
     from mkb.storage.s3 import delete_object
 
     if not args.yes:
@@ -269,11 +276,15 @@ def cmd_purge(args):
         count_batches = session.query(IngestionBatch).count()
         session.query(KnowledgeEdge).delete()
         session.query(KnowledgeNode).delete()
+        session.query(KnowledgeBaseFrame).delete()
         session.query(BatchAsset).delete()
         session.query(Asset).delete()
         session.query(IngestionBatch).delete()
         session.commit()
-        print(f"Purged {count_assets} assets, {count_batches} batches, and all knowledge nodes/edges.")
+        print(
+            f"Purged {count_assets} assets, {count_batches} batches, "
+            "and all knowledge nodes/edges/frames."
+        )
 
 
 # ── Processing Commands ─────────────────────────────────────────
@@ -716,7 +727,13 @@ def cmd_clear_knowledge(args):
     import uuid
 
     from mkb.db.engine import SyncSessionLocal
-    from mkb.db.models import ExtractionStatus, KnowledgeEdge, KnowledgeNode, IngestionBatch
+    from mkb.db.models import (
+        ExtractionStatus,
+        IngestionBatch,
+        KnowledgeBaseFrame,
+        KnowledgeEdge,
+        KnowledgeNode,
+    )
 
     with SyncSessionLocal() as session:
         if args.batch_id:
@@ -728,16 +745,19 @@ def cmd_clear_knowledge(args):
 
             nodes = session.query(KnowledgeNode).filter_by(source_batch_id=bid).all()
             node_ids = [n.node_id for n in nodes]
+            frames_q = session.query(KnowledgeBaseFrame).filter_by(batch_id=bid)
             scope_label = f"batch {bid}"
         elif args.all:
             nodes = session.query(KnowledgeNode).all()
             node_ids = [n.node_id for n in nodes]
+            frames_q = session.query(KnowledgeBaseFrame)
             scope_label = "ALL batches"
         else:
             print("Error: one of --all or --batch-id is required")
             sys.exit(1)
 
-        if not nodes:
+        frame_count = frames_q.count()
+        if not nodes and frame_count == 0:
             print(f"No knowledge data found for {scope_label}.")
             return
 
@@ -755,7 +775,7 @@ def cmd_clear_knowledge(args):
 
         if not args.yes:
             resp = input(
-                f"Delete {len(nodes)} entities and ~{edge_count} relationships "
+                f"Delete {len(nodes)} entities, ~{edge_count} relationships, and {frame_count} frame(s) "
                 f"from {scope_label}? [y/N] "
             )
             if resp.lower() != "y":
@@ -774,6 +794,7 @@ def cmd_clear_knowledge(args):
             session.query(KnowledgeNode).filter_by(source_batch_id=bid).delete(
                 synchronize_session=False
             )
+            frames_q.delete(synchronize_session=False)
             # Reset extraction status
             batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
             if batch:
@@ -782,6 +803,7 @@ def cmd_clear_knowledge(args):
         elif args.all:
             session.query(KnowledgeEdge).delete(synchronize_session=False)
             session.query(KnowledgeNode).delete(synchronize_session=False)
+            frames_q.delete(synchronize_session=False)
             # Reset all batches
             session.query(IngestionBatch).update(
                 {
@@ -792,7 +814,10 @@ def cmd_clear_knowledge(args):
             )
 
         session.commit()
-        print(f"Deleted {len(nodes)} entities and {edge_count} relationships from {scope_label}.")
+        print(
+            f"Deleted {len(nodes)} entities, {edge_count} relationships, and {frame_count} frame(s) "
+            f"from {scope_label}."
+        )
         print("Extraction status reset to PENDING.")
 
 

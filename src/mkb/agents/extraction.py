@@ -21,10 +21,10 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
-from mkb.agents.tools import ALL_TOOLS
+from mkb.agents.tools import ALL_TOOLS, _collect_batch_source_assets
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import ExtractionStatus, IngestionBatch
+from mkb.db.models import ExtractionStatus, IngestionBatch, KnowledgeBaseFrame
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +33,11 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 EXTRACTION_PROMPT = """\
-You are a scientific knowledge extraction agent. Your job is to read the files in one research-paper batch and extract structured knowledge into a graph database.
+You are a scientific knowledge extraction agent. Your job is to read one research-package batch and build ONE detailed knowledge-base frame for that package.
 
-Your goal is to capture **scientific knowledge and relationships** in a way that preserves **context, provenance, and experimental details**.
+Each frame must preserve **context, provenance, and experimental details** and can later be transformed into formatted databases and knowledge graphs.
 
-The resulting graph should represent **what the paper claims or reports**, not general facts about the world.
+The frame should represent **what the paper claims or reports**, not general facts about the world.
 
 ---
 
@@ -63,18 +63,26 @@ However, you are not required to strictly follow this structure if the informati
 
 # Workflow
 
-1. **Inventory** — Call `list_batch_files` to see what files are in the batch. Note which are PDFs/papers (MARKDOWN), supplementary data (DATAFRAME / text), and images.
+1. **Initialize frame** — Call `initialize_knowledge_frame` first for the batch.
 
-2. **Read the paper in multiple ways** 
+2. **Inventory + read** — Call `list_batch_files` then read the paper and supplementary data in multiple ways:
 	— Use `list_markdown_headings` first to get an overview, then read section by section with `read_markdown_section`. For short papers you may use `read_processed_markdown` to get the whole text at once.
 	— If there are additional markdown files (supplementary info), read them the same way. For tabular data use `read_dataframe_summary` and `read_dataframe_rows`. For image metadata use `read_image_metadata`.
 	— Use `search_in_batch` to find specific terms, chemical formulas, or property values across all documents.
 
-5. **Extract entities** — For each significant scientific concept found, call `create_entity`.
+3. **Populate the frame** — Add rich structured items with `add_knowledge_frame_items`:
+   - `concepts`: materials, devices, methods, mechanisms, models, parameters
+   - `experimental_data`: measured/simulated values, conditions, units, uncertainty, setup
+   - `statements`: key claims/conclusions linked to evidence
+   - `related_data`: supplementary notes, constraints, caveats, provenance records
 
-6. **Extract relationships** — For each meaningful connection between entities, call `create_relationship`.
+4. **Evidence level** — Every extracted item should carry one evidence level:
+   - Level 1: Causal experimental evidence
+   - Level 2: Direct experimental observation
+   - Level 3: Correlative evidence
+   - Level 4: Predicted / inferred
 
-7. **Finish** — When done, call `mark_batch_extracted` with a short summary of what was extracted.
+5. **Finish** — When done, call `mark_knowledge_frame_checked` (or `mark_batch_extracted`) with a short summary.
 
 ---
 
@@ -310,7 +318,7 @@ If uncertain about interpretation, prefer **faithful representation of the text*
 
 # Goal
 
-Your task is not just to extract entities but to reconstruct the **scientific knowledge structure of the paper**, including:
+Your task is to reconstruct the **scientific knowledge structure of the paper** inside one package frame, including:
 
 • materials studied  
 • methods used  
@@ -319,7 +327,7 @@ Your task is not just to extract entities but to reconstruct the **scientific kn
 • devices fabricated  
 • applications discussed  
 
-Represent these elements as a connected knowledge graph.
+Represent these elements faithfully in the frame first. Graph creation can happen later from this frame.
 
 """
 
@@ -370,18 +378,51 @@ async def _run_extraction_async(
     user_id = "mkb_system"
     session_id = f"extract_{batch_id}"
 
-    session = await session_service.create_session(
+    # Session creation registers session_id in the ADK session service;
+    # runner.run_async references it by ID, so the object is intentionally unused.
+    _session = await session_service.create_session(
         app_name=APP_NAME,
         user_id=user_id,
         session_id=session_id,
     )
 
-    # Mark batch as in-progress
+    # Mark batch as in-progress and ensure a package frame exists
     with SyncSessionLocal() as db:
         batch = db.query(IngestionBatch).filter_by(batch_id=batch_id).first()
         if not batch:
             return {"status": "error", "message": f"Batch {batch_id} not found"}
         batch.extraction_status = ExtractionStatus.IN_PROGRESS
+        frame = db.query(KnowledgeBaseFrame).filter_by(batch_id=batch_id).first()
+        if not frame:
+            frame = KnowledgeBaseFrame(
+                frame_id=uuid.uuid4(),
+                batch_id=batch_id,
+                title=batch.label,
+                status="IN_PROGRESS",
+                frame_data={
+                    "concepts": [],
+                    "experimental_data": [],
+                    "statements": [],
+                    "related_data": [],
+                },
+                frame_metadata={
+                    "source_batch_id": str(batch_id),
+                    "source_assets": [],
+                    "source_links": [],
+                    "extraction_history": [],
+                    "latest_summary": "",
+                },
+            )
+            db.add(frame)
+        else:
+            frame.status = "IN_PROGRESS"
+
+        source_assets = _collect_batch_source_assets(db, batch_id)
+        meta = dict(frame.frame_metadata or {})
+        meta["source_batch_id"] = str(batch_id)
+        meta["source_assets"] = source_assets
+        meta["source_links"] = [asset["raw_s3_uri"] for asset in source_assets]
+        frame.frame_metadata = meta
         db.commit()
         batch_label = batch.label or str(batch_id)
 
@@ -437,14 +478,18 @@ async def _run_extraction_async(
                 meta["error"] = str(exc)
                 meta["failed_at"] = datetime.now(timezone.utc).isoformat()
                 batch.extraction_metadata = meta
-                db.commit()
+            frame = db.query(KnowledgeBaseFrame).filter_by(batch_id=batch_id).first()
+            if frame:
+                frame.status = "FAILED"
+            db.commit()
         return {
             "status": "error",
             "batch_id": str(batch_id),
             "message": str(exc),
         }
 
-    # Count entities and relationships created
+    # Count entities/relationships and summarize frame coverage
+    frame_summary: dict = {}
     with SyncSessionLocal() as db:
         from mkb.db.models import KnowledgeEdge, KnowledgeNode
 
@@ -466,12 +511,25 @@ async def _run_extraction_async(
                 .filter(KnowledgeEdge.source_node_id.in_(node_ids))
                 .count()
             )
+        frame = db.query(KnowledgeBaseFrame).filter_by(batch_id=batch_id).first()
+        if frame:
+            frame_data = dict(frame.frame_data or {})
+            frame_summary = {
+                "frame_id": str(frame.frame_id),
+                "status": frame.status,
+                "concepts": len(frame_data.get("concepts") or []),
+                "experimental_data": len(frame_data.get("experimental_data") or []),
+                "statements": len(frame_data.get("statements") or []),
+                "related_data": len(frame_data.get("related_data") or []),
+                "check_count": frame.check_count or 0,
+            }
 
     return {
         "status": "completed",
         "batch_id": str(batch_id),
         "entities_created": node_count,
         "relationships_created": edge_count,
+        "knowledge_frame": frame_summary,
         "agent_summary": final_text,
         "total_events": len(events_collected),
     }

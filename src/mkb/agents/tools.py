@@ -13,24 +13,131 @@ import base64
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Asset,
     BatchAsset,
     IngestionBatch,
+    KnowledgeBaseFrame,
     KnowledgeEdge,
     KnowledgeNode,
+    ExtractionStatus,
     ProcessedAsset,
     ProcessingType,
 )
 from mkb.storage.s3 import download_bytes, object_exists
 
 logger = logging.getLogger(__name__)
+
+EVIDENCE_LEVELS = {
+    1: "Level 1: Causal experimental evidence",
+    2: "Level 2: Direct experimental observation",
+    3: "Level 3: Correlative evidence",
+    4: "Level 4: Predicted / inferred",
+}
+
+
+def _normalize_evidence_level(level: str | int | None) -> str:
+    """Normalize evidence level into canonical Level 1..4 labels."""
+    if isinstance(level, int) and level in EVIDENCE_LEVELS:
+        return EVIDENCE_LEVELS[level]
+    if isinstance(level, str):
+        stripped = level.strip()
+        m = re.search(r"\b([1-4])\b", stripped)
+        if m:
+            return EVIDENCE_LEVELS[int(m.group(1))]
+        lowered = stripped.lower()
+        if "causal" in lowered:
+            return EVIDENCE_LEVELS[1]
+        if "direct" in lowered:
+            return EVIDENCE_LEVELS[2]
+        if "correl" in lowered:
+            return EVIDENCE_LEVELS[3]
+        if "pred" in lowered or "infer" in lowered:
+            return EVIDENCE_LEVELS[4]
+    return EVIDENCE_LEVELS[4]
+
+
+def _default_frame_data() -> dict:
+    return {
+        "concepts": [],
+        "experimental_data": [],
+        "statements": [],
+        "related_data": [],
+    }
+
+
+def _default_frame_metadata() -> dict:
+    return {
+        "source_batch_id": None,
+        "source_assets": [],
+        "source_links": [],
+        "extraction_history": [],
+        "latest_summary": "",
+    }
+
+
+def _ensure_kb_frame(session, batch_id: uuid.UUID, title: str | None = None) -> KnowledgeBaseFrame:
+    frame = session.query(KnowledgeBaseFrame).filter_by(batch_id=batch_id).first()
+    if frame:
+        if title and not frame.title:
+            frame.title = title
+        return frame
+    frame = KnowledgeBaseFrame(
+        frame_id=uuid.uuid4(),
+        batch_id=batch_id,
+        title=title,
+        status="DRAFT",
+        frame_data=_default_frame_data(),
+        frame_metadata=_default_frame_metadata(),
+    )
+    session.add(frame)
+    session.flush()
+    return frame
+
+
+def _collect_batch_source_assets(session, batch_id: uuid.UUID) -> list[dict]:
+    links = session.query(BatchAsset).filter_by(batch_id=batch_id).all()
+    asset_ids = [link.asset_id for link in links]
+    if not asset_ids:
+        return []
+
+    assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all()
+    processed_rows = (
+        session.query(ProcessedAsset)
+        .filter(ProcessedAsset.asset_id.in_(asset_ids))
+        .order_by(ProcessedAsset.created_at.desc())
+        .all()
+    )
+    by_asset: dict[uuid.UUID, list[ProcessedAsset]] = {}
+    for row in processed_rows:
+        by_asset.setdefault(row.asset_id, []).append(row)
+
+    source_assets = []
+    for asset in assets:
+        processed = [
+            {
+                "processing_type": row.processing_type.value,
+                "output_format": row.output_format,
+                "s3_uri": f"s3://{row.s3_bucket}/{row.s3_key}",
+            }
+            for row in by_asset.get(asset.asset_id, [])
+        ]
+        source_assets.append(
+            {
+                "asset_id": str(asset.asset_id),
+                "filename": asset.filename,
+                "mime_type": asset.mime_type,
+                "raw_s3_uri": f"s3://{asset.s3_bucket}/{asset.s3_key}",
+                "processed_outputs": processed,
+            }
+        )
+    return source_assets
 
 
 def _select_processed_asset(
@@ -85,7 +192,7 @@ def list_batch_files(batch_id: str) -> list[dict]:
     bid = uuid.UUID(batch_id)
     with SyncSessionLocal() as session:
         links = session.query(BatchAsset).filter_by(batch_id=bid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
 
@@ -343,7 +450,7 @@ def search_in_batch(batch_id: str, query: str) -> list[dict]:
 
     with SyncSessionLocal() as session:
         links = session.query(BatchAsset).filter_by(batch_id=bid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
 
@@ -390,6 +497,135 @@ def search_in_batch(batch_id: str, query: str) -> list[dict]:
 # =====================================================================
 # Knowledge-writing tools — let the agent build the knowledge graph
 # =====================================================================
+
+
+def initialize_knowledge_frame(batch_id: str, title: str | None = None) -> dict:
+    """Initialize or refresh a frame for one research package (batch)."""
+    bid = uuid.UUID(batch_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    with SyncSessionLocal() as session:
+        batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
+        if not batch:
+            return {"status": "error", "message": f"Batch {batch_id} not found"}
+
+        frame = _ensure_kb_frame(session, bid, title=title or batch.label)
+        meta = dict(frame.frame_metadata or _default_frame_metadata())
+        source_assets = _collect_batch_source_assets(session, bid)
+        meta["source_batch_id"] = str(bid)
+        meta["source_assets"] = source_assets
+        meta["source_links"] = [asset["raw_s3_uri"] for asset in source_assets]
+        meta["initialized_at"] = now
+        frame.frame_metadata = meta
+        frame.status = "DRAFT"
+        session.commit()
+
+        return {
+            "status": "ok",
+            "frame_id": str(frame.frame_id),
+            "batch_id": str(bid),
+            "source_assets": len(source_assets),
+        }
+
+
+def add_knowledge_frame_items(
+    batch_id: str,
+    section: str,
+    items: list[dict],
+    evidence_level: str | int | None = None,
+    source_asset_id: str | None = None,
+) -> dict:
+    """Add extracted items into one frame section.
+
+    Valid sections: concepts, experimental_data, statements, related_data.
+    """
+    bid = uuid.UUID(batch_id)
+    normalized_section = section.strip().lower()
+    if normalized_section not in _default_frame_data():
+        return {
+            "status": "error",
+            "message": f"Unsupported section '{section}'. Use one of: concepts, experimental_data, statements, related_data",
+        }
+    if not isinstance(items, list) or not all(isinstance(it, dict) for it in items):
+        return {"status": "error", "message": "items must be a list of objects"}
+
+    ev = _normalize_evidence_level(evidence_level)
+    now = datetime.now(timezone.utc).isoformat()
+    src_asset = None
+    if source_asset_id:
+        try:
+            src_asset = str(uuid.UUID(source_asset_id))
+        except ValueError:
+            return {
+                "status": "error",
+                "message": f"Invalid source_asset_id UUID: {source_asset_id}",
+            }
+
+    with SyncSessionLocal() as session:
+        frame = _ensure_kb_frame(session, bid)
+        frame_data = dict(frame.frame_data or _default_frame_data())
+        bucket = list(frame_data.get(normalized_section) or [])
+        for item in items:
+            payload = dict(item)
+            payload.setdefault("evidence_level", ev)
+            payload.setdefault("source_batch_id", str(bid))
+            if src_asset:
+                payload.setdefault("source_asset_id", src_asset)
+            payload.setdefault("recorded_at", now)
+            bucket.append(payload)
+        frame_data[normalized_section] = bucket
+        frame.frame_data = frame_data
+        frame.status = "DRAFT"
+        session.commit()
+        return {
+            "status": "ok",
+            "frame_id": str(frame.frame_id),
+            "section": normalized_section,
+            "items_added": len(items),
+            "section_total": len(bucket),
+        }
+
+
+def mark_knowledge_frame_checked(batch_id: str, summary: str = "") -> str:
+    """Finalize one batch frame and mark extraction completion metadata."""
+    bid = uuid.UUID(batch_id)
+    now = datetime.now(timezone.utc)
+
+    with SyncSessionLocal() as session:
+        batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
+        if not batch:
+            return f"Batch {batch_id} not found."
+
+        frame = _ensure_kb_frame(session, bid, title=batch.label)
+        frame.check_count = (frame.check_count or 0) + 1
+        frame.status = "COMPLETED"
+        if not frame.first_extracted_at:
+            frame.first_extracted_at = now
+        frame.last_extracted_at = now
+
+        meta = dict(frame.frame_metadata or _default_frame_metadata())
+        history = list(meta.get("extraction_history") or [])
+        history.append(
+            {
+                "checked_at": now.isoformat(),
+                "summary": summary,
+                "check_count": frame.check_count,
+            }
+        )
+        meta["extraction_history"] = history[-20:]
+        meta["latest_summary"] = summary
+        frame.frame_metadata = meta
+
+        batch.extraction_status = ExtractionStatus.COMPLETED
+        batch_meta = dict(batch.extraction_metadata or {})
+        batch_meta["summary"] = summary
+        batch_meta["frame_id"] = str(frame.frame_id)
+        batch_meta["frame_checked_count"] = frame.check_count
+        batch_meta["frame_last_extracted_at"] = now.isoformat()
+        batch.extraction_metadata = batch_meta
+
+        session.commit()
+        return f"Knowledge frame for batch {batch_id} marked as COMPLETED."
 
 
 def create_entity(
@@ -527,26 +763,12 @@ def find_existing_entities(
 
 
 def mark_batch_extracted(batch_id: str, summary: str = "") -> str:
-    """Mark a batch as fully extracted.
+    """Backward-compatible wrapper around mark_knowledge_frame_checked.
 
-    Call this when you have finished extracting all knowledge from
-    the batch's files.  Optionally provide a summary of what was
-    extracted.
+    Marks the batch frame as checked/completed, updates extraction counters
+    and timestamps, and syncs extraction metadata on the ingestion batch.
     """
-    bid = uuid.UUID(batch_id)
-    with SyncSessionLocal() as session:
-        batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
-        if not batch:
-            return f"Batch {batch_id} not found."
-
-        from mkb.db.models import ExtractionStatus
-
-        batch.extraction_status = ExtractionStatus.COMPLETED
-        meta = dict(batch.extraction_metadata or {})
-        meta["summary"] = summary
-        batch.extraction_metadata = meta
-        session.commit()
-        return f"Batch {batch_id} marked as COMPLETED."
+    return mark_knowledge_frame_checked(batch_id=batch_id, summary=summary)
 
 
 # =====================================================================
@@ -564,6 +786,9 @@ ALL_TOOLS = [
     read_image_metadata,
     get_image_base64,
     search_in_batch,
+    initialize_knowledge_frame,
+    add_knowledge_frame_items,
+    mark_knowledge_frame_checked,
     create_entity,
     create_relationship,
     find_existing_entities,
