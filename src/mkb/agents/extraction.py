@@ -385,6 +385,7 @@ async def _run_extraction_async(
     user_id = "mkb_system"
     session_id = f"extract_{batch_id}"
 
+    # Session must exist before runner.run_async; returned object is not used directly here.
     await session_service.create_session(
         app_name=APP_NAME,
         user_id=user_id,
