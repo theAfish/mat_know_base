@@ -21,17 +21,10 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
-from mkb.agents.tools import ALL_TOOLS
+from mkb.agents.tools import ALL_TOOLS, _collect_batch_source_assets
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import (
-    Asset,
-    BatchAsset,
-    ExtractionStatus,
-    IngestionBatch,
-    KnowledgeBaseFrame,
-    ProcessedAsset,
-)
+from mkb.db.models import ExtractionStatus, IngestionBatch, KnowledgeBaseFrame
 
 logger = logging.getLogger(__name__)
 
@@ -385,7 +378,8 @@ async def _run_extraction_async(
     user_id = "mkb_system"
     session_id = f"extract_{batch_id}"
 
-    # Session must exist before runner.run_async; returned object is not used directly here.
+    # Session creation registers session_id in the ADK session service;
+    # runner.run_async references it by ID and does not require this object.
     await session_service.create_session(
         app_name=APP_NAME,
         user_id=user_id,
@@ -423,35 +417,7 @@ async def _run_extraction_async(
         else:
             frame.status = "IN_PROGRESS"
 
-        links = db.query(BatchAsset).filter_by(batch_id=batch_id).all()
-        asset_ids = [link.asset_id for link in links]
-        source_assets = []
-        if asset_ids:
-            assets = db.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all()
-            for asset in assets:
-                processed = (
-                    db.query(ProcessedAsset)
-                    .filter_by(asset_id=asset.asset_id)
-                    .order_by(ProcessedAsset.created_at.desc())
-                    .all()
-                )
-                processed_outputs = [
-                    {
-                        "processing_type": row.processing_type.value,
-                        "output_format": row.output_format,
-                        "s3_uri": f"s3://{row.s3_bucket}/{row.s3_key}",
-                    }
-                    for row in processed
-                ]
-                source_assets.append(
-                    {
-                        "asset_id": str(asset.asset_id),
-                        "filename": asset.filename,
-                        "mime_type": asset.mime_type,
-                        "raw_s3_uri": f"s3://{asset.s3_bucket}/{asset.s3_key}",
-                        "processed_outputs": processed_outputs,
-                    }
-                )
+        source_assets = _collect_batch_source_assets(db, batch_id)
         meta = dict(frame.frame_metadata or {})
         meta["source_batch_id"] = str(batch_id)
         meta["source_assets"] = source_assets
