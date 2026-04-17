@@ -270,7 +270,7 @@ src/mkb/
 - **Idempotent processing:** A conversion is only written once. If the output hash matches an existing `processed_assets` row the run is skipped.
 - **Conversion trackers on raw assets:** After processing, the raw asset's `metadata->processing` JSONB key is updated with the last status, processing type, and `processed_asset_id` so both ends of the link are immediately visible without a join.
 - **pgvector Ready:** The `embedding` columns on `assets` and `knowledge_nodes` are ready for semantic search once an embedding model is integrated.
-- **Agent-Ready:** `mkb.agents.tools` exposes `list_unprocessed_assets()`, `fetch_raw_binary()`, and `update_knowledge_node()` for `google-adk` integration.
+- **Frame-first extraction:** each ingestion batch now has one `knowledge_base_frames` record that stores detailed extracted concepts, experimental data, statements, evidence levels, and provenance metadata before downstream graph/database formatting.
 
 ## Database Tables
 
@@ -281,6 +281,7 @@ src/mkb/
 | `batch_assets` | Many-to-many link between batches and assets |
 | `processed_assets` | One row per successful conversion output |
 | `processing_logs` | Audit trail: every processing attempt (SUCCESS / SKIPPED / FAILED) |
+| `knowledge_base_frames` | One frame per research package (batch), including detailed extracted content + extraction metadata |
 | `knowledge_nodes` | Extracted scientific entities (Phase 4 placeholder) |
 | `knowledge_edges` | Directed relationships between nodes (Phase 4 placeholder) |
 

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, Index, String, Text, func
+from sqlalchemy import DateTime, Enum, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -157,6 +157,41 @@ class KnowledgeEdge(Base):
         Index("ix_edges_source", "source_node_id"),
         Index("ix_edges_target", "target_node_id"),
         Index("ix_edges_relation", "relation_type"),
+    )
+
+
+# ── Knowledge Base Frames (frame-first extraction layer) ─────────
+class KnowledgeBaseFrame(Base):
+    """
+    One frame per research package (ingestion batch).
+    Stores rich, LLM-extracted structured knowledge plus extraction metadata.
+    """
+
+    __tablename__ = "knowledge_base_frames"
+
+    frame_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True
+    )
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, server_default="DRAFT")
+    frame_data: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    frame_metadata: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    check_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    first_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index("ix_kb_frames_batch", "batch_id"),
+        Index("ix_kb_frames_status", "status"),
     )
 
 
