@@ -1,10 +1,9 @@
 """
 Agent tool functions for knowledge extraction.
 
-These plain functions are registered as google-adk FunctionTools.
-They give the LLM agent the ability to *read* batch data (processed
-markdown, dataframes, images) and *write* structured knowledge
-(entities + relationships) into the knowledge graph.
+Reading tools let the LLM agent explore project data (processed markdown,
+dataframes, images). Writing tools let it save a structured knowledge
+frame for the project.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import base64
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -21,12 +21,12 @@ from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Asset,
-    BatchAsset,
-    IngestionBatch,
-    KnowledgeEdge,
-    KnowledgeNode,
+    FrameStatus,
+    KnowledgeFrame,
     ProcessedAsset,
     ProcessingType,
+    ProjectAsset,
+    ResearchProject,
 )
 from mkb.storage.s3 import download_bytes, object_exists
 
@@ -38,7 +38,6 @@ def _select_processed_asset(
     asset_id: uuid.UUID,
     processing_type: ProcessingType,
 ) -> ProcessedAsset | None:
-    """Choose the newest processed row with an existing S3 object when possible."""
     rows = (
         session.query(ProcessedAsset)
         .filter_by(asset_id=asset_id, processing_type=processing_type)
@@ -47,17 +46,13 @@ def _select_processed_asset(
     )
     if not rows:
         return None
-
     for row in rows:
         if object_exists(row.s3_bucket, row.s3_key):
             return row
-
-    # Fallback to newest row even if S3 object is missing; caller can use local fallback.
     return rows[0]
 
 
 def _read_processed_bytes(pa: ProcessedAsset) -> bytes:
-    """Read processed bytes from S3, falling back to local mirror if needed."""
     try:
         return download_bytes(pa.s3_bucket, pa.s3_key)
     except Exception:
@@ -72,81 +67,55 @@ def _read_processed_bytes(pa: ProcessedAsset) -> bytes:
 
 
 # =====================================================================
-# Reading tools — let the agent explore the batch data
+# Reading tools
 # =====================================================================
 
 
-def list_batch_files(batch_id: str) -> list[dict]:
-    """List every file in an ingestion batch with its processing status.
-
-    Returns a list of dicts with keys: asset_id, filename, mime_type,
-    size_bytes, processing_type, has_processed_output.
-    """
-    bid = uuid.UUID(batch_id)
+def list_project_files(project_id: str) -> list[dict]:
+    """List every file in a research project with its processing status."""
+    pid = uuid.UUID(project_id)
     with SyncSessionLocal() as session:
-        links = session.query(BatchAsset).filter_by(batch_id=bid).all()
+        links = session.query(ProjectAsset).filter_by(project_id=pid).all()
         asset_ids = [l.asset_id for l in links]
         if not asset_ids:
             return []
-
         assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all()
         result = []
         for a in assets:
-            pa = (
-                session.query(ProcessedAsset)
-                .filter_by(asset_id=a.asset_id)
-                .first()
-            )
-            result.append(
-                {
-                    "asset_id": str(a.asset_id),
-                    "filename": a.filename,
-                    "mime_type": a.mime_type,
-                    "size_bytes": a.size_bytes,
-                    "processing_type": pa.processing_type.value if pa else None,
-                    "has_processed_output": pa is not None,
-                }
-            )
+            pa = session.query(ProcessedAsset).filter_by(asset_id=a.asset_id).first()
+            result.append({
+                "asset_id": str(a.asset_id),
+                "filename": a.filename,
+                "mime_type": a.mime_type,
+                "size_bytes": a.size_bytes,
+                "processing_type": pa.processing_type.value if pa else None,
+                "has_processed_output": pa is not None,
+            })
         return result
 
 
 def read_processed_markdown(asset_id: str) -> str:
-    """Read the full processed Markdown content for a given asset.
-
-    Works for PDFs, DOCX, and plain-text assets that were converted to
-    Markdown during the processing pipeline.  Returns the Markdown string
-    or an error message if not found.
-    """
+    """Read the full processed Markdown content for a given asset."""
     aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
         pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN)
         if not pa:
             return f"No processed markdown found for asset {asset_id}."
-
         try:
             data = _read_processed_bytes(pa)
         except Exception as exc:
-            return f"Processed markdown exists but cannot be read for asset {asset_id}: {exc}"
+            return f"Cannot read markdown for asset {asset_id}: {exc}"
         return data.decode("utf-8", errors="replace")
 
 
 def read_markdown_section(asset_id: str, section_heading: str) -> str:
-    """Read a specific section from a processed Markdown file.
-
-    Searches for a heading matching `section_heading` (case-insensitive)
-    and returns everything from that heading to the next heading of same
-    or higher level.  Useful for large papers where you only need one
-    section (e.g. "Methods", "Results").
-    """
+    """Read a specific section from a processed Markdown file."""
     full_md = read_processed_markdown(asset_id)
     if full_md.startswith("No processed markdown"):
         return full_md
 
     lines = full_md.splitlines(keepends=True)
-    pattern = re.compile(
-        r"^(#{1,6})\s+" + re.escape(section_heading),
-        re.IGNORECASE,
-    )
+    pattern = re.compile(r"^(#{1,6})\s+" + re.escape(section_heading), re.IGNORECASE)
 
     start_idx = None
     start_level = 0
@@ -158,7 +127,6 @@ def read_markdown_section(asset_id: str, section_heading: str) -> str:
             break
 
     if start_idx is None:
-        # Try fuzzy match: heading contains the query as substring
         for i, line in enumerate(lines):
             m2 = re.match(r"^(#{1,6})\s+(.+)", line)
             if m2 and section_heading.lower() in m2.group(2).lower():
@@ -168,11 +136,10 @@ def read_markdown_section(asset_id: str, section_heading: str) -> str:
 
     if start_idx is None:
         return (
-            f"Section '{section_heading}' not found.  "
+            f"Section '{section_heading}' not found. "
             f"Available headings: {_list_headings(lines)}"
         )
 
-    # Collect lines until next heading of same or higher level
     end_idx = len(lines)
     for j in range(start_idx + 1, len(lines)):
         m3 = re.match(r"^(#{1,6})\s+", lines[j])
@@ -184,10 +151,7 @@ def read_markdown_section(asset_id: str, section_heading: str) -> str:
 
 
 def list_markdown_headings(asset_id: str) -> list[str]:
-    """List all headings in a processed Markdown file.
-
-    Useful for deciding which section to read in detail.
-    """
+    """List all headings in a processed Markdown file."""
     full_md = read_processed_markdown(asset_id)
     if full_md.startswith("No processed markdown"):
         return [full_md]
@@ -204,126 +168,87 @@ def _list_headings(lines: list[str]) -> list[str]:
 
 
 def read_raw_text(asset_id: str) -> str:
-    """Read the raw text content of an asset directly from object storage.
-
-    Only useful for text-based assets (text/plain, text/markdown, etc.).
-    Binary files will return a warning instead of garbage.
-    """
+    """Read the raw text content of an asset directly from object storage."""
     aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
         asset = session.query(Asset).filter_by(asset_id=aid).first()
         if not asset:
             return f"Asset {asset_id} not found."
-
         if not (
             asset.mime_type.startswith("text/")
             or asset.mime_type in ("application/json", "application/xml")
         ):
-            return (
-                f"Asset is binary ({asset.mime_type}). Use a processed "
-                "output instead, or use get_image_base64 for images."
-            )
-
+            return f"Asset is binary ({asset.mime_type}). Use a processed output instead."
         data = download_bytes(asset.s3_bucket, asset.s3_key)
         return data.decode("utf-8", errors="replace")
 
 
 def read_dataframe_summary(asset_id: str) -> str:
-    """Read a summary of a processed dataframe (Parquet) for an asset.
-
-    Returns column names, dtypes, row count, and basic statistics.
-    """
+    """Read a summary of a processed dataframe (Parquet) for an asset."""
     aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
         pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
         if not pa:
             return f"No processed dataframe found for asset {asset_id}."
-
         try:
             data = _read_processed_bytes(pa)
         except Exception as exc:
-            return f"Processed dataframe exists but cannot be read for asset {asset_id}: {exc}"
+            return f"Cannot read dataframe for asset {asset_id}: {exc}"
 
     import io
-
     df = pd.read_parquet(io.BytesIO(data))
-
     parts = [
         f"Shape: {df.shape[0]} rows × {df.shape[1]} columns",
         f"\nColumns and dtypes:\n{df.dtypes.to_string()}",
         f"\nFirst 5 rows:\n{df.head().to_string()}",
     ]
-    # Include describe only for small-ish frames
     if df.shape[1] <= 30:
         parts.append(f"\nStatistics:\n{df.describe(include='all').to_string()}")
-
     return "\n".join(parts)
 
 
-def read_dataframe_rows(
-    asset_id: str, start_row: int = 0, end_row: int = 20
-) -> str:
-    """Read specific rows from a processed dataframe.
-
-    Returns the requested rows as a formatted string table.
-    Capped at 100 rows per call to avoid overwhelming context.
-    """
+def read_dataframe_rows(asset_id: str, start_row: int = 0, end_row: int = 20) -> str:
+    """Read specific rows from a processed dataframe (capped at 100)."""
     end_row = min(end_row, start_row + 100)
     aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
         pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
         if not pa:
             return f"No processed dataframe found for asset {asset_id}."
-
         try:
             data = _read_processed_bytes(pa)
         except Exception as exc:
-            return f"Processed dataframe exists but cannot be read for asset {asset_id}: {exc}"
+            return f"Cannot read dataframe for asset {asset_id}: {exc}"
 
     import io
-
     df = pd.read_parquet(io.BytesIO(data))
     subset = df.iloc[start_row:end_row]
-    return (
-        f"Rows {start_row}–{min(end_row, len(df))} of {len(df)}:\n"
-        f"{subset.to_string()}"
-    )
+    return f"Rows {start_row}–{min(end_row, len(df))} of {len(df)}:\n{subset.to_string()}"
 
 
 def read_image_metadata(asset_id: str) -> str:
-    """Read the processed image metadata JSON for an image asset.
-
-    Returns dimensions, format, mode, file size, and any OCR text if
-    available.
-    """
+    """Read the processed image metadata JSON for an image asset."""
     aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
         pa = _select_processed_asset(session, aid, ProcessingType.IMAGE)
         if not pa:
             return f"No processed image metadata found for asset {asset_id}."
-
         try:
             data = _read_processed_bytes(pa)
         except Exception as exc:
-            return f"Processed image metadata exists but cannot be read for asset {asset_id}: {exc}"
+            return f"Cannot read image metadata for asset {asset_id}: {exc}"
         return data.decode("utf-8", errors="replace")
 
 
 def get_image_base64(asset_id: str) -> dict:
-    """Get the raw image bytes as a base64-encoded string.
-
-    Returns a dict with keys: mime_type, base64_data, filename.
-    Useful if a multimodal model needs to visually inspect a figure.
-    """
+    """Get the raw image bytes as a base64-encoded string."""
     aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
         asset = session.query(Asset).filter_by(asset_id=aid).first()
         if not asset:
             return {"error": f"Asset {asset_id} not found."}
-
         if not asset.mime_type.startswith("image/"):
             return {"error": f"Asset is not an image ({asset.mime_type})."}
-
         data = download_bytes(asset.s3_bucket, asset.s3_key)
         return {
             "mime_type": asset.mime_type,
@@ -332,17 +257,13 @@ def get_image_base64(asset_id: str) -> dict:
         }
 
 
-def search_in_batch(batch_id: str, query: str) -> list[dict]:
-    """Search for a text pattern across all processed Markdown files in a batch.
-
-    Returns a list of matches with asset_id, filename, and matching
-    context snippets (up to 5 per file).
-    """
-    bid = uuid.UUID(batch_id)
+def search_in_project(project_id: str, query: str) -> list[dict]:
+    """Search for a text pattern across all processed Markdown files in a project."""
+    pid = uuid.UUID(project_id)
     query_lower = query.lower()
 
     with SyncSessionLocal() as session:
-        links = session.query(BatchAsset).filter_by(batch_id=bid).all()
+        links = session.query(ProjectAsset).filter_by(project_id=pid).all()
         asset_ids = [l.asset_id for l in links]
         if not asset_ids:
             return []
@@ -376,185 +297,108 @@ def search_in_batch(batch_id: str, query: str) -> list[dict]:
                         break
 
             if snippets:
-                results.append(
-                    {
-                        "asset_id": str(pa.asset_id),
-                        "filename": asset.filename if asset else "unknown",
-                        "matches": snippets,
-                    }
-                )
-
+                results.append({
+                    "asset_id": str(pa.asset_id),
+                    "filename": asset.filename if asset else "unknown",
+                    "matches": snippets,
+                })
         return results
 
 
 # =====================================================================
-# Knowledge-writing tools — let the agent build the knowledge graph
+# Knowledge frame tools
 # =====================================================================
 
 
-def create_entity(
-    entity_type: str,
-    label: str,
-    properties: dict | None = None,
-    source_asset_id: str | None = None,
-    source_batch_id: str | None = None,
+def save_knowledge_frame(
+    project_id: str,
+    content: dict,
+    summary: str = "",
 ) -> dict:
-    """Create a knowledge-graph entity (node).
+    """Save or update a knowledge frame for a research project.
 
-    entity_type examples: Material, Property, Method, Parameter, Author,
-    Institution, Measurement, Device, ChemicalFormula, CrystalStructure.
+    content should be a dict with keys like: paper, concepts, materials,
+    experimental_data, methods, synthesis_routes, statements, relationships.
+    Each item in the lists should have an evidence_level (1-4):
+      1 = Causal experimental evidence
+      2 = Direct experimental observation
+      3 = Correlative evidence
+      4 = Predicted / inferred
 
-    Properties is a free-form dict for domain-specific attributes
-    (e.g. {"value": "4e-12", "unit": "A", "temperature": "300K"}).
-
-    Returns the created node_id and whether a duplicate was found.
+    This also marks the frame as COMPLETED.
     """
-    with SyncSessionLocal() as session:
-        # De-duplicate: same type + label + batch → reuse node
-        q = session.query(KnowledgeNode).filter_by(
-            entity_type=entity_type, label=label
-        )
-        if source_batch_id:
-            q = q.filter_by(source_batch_id=uuid.UUID(source_batch_id))
+    pid = uuid.UUID(project_id)
+    now = datetime.now(timezone.utc)
 
-        existing = q.first()
+    with SyncSessionLocal() as session:
+        project = session.query(ResearchProject).filter_by(project_id=pid).first()
+        if not project:
+            return {"error": f"Project {project_id} not found."}
+
+        links = session.query(ProjectAsset).filter_by(project_id=pid).all()
+        asset_ids = [str(l.asset_id) for l in links]
+        source_meta = {
+            "project_label": project.label,
+            "source_path": project.source_path,
+            "asset_ids": asset_ids,
+            "project_id": project_id,
+        }
+
+        existing = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if existing:
-            # Merge properties
-            if properties:
-                merged = dict(existing.properties or {})
-                merged.update(properties)
-                existing.properties = merged
-                session.commit()
-            return {
-                "node_id": str(existing.node_id),
-                "status": "existing_updated" if properties else "already_exists",
-            }
+            existing.content = content
+            existing.extraction_summary = summary
+            existing.status = FrameStatus.COMPLETED
+            existing.extracted_at = now
+            existing.source_metadata = source_meta
+            existing.times_checked = existing.times_checked + 1
+            session.commit()
+            return {"frame_id": str(existing.frame_id), "status": "updated"}
 
-        node = KnowledgeNode(
-            node_id=uuid.uuid4(),
-            entity_type=entity_type,
-            label=label,
-            properties=properties or {},
-            source_asset_id=uuid.UUID(source_asset_id) if source_asset_id else None,
-            source_batch_id=uuid.UUID(source_batch_id) if source_batch_id else None,
+        frame = KnowledgeFrame(
+            frame_id=uuid.uuid4(),
+            project_id=pid,
+            status=FrameStatus.COMPLETED,
+            content=content,
+            extraction_summary=summary,
+            times_checked=1,
+            extracted_at=now,
+            source_metadata=source_meta,
         )
-        session.add(node)
+        session.add(frame)
         session.commit()
-        return {"node_id": str(node.node_id), "status": "created"}
+        return {"frame_id": str(frame.frame_id), "status": "created"}
 
 
-def create_relationship(
-    source_node_id: str,
-    target_node_id: str,
-    relation_type: str,
-    properties: dict | None = None,
-) -> dict:
-    """Create a directed relationship (edge) between two knowledge nodes.
+def get_existing_frame(project_id: str) -> dict:
+    """Get the existing knowledge frame for a project, if any.
 
-    relation_type examples: HAS_PROPERTY, MEASURED, SIMULATED_BY,
-    CONTAINS_ELEMENT, HAS_STRUCTURE, STUDIED_IN, AUTHORED_BY,
-    AFFILIATED_WITH, CITES, EXHIBITS, FABRICATED_WITH, CHARACTERIZED_BY.
-
-    Returns the edge_id.
+    Returns the frame content and metadata, or an indication that none exists.
+    Useful for re-extraction to see what was previously extracted.
     """
-    sid = uuid.UUID(source_node_id)
-    tid = uuid.UUID(target_node_id)
-
+    pid = uuid.UUID(project_id)
     with SyncSessionLocal() as session:
-        # De-duplicate: same source + target + relation → reuse edge
-        existing = (
-            session.query(KnowledgeEdge)
-            .filter_by(
-                source_node_id=sid,
-                target_node_id=tid,
-                relation_type=relation_type,
-            )
-            .first()
-        )
-        if existing:
-            if properties:
-                merged = dict(existing.properties or {})
-                merged.update(properties)
-                existing.properties = merged
-                session.commit()
-            return {
-                "edge_id": str(existing.edge_id),
-                "status": "existing_updated" if properties else "already_exists",
-            }
-
-        edge = KnowledgeEdge(
-            edge_id=uuid.uuid4(),
-            source_node_id=sid,
-            target_node_id=tid,
-            relation_type=relation_type,
-            properties=properties or {},
-        )
-        session.add(edge)
-        session.commit()
-        return {"edge_id": str(edge.edge_id), "status": "created"}
-
-
-def find_existing_entities(
-    entity_type: str | None = None,
-    label_contains: str | None = None,
-    batch_id: str | None = None,
-) -> list[dict]:
-    """Search for existing knowledge-graph entities.
-
-    Useful for checking whether an entity already exists before creating
-    duplicates, or for finding node_ids to link relationships to.
-    All filter parameters are optional and combine with AND logic.
-    """
-    with SyncSessionLocal() as session:
-        q = session.query(KnowledgeNode)
-        if entity_type:
-            q = q.filter_by(entity_type=entity_type)
-        if label_contains:
-            q = q.filter(KnowledgeNode.label.ilike(f"%{label_contains}%"))
-        if batch_id:
-            q = q.filter_by(source_batch_id=uuid.UUID(batch_id))
-
-        nodes = q.limit(50).all()
-        return [
-            {
-                "node_id": str(n.node_id),
-                "entity_type": n.entity_type,
-                "label": n.label,
-                "properties": n.properties,
-            }
-            for n in nodes
-        ]
-
-
-def mark_batch_extracted(batch_id: str, summary: str = "") -> str:
-    """Mark a batch as fully extracted.
-
-    Call this when you have finished extracting all knowledge from
-    the batch's files.  Optionally provide a summary of what was
-    extracted.
-    """
-    bid = uuid.UUID(batch_id)
-    with SyncSessionLocal() as session:
-        batch = session.query(IngestionBatch).filter_by(batch_id=bid).first()
-        if not batch:
-            return f"Batch {batch_id} not found."
-
-        from mkb.db.models import ExtractionStatus
-
-        batch.extraction_status = ExtractionStatus.COMPLETED
-        meta = dict(batch.extraction_metadata or {})
-        meta["summary"] = summary
-        batch.extraction_metadata = meta
-        session.commit()
-        return f"Batch {batch_id} marked as COMPLETED."
+        frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
+        if not frame:
+            return {"exists": False}
+        return {
+            "exists": True,
+            "frame_id": str(frame.frame_id),
+            "status": frame.status.value,
+            "content": frame.content,
+            "extraction_summary": frame.extraction_summary,
+            "times_checked": frame.times_checked,
+            "extracted_at": frame.extracted_at.isoformat() if frame.extracted_at else None,
+        }
 
 
 # =====================================================================
-# Convenience: collect all tools into a list for agent registration
+# All tools for agent registration
 # =====================================================================
 
 ALL_TOOLS = [
-    list_batch_files,
+    # Reading
+    list_project_files,
     read_processed_markdown,
     read_markdown_section,
     list_markdown_headings,
@@ -563,9 +407,8 @@ ALL_TOOLS = [
     read_dataframe_rows,
     read_image_metadata,
     get_image_base64,
-    search_in_batch,
-    create_entity,
-    create_relationship,
-    find_existing_entities,
-    mark_batch_extracted,
+    search_in_project,
+    # Writing
+    save_knowledge_frame,
+    get_existing_frame,
 ]

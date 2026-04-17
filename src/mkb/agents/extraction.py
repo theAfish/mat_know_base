@@ -1,10 +1,8 @@
 """
 Knowledge-extraction agent built on google-adk.
 
-Provides:
-- EXTRACTION_PROMPT: the system instruction that guides the LLM
-- build_extraction_agent(): factory that wires tools + prompt into an Agent
-- run_extraction(): high-level function that runs extraction on one batch
+Produces a structured "knowledge frame" for each research project
+instead of individual graph nodes/edges.
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ from google.genai import types as genai_types
 from mkb.agents.tools import ALL_TOOLS
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import ExtractionStatus, IngestionBatch
+from mkb.db.models import FrameStatus, KnowledgeFrame
 
 logger = logging.getLogger(__name__)
 
@@ -33,294 +31,116 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 EXTRACTION_PROMPT = """\
-You are a scientific knowledge extraction agent. Your job is to read the files in one research-paper batch and extract structured knowledge into a graph database.
-
-Your goal is to capture **scientific knowledge and relationships** in a way that preserves **context, provenance, and experimental details**.
-
-The resulting graph should represent **what the paper claims or reports**, not general facts about the world.
+You are a scientific knowledge extraction agent. Your job is to read the files in one research project and produce a single structured **knowledge frame** — a comprehensive summary of all scientific knowledge in the project.
 
 ---
 
-# Core Principle
+# Output Format
 
-Scientific papers usually report **observations, measurements, simulations, or claims** about materials, devices, or phenomena.
+You must produce ONE call to `save_knowledge_frame` with a `content` dict containing these keys:
 
-Therefore many pieces of knowledge should be modeled as a **reported result** rather than a universal truth.
+```json
+{
+  "paper": {
+    "title": "...",
+    "authors": ["..."],
+    "journal": "...",
+    "year": null,
+    "doi": "..."
+  },
+  "concepts": [
+    {"name": "...", "description": "...", "evidence_level": 1}
+  ],
+  "materials": [
+    {"name": "...", "formula": "...", "properties": {"key": "value"}, "evidence_level": 2}
+  ],
+  "experimental_data": [
+    {
+      "property": "...",
+      "value": "...",
+      "unit": "...",
+      "conditions": {"temperature": "300K", "pressure": "1atm"},
+      "method": "...",
+      "evidence_level": 1
+    }
+  ],
+  "methods": [
+    {"name": "...", "type": "experimental|computational|analytical", "description": "...", "parameters": {}}
+  ],
+  "synthesis_routes": [
+    {"inputs": ["A", "B"], "outputs": ["C"], "conditions": {"temperature": "800°C"}, "method": "...", "evidence_level": 2}
+  ],
+  "statements": [
+    {"claim": "...", "evidence_level": 3, "context": "..."}
+  ],
+  "relationships": [
+    {"subject": "...", "predicate": "...", "object": "...", "evidence_level": 2}
+  ]
+}
+```
 
-Example pattern:
+---
 
-Paper → reports → Observation  
-Observation → about → Material / Device / Phenomenon  
-Observation → property → PropertyType  
-Observation → value → PropertyValue  
-Observation → measured_by → Method  
+# Evidence Levels
 
-This structure preserves **source attribution and experimental context**.
+Every item in concepts, materials, experimental_data, synthesis_routes, statements, and relationships MUST have an `evidence_level` field:
 
-However, you are not required to strictly follow this structure if the information is better represented differently.
+- **Level 1**: Causal experimental evidence — controlled experiments demonstrating cause-effect
+- **Level 2**: Direct experimental observation — measurements, characterizations, direct observations
+- **Level 3**: Correlative evidence — statistical associations, trends without mechanistic proof
+- **Level 4**: Predicted / inferred — theoretical predictions, computational estimates, extrapolations
 
 ---
 
 # Workflow
 
-1. **Inventory** — Call `list_batch_files` to see what files are in the batch. Note which are PDFs/papers (MARKDOWN), supplementary data (DATAFRAME / text), and images.
+1. **Inventory** — Call `list_project_files` to see what files are in the project.
 
-2. **Read the paper in multiple ways** 
-	— Use `list_markdown_headings` first to get an overview, then read section by section with `read_markdown_section`. For short papers you may use `read_processed_markdown` to get the whole text at once.
-	— If there are additional markdown files (supplementary info), read them the same way. For tabular data use `read_dataframe_summary` and `read_dataframe_rows`. For image metadata use `read_image_metadata`.
-	— Use `search_in_batch` to find specific terms, chemical formulas, or property values across all documents.
+2. **Read the paper systematically**
+   - Use `list_markdown_headings` first to get an overview
+   - Read section by section with `read_markdown_section` (or full text for short papers)
+   - For supplementary data use `read_dataframe_summary` and `read_dataframe_rows`
+   - For images use `read_image_metadata`
+   - Use `search_in_project` to find specific terms across all documents
 
-5. **Extract entities** — For each significant scientific concept found, call `create_entity`.
+3. **Check for existing frame** — Call `get_existing_frame` to see if this project was previously extracted. If so, use that as a starting point and improve upon it.
 
-6. **Extract relationships** — For each meaningful connection between entities, call `create_relationship`.
+4. **Build the knowledge frame** — As you read, mentally construct the complete frame. Include:
+   - Paper metadata (title, authors, journal, year, doi)
+   - Key concepts and definitions introduced or discussed
+   - All materials studied (with chemical formulas where available)
+   - Experimental data points with values, units, conditions, and methods
+   - Methods and techniques used
+   - Synthesis routes (inputs → outputs with conditions)
+   - Important scientific statements and claims
+   - Relationships between concepts (subject-predicate-object triples)
 
-7. **Finish** — When done, call `mark_batch_extracted` with a short summary of what was extracted.
-
----
-
-# Preferred Entity Types
-
-Use these common types whenever appropriate. However, if you encounter a concept that does not fit these categories, you may create a **new entity type** that better represents the concept.
-
-## Publication
-
-Paper — a research publication  
-Properties: title, authors (list), journal, year, doi
-
-Author — an individual researcher  
-Properties: name, orcid (if available)
-
-Institution — an affiliation  
-Properties: name, country
+5. **Save the frame** — Call `save_knowledge_frame` with the complete content dict and a brief summary.
 
 ---
 
-## Scientific Objects
+# Guidelines
 
-Material — compound, alloy, element, or phase studied  
-Properties: chemical_formula, common_name, phase, structure
-
-Device — fabricated device or experimental structure  
-Properties: name, type, structure
-
-Application — technology or application domain  
-Properties: name, domain
-
-Mechanism — physical or chemical mechanism  
-Properties: name, description
-
-Theory — theoretical model or framework
-
-Phenomenon — observable physical effect
+- Extract ONLY information explicitly present in the source. Do NOT hallucinate.
+- Always include units for numerical values.
+- Preserve experimental conditions (temperature, pressure, atmosphere, etc.).
+- For tables of data, extract key representative values rather than every single row.
+- Capture both positive and negative results.
+- Note uncertainty values when reported.
+- Be thorough — the frame should contain enough detail to reconstruct the paper's key findings without re-reading it.
+- Prefer specific scientific terms over vague descriptions.
 
 ---
 
-## Measurement and Results
-
-Observation — a reported experimental or computational result  
-Properties may include:
-value, unit, uncertainty, temperature, pressure, thickness, conditions (dict), notes
-
-PropertyType — type of property being measured  
-Examples: mobility gap, trap density, threshold voltage
-
-Parameter — experimental or simulation parameter  
-Properties: name, value, unit
-
----
-
-## Methods
-
-Method — experimental or computational technique  
-Properties: name, type (experimental / computational / analytical)
-
-Software — simulation software or analysis tool
-
----
-
-## Structure / Chemistry
-
-ChemicalElement — periodic table element  
-Properties: symbol, atomic_number
-
-CrystalStructure — crystal structure type  
-Properties: space_group, lattice_type
-
-Defect — structural defect type
-
-Interface — material interface
-
-...
-
----
-
-# Relationship Types
-
-Use these relationship types when applicable.
-
-AUTHORED_BY — Paper → Author  
-AFFILIATED_WITH — Author → Institution  
-STUDIES — Paper → Material  
-REPORTS — Paper → Observation  
-
-ABOUT — Observation → Material / Device / Phenomenon  
-HAS_PROPERTY — Observation → PropertyType  
-HAS_VALUE — Observation → numerical value entity or attribute  
-MEASURED_BY — Observation → Method  
-HAS_PARAMETER — Observation → Parameter  
-
-CHARACTERIZES — Method → Material  
-FABRICATED_WITH — Device → Method  
-
-USES_MATERIAL — Device → Material  
-APPLIED_IN — Material or Device → Application  
-
-CONTAINS_ELEMENT — Material → ChemicalElement  
-HAS_STRUCTURE — Material → CrystalStructure  
-
-SIMULATED_BY — Observation → Method (for computational results)
-
-CITES — Paper → Paper
-
-If a relationship does not fit these types but is scientifically meaningful, you may introduce a **new relationship type**.
-
----
-
-# Synthesis and Fabrication Knowledge
-
-In materials science, **synthesis and fabrication processes are critical knowledge**. Materials are often produced from other materials through chemical reactions, processing steps, or growth methods. When a paper describes how a material is synthesized or fabricated, represent the process explicitly.
-
-Preferred structure:
-
-ReactantMaterial → INPUT_TO → SynthesisProcess  
-SynthesisProcess → PRODUCES → ProductMaterial  
-
-The synthesis process may also connect to:
-
-SynthesisProcess → USES_METHOD → Method  
-SynthesisProcess → HAS_PARAMETER → Parameter  
-SynthesisProcess → REPORTED_IN → Paper  
-
-Examples:
-
-A + B → C
-
-should be represented as:
-
-Material A → INPUT_TO → SynthesisProcess  
-Material B → INPUT_TO → SynthesisProcess  
-SynthesisProcess → PRODUCES → Material C  
-
-If multiple synthesis routes exist for the same material, create separate SynthesisProcess entities.
-
-Example:
-
-Route 1:
-A + B → C
-
-Route 2:
-D + E + F → C
-
-Both processes should be represented separately.
-
-Attach relevant synthesis conditions whenever available, such as:
-
-• temperature
-• pressure
-• time
-• solvent
-• catalyst
-• atmosphere
-• substrate
-• cooling rate
-
-These may be represented using Parameter entities.
-
-Do not assume reaction stoichiometry unless explicitly stated. Extract only what is reported in the paper.
-
----
-
-# Entity Creation Guidelines
-
-When extracting knowledge:
-
-• Prefer **specific scientific entities** rather than generic nodes.  
-• Capture **quantitative values with units** whenever possible.  
-• Preserve **experimental context** (temperature, pressure, etc.).  
-• Keep entities **atomic and reusable** where reasonable.
-
-For experimental results reported in a paper:
-
-Create an **Observation entity** representing the reported measurement or simulation result.
-
-Example structure:
-
-Paper → REPORTS → Observation  
-Observation → ABOUT → Material  
-Observation → HAS_PROPERTY → PropertyType  
-Observation → MEASURED_BY → Method  
-
-Attach the numerical value and conditions to the Observation.
-
-If a table reports multiple measurements under different conditions, you may create multiple Observation entities.
-
----
-
-# Avoiding Duplicates
-
-Before creating entities, use `find_existing_entities`.
-
-Reuse existing nodes for:
-
-• chemical elements  
-• common materials  
-• methods  
-• institutions  
-
-Create new entities only when necessary.
-
----
-
-# Extensibility Rule
-
-Scientific knowledge evolves. Some papers introduce **new concepts, models, materials, or phenomena** that do not fit existing entity types.
-
-In those cases:
-
-• Create a **new entity type** that best represents the concept  
-• Give it a clear descriptive name  
-• Provide relevant properties
-
-Do not force concepts into incorrect categories.
-
-Downstream review agents will later normalize and merge similar types.
-
----
-
-# Data Quality Rules
-
-• Do NOT hallucinate data  
-• Extract only information explicitly present in the source  
-• Always include units for numerical values  
-• Preserve provenance with `source_batch_id` and `source_asset_id`  
-
-If uncertain about interpretation, prefer **faithful representation of the text** rather than over-generalization.
-
----
-
-# Goal
-
-Your task is not just to extract entities but to reconstruct the **scientific knowledge structure of the paper**, including:
-
-• materials studied  
-• methods used  
-• results obtained  
-• mechanisms proposed  
-• devices fabricated  
-• applications discussed  
-
-Represent these elements as a connected knowledge graph.
-
+# What Makes a Good Frame
+
+A good knowledge frame:
+- Captures the paper's core contribution and findings
+- Includes quantitative data with proper units and conditions
+- Correctly assigns evidence levels
+- Covers materials, methods, results, and conclusions
+- Identifies synthesis routes when described
+- Notes relationships between materials, properties, and phenomena
 """
 
 APP_NAME = "mkb_extraction"
@@ -353,11 +173,11 @@ def build_extraction_agent(model: str | None = None) -> Agent:
 
 
 async def _run_extraction_async(
-    batch_id: uuid.UUID,
+    project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Core async extraction loop for one batch."""
+    """Core async extraction loop for one project."""
 
     agent = build_extraction_agent(model)
     session_service = InMemorySessionService()
@@ -368,7 +188,7 @@ async def _run_extraction_async(
     )
 
     user_id = "mkb_system"
-    session_id = f"extract_{batch_id}"
+    session_id = f"extract_{project_id}"
 
     session = await session_service.create_session(
         app_name=APP_NAME,
@@ -376,25 +196,37 @@ async def _run_extraction_async(
         session_id=session_id,
     )
 
-    # Mark batch as in-progress
+    # Mark frame as in-progress
     with SyncSessionLocal() as db:
-        batch = db.query(IngestionBatch).filter_by(batch_id=batch_id).first()
-        if not batch:
-            return {"status": "error", "message": f"Batch {batch_id} not found"}
-        batch.extraction_status = ExtractionStatus.IN_PROGRESS
-        db.commit()
-        batch_label = batch.label or str(batch_id)
+        from mkb.db.models import ResearchProject
+        project = db.query(ResearchProject).filter_by(project_id=project_id).first()
+        if not project:
+            return {"status": "error", "message": f"Project {project_id} not found"}
+        project_label = project.label or str(project_id)
 
-    # Initial message tells the agent which batch to work on
+        frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
+        if not frame:
+            import uuid as _uuid
+            frame = KnowledgeFrame(
+                frame_id=_uuid.uuid4(),
+                project_id=project_id,
+                status=FrameStatus.IN_PROGRESS,
+            )
+            db.add(frame)
+        else:
+            frame.status = FrameStatus.IN_PROGRESS
+        db.commit()
+
     initial_message = genai_types.Content(
         role="user",
         parts=[
             genai_types.Part(
                 text=(
-                    f"Extract knowledge from batch {batch_id} "
-                    f"(label: {batch_label}).  "
+                    f"Extract knowledge from project {project_id} "
+                    f"(label: {project_label}). "
                     f"Start by listing the files, then systematically "
-                    f"read and extract all scientific knowledge."
+                    f"read and extract all scientific knowledge into "
+                    f"a single knowledge frame."
                 )
             )
         ],
@@ -419,74 +251,52 @@ async def _run_extraction_async(
                             part.function_call.name,
                             list(part.function_call.args.keys()) if part.function_call.args else [],
                         )
-
             events_collected.append(event)
-
             if event.is_final_response() and event.content and event.content.parts:
                 final_text = "\n".join(
                     p.text for p in event.content.parts if p.text
                 )
 
     except Exception as exc:
-        logger.error("Extraction failed for batch %s: %s", batch_id, exc)
+        logger.error("Extraction failed for project %s: %s", project_id, exc)
         with SyncSessionLocal() as db:
-            batch = db.query(IngestionBatch).filter_by(batch_id=batch_id).first()
-            if batch:
-                batch.extraction_status = ExtractionStatus.FAILED
-                meta = dict(batch.extraction_metadata or {})
+            frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
+            if frame:
+                frame.status = FrameStatus.FAILED
+                meta = dict(frame.source_metadata or {})
                 meta["error"] = str(exc)
                 meta["failed_at"] = datetime.now(timezone.utc).isoformat()
-                batch.extraction_metadata = meta
+                frame.source_metadata = meta
                 db.commit()
         return {
             "status": "error",
-            "batch_id": str(batch_id),
+            "project_id": str(project_id),
             "message": str(exc),
         }
 
-    # Count entities and relationships created
+    # Check result
     with SyncSessionLocal() as db:
-        from mkb.db.models import KnowledgeEdge, KnowledgeNode
-
-        node_count = (
-            db.query(KnowledgeNode)
-            .filter_by(source_batch_id=batch_id)
-            .count()
-        )
-        edge_count = 0
-        node_ids = [
-            n.node_id
-            for n in db.query(KnowledgeNode.node_id)
-            .filter_by(source_batch_id=batch_id)
-            .all()
-        ]
-        if node_ids:
-            edge_count = (
-                db.query(KnowledgeEdge)
-                .filter(KnowledgeEdge.source_node_id.in_(node_ids))
-                .count()
-            )
+        frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
+        frame_status = frame.status.value if frame else "unknown"
+        content_keys = list((frame.content or {}).keys()) if frame else []
 
     return {
-        "status": "completed",
-        "batch_id": str(batch_id),
-        "entities_created": node_count,
-        "relationships_created": edge_count,
+        "status": "completed" if frame_status == "COMPLETED" else frame_status,
+        "project_id": str(project_id),
+        "frame_status": frame_status,
+        "content_sections": content_keys,
         "agent_summary": final_text,
         "total_events": len(events_collected),
     }
 
 
 def run_extraction(
-    batch_id: uuid.UUID,
+    project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Synchronous wrapper — run extraction on one batch.
-
-    Returns a summary dict with status, entity/edge counts, etc.
-    """
-    return asyncio.run(_run_extraction_async(batch_id, model, verbose))
+    """Synchronous wrapper — run extraction on one project."""
+    return asyncio.run(_run_extraction_async(project_id, model, verbose))
 
 
 def run_extraction_all(
@@ -494,41 +304,34 @@ def run_extraction_all(
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Run extraction on all batches that haven't been extracted yet.
-
-    Returns an aggregate summary.
-    """
+    """Run extraction on all projects that don't have a completed frame."""
     with SyncSessionLocal() as db:
-        q = db.query(IngestionBatch).filter(
-            IngestionBatch.extraction_status.in_([
-                ExtractionStatus.PENDING,
-                ExtractionStatus.FAILED,
-            ])
-        )
+        from mkb.db.models import ResearchProject
+        # Find projects without a completed frame
+        completed_project_ids = [
+            f.project_id for f in
+            db.query(KnowledgeFrame.project_id)
+            .filter_by(status=FrameStatus.COMPLETED)
+            .all()
+        ]
+        q = db.query(ResearchProject)
+        if completed_project_ids:
+            q = q.filter(~ResearchProject.project_id.in_(completed_project_ids))
         if limit:
             q = q.limit(limit)
-        batches = q.all()
-        batch_ids = [b.batch_id for b in batches]
+        projects = q.all()
+        project_ids = [p.project_id for p in projects]
 
     results = []
-    for bid in batch_ids:
-        logger.info("Extracting batch %s ...", bid)
-        result = run_extraction(bid, model=model, verbose=verbose)
+    for pid in project_ids:
+        logger.info("Extracting project %s ...", pid)
+        result = run_extraction(pid, model=model, verbose=verbose)
         results.append(result)
-        status = result.get("status", "unknown")
-        entities = result.get("entities_created", 0)
-        edges = result.get("relationships_created", 0)
-        logger.info(
-            "  → %s  (%d entities, %d relationships)", status, entities, edges
-        )
+        logger.info("  → %s", result.get("status", "unknown"))
 
     return {
-        "total_batches": len(results),
+        "total_projects": len(results),
         "completed": sum(1 for r in results if r["status"] == "completed"),
         "failed": sum(1 for r in results if r["status"] == "error"),
-        "total_entities": sum(r.get("entities_created", 0) for r in results),
-        "total_relationships": sum(
-            r.get("relationships_created", 0) for r in results
-        ),
         "results": results,
     }

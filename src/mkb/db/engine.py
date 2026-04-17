@@ -13,3 +13,9 @@ AsyncSessionLocal = sessionmaker(async_engine, class_=AsyncSession, expire_on_co
 # ── Sync (for Alembic migrations & quick scripts) ─────────────
 sync_engine = create_engine(settings.pg_dsn_sync, echo=False)
 SyncSessionLocal = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
+
+
+def init_db() -> None:
+    """Create all tables from ORM metadata (idempotent)."""
+    from mkb.db.models import Base
+    Base.metadata.create_all(sync_engine)

@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import Asset, BatchAsset, ProcessedAsset, ProcessingLog, ProcessingType
+from mkb.db.models import Asset, ProjectAsset, ProcessedAsset, ProcessingLog, ProcessingType
 from mkb.processors.dataframe_processor import CSVProcessor, ExcelProcessor, JSONProcessor
 from mkb.processors.image_processor import BasicImageProcessor
 from mkb.processors.pdf_processor import PDFProcessor
@@ -71,10 +71,10 @@ def _select_processor(asset: Asset, raw_data: bytes):
     return None
 
 
-def _get_batch_segment(session, asset_id: uuid.UUID) -> str:
-    """Resolve an asset's batch folder segment. Falls back to 'unbatched'."""
-    link = session.query(BatchAsset).filter_by(asset_id=asset_id).first()
-    return str(link.batch_id) if link else "unbatched"
+def _get_project_segment(session, asset_id: uuid.UUID) -> str:
+    """Resolve an asset's project folder segment. Falls back to 'unassigned'."""
+    link = session.query(ProjectAsset).filter_by(asset_id=asset_id).first()
+    return str(link.project_id) if link else "unassigned"
 
 
 def _default_primary_relpath(result) -> str:
@@ -148,14 +148,14 @@ def _repair_existing_processed_asset(
     asset: Asset,
     processed_asset: ProcessedAsset,
     result,
-    batch_segment: str,
+    project_segment: str,
     primary_relpath: str,
 ) -> None:
     """Recreate missing processed outputs for an existing identical conversion."""
-    local_dir = _persist_local_outputs(batch_segment, asset.asset_id, primary_relpath, result)
+    local_dir = _persist_local_outputs(project_segment, asset.asset_id, primary_relpath, result)
     s3_key = _upload_processed_bundle(
         processed_asset.s3_bucket,
-        batch_segment,
+        project_segment,
         asset.asset_id,
         primary_relpath,
         result,
@@ -164,7 +164,7 @@ def _repair_existing_processed_asset(
     updated_meta = dict(result.conversion_metadata or {})
     updated_meta.update(
         {
-            "batch_id": batch_segment,
+            "project_id": project_segment,
             "local_dir": local_dir,
             "primary_relpath": primary_relpath,
             "artifact_files": sorted((result.artifacts or {}).keys()),
@@ -293,7 +293,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
             ).first()
             
             if existing:
-                batch_segment = _get_batch_segment(session, asset_id)
+                project_segment = _get_project_segment(session, asset_id)
                 primary_relpath = _default_primary_relpath(result)
                 bundle_exists = _processed_bundle_exists(existing)
                 if bundle_exists:
@@ -311,7 +311,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
                         asset,
                         existing,
                         result,
-                        batch_segment,
+                        project_segment,
                         primary_relpath,
                     )
                 log_entry = ProcessingLog(
@@ -337,7 +337,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
                     },
                 )
                 session.commit()
-                
+
                 return {
                     "asset_id": asset_id,
                     "status": "SKIPPED" if bundle_exists else "SUCCESS",
@@ -345,18 +345,18 @@ def process_asset(asset_id: uuid.UUID) -> dict:
                     "processed_asset_id": existing.processed_asset_id,
                     "reason": "Identical conversion already exists" if bundle_exists else "Missing outputs were rebuilt",
                 }
-            
+
             # Upload processed data to S3 (separate bucket)
             from mkb.config import settings
-            
+
             processed_bucket = settings.s3_bucket_processed
-            batch_segment = _get_batch_segment(session, asset_id)
+            project_segment = _get_project_segment(session, asset_id)
             primary_relpath = _default_primary_relpath(result)
 
-            local_dir = _persist_local_outputs(batch_segment, asset_id, primary_relpath, result)
+            local_dir = _persist_local_outputs(project_segment, asset_id, primary_relpath, result)
             s3_key = _upload_processed_bundle(
                 processed_bucket,
-                batch_segment,
+                project_segment,
                 asset_id,
                 primary_relpath,
                 result,
@@ -369,7 +369,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
             result_meta = dict(result.conversion_metadata or {})
             result_meta.update(
                 {
-                    "batch_id": batch_segment,
+                    "project_id": project_segment,
                     "local_dir": local_dir,
                     "primary_relpath": primary_relpath,
                     "artifact_files": sorted((result.artifacts or {}).keys()),

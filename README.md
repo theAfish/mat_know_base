@@ -1,33 +1,57 @@
 # mat-know-base
 
-A self-hosted system for ingesting scientific papers and related data into a queryable knowledge base. Files are stored immutably using content-addressable storage (SHA256 deduplication), with metadata tracked in PostgreSQL + pgvector and raw binaries in MinIO (S3-compatible). A processing pipeline converts raw files into LLM-readable Markdown, queryable Parquet dataframes, and structured image metadata.
+A self-hosted system for ingesting scientific papers and related data into a structured knowledge base. Files are stored immutably using content-addressable storage (SHA256 deduplication), with metadata tracked in PostgreSQL + pgvector and raw binaries in MinIO (S3-compatible). A processing pipeline converts raw files into LLM-readable formats. An LLM agent then extracts structured **knowledge frames** — one per research package — containing concepts, experimental data, materials, methods, synthesis routes, and evidence-level-tagged statements.
 
 ## Architecture
 
 ```
-data/inbox/              You drop files here
-    │
-    ▼
-┌──────────┐  SHA256   ┌──────────────────────────────────┐
-│ Ingestion├──────────►│  MinIO (S3)                      │
-│  Worker  │           │  raw/       ← immutable originals │
-└────┬─────┘           │  processed/ ← converted outputs  │
-     │ metadata        └──────────────────────────────────┘
-     ▼                          ▲
-┌──────────────────┐            │  upload converted files
-│  PostgreSQL      │            │
-│  + pgvector      │   ┌────────┴──────────┐
-│                  │   │ Processing Pipeline│
-│  assets          │◄──┤  PDF → .md        │
-│  processed_assets│   │  DOCX/TXT → .md   │
-│  processing_logs │   │  CSV/XLSX → .parq │
-│                  │   │  Image → .json    │
-│  ingestion_batches│  └───────────────────┘
-│  batch_assets    │
-│  knowledge_nodes │  ← extracted entities (Phase 4)
-│  knowledge_edges │  ← relationships (Phase 4)
-└──────────────────┘
+data/papers/smith2024/     Research package (paper + supplementary)
+        │
+        ▼
+┌──────────────┐  SHA256   ┌─────────────────────────────────┐
+│  Ingestion   ├──────────►│  MinIO (S3)                     │
+│  Worker      │           │  raw/       ← original files    │
+└──────┬───────┘           │  processed/ ← converted outputs │
+       │ metadata          └─────────────────────────────────┘
+       ▼                           ▲
+┌─────────────────┐                │ upload converted files
+│  PostgreSQL     │       ┌────────┴──────────┐
+│  + pgvector     │       │ Processing Pipeline│
+│                 │  ◄────┤  PDF  → .md        │
+│  assets         │       │  DOCX → .md        │
+│  processed_assets│      │  CSV  → .parquet   │
+│  ingestion_batches│     │  IMG  → .json      │
+│  batch_assets   │       └───────────────────┘
+│                 │
+│  knowledge_frames│  ◄── LLM extraction agent
+└─────────────────┘       (one frame per batch)
 ```
+
+### Data Flow
+
+1. **Ingest** — Raw files are SHA256-deduplicated, uploaded to MinIO, registered in PostgreSQL as a batch
+2. **Process** — Raw files are converted to LLM-readable formats (Markdown, Parquet, JSON metadata)
+3. **Extract** — An LLM agent reads processed data and produces one **knowledge frame** per batch
+4. **Query** *(future)* — Downstream tools extract formatted databases and knowledge graphs from frames
+
+### Knowledge Frame
+
+Each batch (research package) produces one knowledge frame containing:
+
+- **Paper metadata** — title, authors, journal, year, DOI
+- **Concepts** — key scientific concepts with descriptions
+- **Materials** — materials studied with chemical formulas and properties
+- **Experimental data** — measurements with values, units, conditions, and methods
+- **Methods** — experimental/computational techniques used
+- **Synthesis routes** — input materials → output materials with conditions
+- **Statements** — scientific claims and findings
+- **Relationships** — subject-predicate-object triples between concepts
+
+Every extracted item is tagged with an **evidence level**:
+- **Level 1**: Causal experimental evidence
+- **Level 2**: Direct experimental observation
+- **Level 3**: Correlative evidence
+- **Level 4**: Predicted / inferred
 
 ## Prerequisites
 
@@ -38,32 +62,86 @@ data/inbox/              You drop files here
 ## Quick Start
 
 ```bash
-# 1. Clone and enter the project
-cd mat_know_base
-
-# 2. Create a virtual environment
+# 1. Create virtual environment and install
 python3 -m venv .venv
 source .venv/bin/activate
-
-# 3. Copy environment config
-cp .env.example .env
-
-# 4. Install the package
 pip install -e ".[dev,processing]"
 
-# 5. Start infrastructure (PostgreSQL + MinIO)
+# 2. Copy environment config
+cp .env.example .env
+
+# 3. Start infrastructure (PostgreSQL + MinIO)
 make up
 
-# 6. Run database migrations
-make migrate
+# 4. Create database tables
+python -m mkb setup
 ```
 
-## Usage
+## Python API (Primary Interface)
 
-### LLM Extraction Configuration (LiteLLM)
+The recommended interface is `mkb.api`. See `examples/basic_usage.py` for a complete walkthrough.
 
-Knowledge extraction uses google-adk with the LiteLLM adapter and an
-OpenAI-compatible API endpoint. Configure these in your environment or `.env`:
+```python
+from mkb import api
+
+# Ensure DB tables exist
+api.setup()
+
+# Ingest a directory of files as one research package
+result = api.ingest("./data/papers/smith2024_catalysis", label="Smith 2024")
+
+# Process all raw assets into LLM-readable formats
+api.process()
+
+# Run LLM extraction on all unextracted batches
+api.extract()
+
+# Get the knowledge frame for a batch
+frame = api.get_frame(batch_id="...")
+print(frame["content"]["materials"])
+print(frame["content"]["experimental_data"])
+
+# List all frames
+for f in api.list_frames():
+    print(f["batch_id"], f["status"], f["extraction_summary"])
+
+# List batches and assets
+api.list_batches()
+api.list_assets(batch_id="...")
+```
+
+## CLI (Secondary Interface)
+
+The CLI wraps `mkb.api` for terminal use.
+
+```bash
+# Database
+python -m mkb setup                    # Create tables
+python -m mkb reset-db                 # Drop and recreate (destructive!)
+
+# Ingestion
+python -m mkb ingest ./data/papers/smith2024 --label "Smith 2024"
+
+# Processing
+python -m mkb process                  # Process all pending
+python -m mkb process --batch-id <id>  # Process one batch
+
+# Knowledge extraction
+python -m mkb extract                  # Extract all pending
+python -m mkb extract --batch-id <id>  # Extract one batch
+python -m mkb extract --model openai/gpt-4o  # Override model
+
+# Listing
+python -m mkb batches                  # List batches
+python -m mkb assets                   # List assets
+python -m mkb assets --batch-id <id>   # Assets in a batch
+python -m mkb frames                   # List knowledge frames
+python -m mkb frame <batch_id>         # Show full frame (JSON)
+```
+
+## LLM Configuration
+
+Knowledge extraction uses google-adk with LiteLLM. Configure in `.env`:
 
 ```bash
 MKB_EXTRACTION_MODEL=openai/qwen-plus
@@ -71,206 +149,31 @@ OPENAI_API_KEY=<your_key>
 OPENAI_API_BASE=<your_openai_compatible_base_url>
 ```
 
-Notes:
-- `OPENAI_API_KEY` / `OPENAI_API_BASE` are read directly.
-- `MKB_OPENAI_API_KEY` / `MKB_OPENAI_API_BASE` are also supported as aliases.
-- Model names should use LiteLLM format like `openai/<model_name>`.
-
-### Ingesting Files
-
-The standard workflow for scientific papers: **put all related files for one paper in a single folder**, then ingest that folder. The ingestion worker automatically creates a **batch** that groups them together.
-
-```bash
-# Ingest a folder of related files (paper PDF + supplementary + raw data)
-# The folder name becomes the batch label
-make ingest dir=./data/papers/smith2024_catalysis
-
-# Or with a custom label
-python -m mkb.cli ingest ./data/papers/smith2024_catalysis --label "Smith 2024 - Catalysis"
-```
-
-**Recommended folder structure for papers:**
-```
-data/papers/
-├── smith2024_catalysis/
-│   ├── smith2024_main.pdf
-│   ├── smith2024_supplementary.pdf
-│   ├── figure_data.csv
-│   └── xrd_raw.dat
-├── chen2023_perovskites/
-│   ├── chen2023.pdf
-│   └── lattice_params.xlsx
-```
-
-Each subfolder → one `make ingest dir=...` call → one batch in the DB.
-
-### Processing Files
-
-After ingestion the raw files sit in MinIO unmodified. Run the processing pipeline to convert them into formats usable by an LLM or downstream tooling.
-
-| Input type | Output format | Location |
-|---|---|---|
-| PDF | Markdown (`.md`) + extracted files | `processed/<batch_id>/<asset_id>/...` |
-| DOCX | Markdown (`.md`) | `processed/<batch_id>/<asset_id>/MARKDOWN.md` |
-| TXT / MD | Markdown (`.md`) | `processed/<batch_id>/<asset_id>/MARKDOWN.md` |
-| CSV / TSV | Parquet (`.parquet`) | `processed/<batch_id>/<asset_id>/DATAFRAME.parquet` |
-| XLSX / XLS | Parquet (`.parquet`) | `processed/<batch_id>/<asset_id>/DATAFRAME.parquet` |
-| JSON (tabular) | Parquet (`.parquet`) | `processed/<batch_id>/<asset_id>/DATAFRAME.parquet` |
-| Images (PNG/JPG/…) | JSON metadata (`.json`) | `processed/<batch_id>/<asset_id>/IMAGE.json` |
-| Plain `.txt` with delimited columns | Parquet like CSV | same as DATAFRAME above |
-
-The pipeline is **idempotent**: re-running it on a file that has already been converted (same input, same output hash) simply skips it.
-
-```bash
-# Process all raw assets not yet converted
-python -m mkb.cli process-all
-
-# Same, with a per-file status summary
-python -m mkb.cli process-all -v
-
-# Process only the first N assets (useful for testing)
-python -m mkb.cli process-all --limit 10
-
-# Process a single asset by its UUID
-python -m mkb.cli process-asset <asset_id>
-
-# Clear processed outputs for one asset / one batch / everything
-python -m mkb.cli clear-processed --asset-id <asset_id>
-python -m mkb.cli clear-processed --batch-id <batch_id>
-python -m mkb.cli clear-processed --all -y
-```
-
-#### Where to find the processed data
-
-**In MinIO** — browse to http://localhost:9001, open the **`processed`** bucket. Files are stored at:
-```
-processed/<batch_uuid>/<asset_uuid>/...
-# examples:
-processed/1524e0c7-e0f9-41f6-b0bd-540282c10c58/99168fb7-899a-4548-bca8-15a646e929a4/s41563-026-02499-5.md
-processed/1524e0c7-e0f9-41f6-b0bd-540282c10c58/99168fb7-899a-4548-bca8-15a646e929a4/images/<image>.jpg
-processed/1524e0c7-e0f9-41f6-b0bd-540282c10c58/99168fb7-899a-4548-bca8-15a646e929a4/tables/<table>.*
-```
-
-**On local disk** — processed outputs are mirrored to:
-```
-data/processed/<batch_uuid>/<asset_uuid>/
-```
-So for one raw batch with 3 PDFs, you get 3 subfolders (one per PDF asset UUID), and each folder contains its markdown plus `images/` and `tables/` artifacts when MinerU produced them.
-
-**In PostgreSQL** — the `processed_assets` table has a row for every successful conversion, including the S3 key, output size, content hash, and conversion metadata (page count, column names, image dimensions, etc.). The raw asset's `metadata` JSONB column also gets a `processing` key added that records the last conversion result and the `processed_asset_id` so you can link them without a join.
-
-```bash
-# List all processed assets
-python -m mkb.cli processed-list
-
-# List processed assets for one ingestion batch
-python -m mkb.cli processed-list --batch-id <batch_id>
-
-# Show batch-level processed summary + per-asset outputs
-python -m mkb.cli processed-batch-info <batch_id>
-
-# Show full details (S3 path, type, metadata) for one processed asset
-python -m mkb.cli processed-info <processed_asset_id>
-
-# Clear processed outputs only; raw assets stay untouched
-python -m mkb.cli clear-processed --asset-id <asset_id>
-python -m mkb.cli clear-processed --batch-id <batch_id>
-python -m mkb.cli clear-processed --all
-```
-
-`clear-processed` removes only the processed layer:
-- rows in `processed_assets`
-- related `processing_logs`
-- local files under `data/processed/...`
-- processed objects in the MinIO `processed` bucket
-
-It does **not** delete raw files in the `raw` bucket or rows in `assets`.
-
-#### PDF processing — MinerU
-
-For PDFs the pipeline use **MinerU** (better table, figure, and multi-column handling).
-
-
-### Listing Data
-
-```bash
-# List all assets (brief)
-make list
-
-# List assets grouped by batch (see which files belong together)
-python -m mkb.cli batches
-
-# Show detailed info for a specific asset
-python -m mkb.cli info <asset_id>
-python -m mkb.cli info <sha256_prefix>
-
-# Show contents of a specific batch
-python -m mkb.cli batch-info <batch_id>
-```
-
-### Deleting Test/Debug Data
-
-```bash
-# Delete a single asset (removes from DB + MinIO)
-python -m mkb.cli delete <asset_id>
-
-# Delete an entire batch and all its assets
-python -m mkb.cli delete-batch <batch_id>
-
-# Nuclear option: wipe ALL data (DB rows + MinIO objects) for a clean start
-python -m mkb.cli purge --yes
-```
-
-### Other Commands
-
-```bash
-make up          # Start Docker services
-make down        # Stop Docker services
-make logs        # Tail service logs
-make migrate     # Apply DB migrations
-make test        # Run tests
-
-# Knowledge extraction
-python -m mkb.cli extract-batch <batch_id>
-python -m mkb.cli extract-all --limit 5
-python -m mkb.cli knowledge-list --batch-id <batch_id>
-python -m mkb.cli knowledge-graph <batch_id>
-python -m mkb.cli clear-knowledge --batch-id <batch_id> -y
-```
-
 ## Project Structure
 
 ```
 src/mkb/
-├── cli.py              # Command-line interface
+├── api.py              # Primary Python interface
+├── cli.py              # CLI (thin wrapper around api)
 ├── config.py           # Settings from .env
 ├── db/
-│   ├── engine.py       # SQLAlchemy engine (async + sync)
-│   └── models.py       # ORM models (Asset, ProcessedAsset, ProcessingLog, Batch, …)
+│   ├── engine.py       # SQLAlchemy engine + init_db()
+│   └── models.py       # ORM models (Asset, KnowledgeFrame, etc.)
 ├── storage/
 │   └── s3.py           # MinIO upload/download/exists/delete
 ├── ingest/
 │   └── worker.py       # CAS ingestion (SHA256, MIME detection, batching)
 ├── processors/
-│   ├── base.py         # Abstract Processor base class and ProcessingResult
-│   ├── coordinator.py  # Routes assets to processors, idempotency, metadata markers
-│   ├── pdf_processor.py     # PDF → Markdown (MinerU + pdfplumber fallback)
-│   ├── text_processor.py    # TXT / MD / DOCX → Markdown
-│   ├── dataframe_processor.py  # CSV / TSV / XLSX / tabular JSON → Parquet
-│   └── image_processor.py   # Images → JSON metadata (+ optional OCR)
+│   ├── base.py         # Abstract Processor + ProcessingResult
+│   ├── coordinator.py  # Routes assets to processors
+│   ├── pdf_processor.py
+│   ├── text_processor.py
+│   ├── dataframe_processor.py
+│   └── image_processor.py
 └── agents/
-    └── tools.py        # Functions for google-adk agent integration
+    ├── extraction.py   # LLM agent factory and runner
+    └── tools.py        # Agent tools (reading + frame writing)
 ```
-
-## Key Design Decisions
-
-- **Content-Addressable Storage:** Raw files stored by SHA256 hash. Re-uploading the same file costs 0 extra bytes.
-- **Batch Grouping:** Each `ingest` call creates a batch. Related files (paper + supplementary + data) stay linked.
-- **Separate raw / processed buckets:** Raw files in `raw/` are never overwritten. Converted outputs live in `processed/` so the two layers can never mix.
-- **Idempotent processing:** A conversion is only written once. If the output hash matches an existing `processed_assets` row the run is skipped.
-- **Conversion trackers on raw assets:** After processing, the raw asset's `metadata->processing` JSONB key is updated with the last status, processing type, and `processed_asset_id` so both ends of the link are immediately visible without a join.
-- **pgvector Ready:** The `embedding` columns on `assets` and `knowledge_nodes` are ready for semantic search once an embedding model is integrated.
-- **Agent-Ready:** `mkb.agents.tools` exposes `list_unprocessed_assets()`, `fetch_raw_binary()`, and `update_knowledge_node()` for `google-adk` integration.
 
 ## Database Tables
 
@@ -280,9 +183,8 @@ src/mkb/
 | `ingestion_batches` | Groups related files ingested together |
 | `batch_assets` | Many-to-many link between batches and assets |
 | `processed_assets` | One row per successful conversion output |
-| `processing_logs` | Audit trail: every processing attempt (SUCCESS / SKIPPED / FAILED) |
-| `knowledge_nodes` | Extracted scientific entities (Phase 4 placeholder) |
-| `knowledge_edges` | Directed relationships between nodes (Phase 4 placeholder) |
+| `processing_logs` | Audit trail for processing attempts |
+| `knowledge_frames` | One structured frame per batch (JSONB content + metadata) |
 
 ## Services
 
@@ -291,12 +193,3 @@ src/mkb/
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | MinIO S3 API | http://localhost:9000 | minioadmin / minioadmin |
 | PostgreSQL | localhost:5432 | mkb / mkb_dev |
-
-### MinIO Buckets
-
-| Bucket | Contents |
-|--------|----------|
-| `raw` | Immutable original files (CAS-keyed by SHA256) |
-| `processed` | Converted outputs keyed as `<batch_uuid>/<asset_uuid>/...` |
-| `archive` | Reserved for archived/retired assets |
-| `temp` | Temporary working data |
