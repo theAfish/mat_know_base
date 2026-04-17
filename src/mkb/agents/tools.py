@@ -763,11 +763,10 @@ def find_existing_entities(
 
 
 def mark_batch_extracted(batch_id: str, summary: str = "") -> str:
-    """Mark a batch as fully extracted.
+    """Backward-compatible wrapper around mark_knowledge_frame_checked.
 
-    Call this when you have finished extracting all knowledge from
-    the batch's files.  Optionally provide a summary of what was
-    extracted.
+    Marks the batch frame as checked/completed, updates extraction counters
+    and timestamps, and syncs extraction metadata on the ingestion batch.
     """
     return mark_knowledge_frame_checked(batch_id=batch_id, summary=summary)
 
