@@ -1,0 +1,81 @@
+{
+  "name": "biomineralization_templates",
+  "domain": "biomineralization",
+  "description": "High-Activity Biomineralization Template Database. Extracts structured data about biomineralization templates (proteins, peptides, functional modules) and their roles in mineralization processes.",
+  "extraction_schema": {
+    "templates": {
+      "type": "list",
+      "description": "Biomineralization template entries — proteins, peptides, or other molecules that participate in or regulate mineralization.",
+      "item_schema": {
+        "template_name": {"type": "string", "required": true, "description": "Name of the template molecule (e.g., Amelogenin, Osteopontin)"},
+        "source_species": {"type": "string", "required": true, "description": "Species of origin (e.g., Homo sapiens, Pinctada fucata)"},
+        "source_system": {"type": "string", "required": true, "description": "Biological system where the template operates (e.g., Enamel matrix, Nacre layer, Bone matrix)"},
+        "molecule_type": {"type": "string", "required": true, "description": "Type of molecule (e.g., Full-length protein, Matrix protein, Peptide, Glycoprotein)"},
+        "mineralization_system": {"type": "string", "required": true, "description": "The mineral system influenced (e.g., Calcium phosphate, Calcium carbonate, Silica)"},
+        "functional_tags": {"type": "list", "required": true, "description": "List of functional roles (e.g., Nucleation promotion, Crystal orientation control, Crystal growth regulation, Ion enrichment)"},
+        "sequence": {"type": "string", "required": false, "description": "Amino acid sequence if reported"},
+        "molecular_weight_kda": {"type": "number", "required": false, "description": "Molecular weight in kDa if reported"},
+        "isoelectric_point": {"type": "number", "required": false, "description": "pI value if reported"},
+        "evidence_level": {"type": "integer", "required": true, "description": "Evidence level 1-4"},
+        "references": {"type": "string", "required": false, "description": "PMID or DOI references"},
+        "notes": {"type": "string", "required": false, "description": "Additional notes or observations"}
+      }
+    },
+    "functional_modules": {
+      "type": "list",
+      "description": "Functional fragments or domains within biomineralization templates that have specific mineralization-related activity.",
+      "item_schema": {
+        "parent_protein": {"type": "string", "required": true, "description": "Name of the parent protein/template"},
+        "fragment_name": {"type": "string", "required": true, "description": "Name or descriptor of the fragment (e.g., N-terminal acidic fragment, Asp-rich motif)"},
+        "start_end_position": {"type": "string", "required": false, "description": "Amino acid position range (e.g., 1-25, 120-145)"},
+        "amino_acid_sequence": {"type": "string", "required": false, "description": "Sequence of the fragment if reported"},
+        "length": {"type": "string", "required": false, "description": "Length with unit (e.g., 25 aa, 26 aa)"},
+        "key_features": {"type": "string", "required": true, "description": "Structural or compositional features (e.g., Ser-rich / acidic, Asp-rich, Ca2+-binding motif)"},
+        "functional_tag": {"type": "string", "required": true, "description": "Primary functional role (e.g., Nucleation promotion, Ion enrichment, Crystal face binding)"},
+        "mineralization_effect": {"type": "string", "required": false, "description": "Specific effect on mineralization (e.g., promotes hydroxyapatite nucleation, inhibits calcite growth)"},
+        "evidence_level": {"type": "integer", "required": true, "description": "Evidence level 1-4"},
+        "references": {"type": "string", "required": false, "description": "PMID or DOI references"},
+        "notes": {"type": "string", "required": false, "description": "Additional notes"}
+      }
+    },
+    "mineralization_conditions": {
+      "type": "list",
+      "description": "Experimental conditions under which biomineralization templates were studied.",
+      "item_schema": {
+        "template_name": {"type": "string", "required": true, "description": "Template being studied"},
+        "mineral_phase": {"type": "string", "required": true, "description": "Mineral phase formed (e.g., hydroxyapatite, calcite, aragonite, vaterite)"},
+        "ph": {"type": "number", "required": false, "description": "pH of the mineralization solution"},
+        "temperature_c": {"type": "number", "required": false, "description": "Temperature in Celsius"},
+        "calcium_concentration_mm": {"type": "number", "required": false, "description": "Ca2+ concentration in mM"},
+        "phosphate_concentration_mm": {"type": "number", "required": false, "description": "Phosphate concentration in mM (for calcium phosphate systems)"},
+        "carbonate_concentration_mm": {"type": "number", "required": false, "description": "Carbonate concentration in mM (for calcium carbonate systems)"},
+        "template_concentration": {"type": "string", "required": false, "description": "Template concentration with units"},
+        "incubation_time": {"type": "string", "required": false, "description": "Duration of mineralization experiment"},
+        "crystal_morphology": {"type": "string", "required": false, "description": "Observed crystal morphology"},
+        "crystal_size": {"type": "string", "required": false, "description": "Crystal size with units"},
+        "characterization_methods": {"type": "list", "required": false, "description": "Methods used (e.g., XRD, TEM, SEM, FTIR, AFM)"},
+        "evidence_level": {"type": "integer", "required": true, "description": "Evidence level 1-4"},
+        "notes": {"type": "string", "required": false, "description": "Additional notes"}
+      }
+    },
+    "structure_activity_relationships": {
+      "type": "list",
+      "description": "Relationships between template structure and mineralization activity.",
+      "item_schema": {
+        "template_name": {"type": "string", "required": true},
+        "structural_feature": {"type": "string", "required": true, "description": "Structural feature (e.g., beta-sheet content, acidic residue density, self-assembly)"},
+        "functional_effect": {"type": "string", "required": true, "description": "Effect on mineralization (e.g., promotes oriented nucleation, controls crystal polymorph)"},
+        "mechanism": {"type": "string", "required": false, "description": "Proposed mechanism if discussed"},
+        "evidence_level": {"type": "integer", "required": true},
+        "notes": {"type": "string", "required": false}
+      }
+    }
+  },
+  "system_prompt": "You are extracting structured data for a High-Activity Biomineralization Template Database. Focus on identifying biomineralization templates (proteins, peptides, and other molecules that participate in or regulate biomineralization processes), their functional modules (active fragments/domains), experimental mineralization conditions, and structure-activity relationships.\n\nPay special attention to:\n- Template identity: exact protein/peptide names, species of origin, biological system\n- Functional roles: nucleation promotion, crystal orientation control, crystal growth regulation, ion enrichment, polymorph selection\n- Active fragments: specific domains or motifs with mineralization activity, their sequences and positions\n- Mineralization conditions: pH, temperature, ion concentrations, incubation times\n- Structure-activity links: how structural features relate to mineralization function\n\nFor each entry, assign appropriate evidence levels:\n- Level 1: Direct cause-effect demonstrated (e.g., mutagenesis showing specific residues are required)\n- Level 2: Direct observation (e.g., in vitro mineralization assay results)\n- Level 3: Correlative (e.g., sequence analysis suggesting a role)\n- Level 4: Predicted/inferred (e.g., computational modeling of binding)\n\nExtract ALL templates and functional modules mentioned in the research, not just the primary ones.",
+  "field_descriptions": {
+    "templates": "Extract every biomineralization template (protein, peptide, glycoprotein, etc.) mentioned in the research. Include species, biological system, molecule type, mineralization system, and all functional roles. Example: Amelogenin from Homo sapiens enamel matrix, a full-length protein acting on calcium phosphate with roles in nucleation promotion and crystal orientation control.",
+    "functional_modules": "Extract specific fragments, domains, or motifs within templates that have demonstrated or predicted mineralization activity. Include position, sequence (if available), structural features, and functional role. Example: N-terminal acidic fragment of Amelogenin (positions 1-25), Ser-rich/acidic, promotes nucleation.",
+    "mineralization_conditions": "Extract experimental conditions for mineralization studies: pH, temperature, ion concentrations, template concentrations, incubation times. Include resulting crystal phase, morphology, and characterization methods used.",
+    "structure_activity_relationships": "Extract relationships between structural features of templates and their effects on mineralization. Include the structural feature, the functional effect, and any proposed mechanism."
+  }
+}

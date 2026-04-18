@@ -45,6 +45,22 @@ class EvidenceLevel(int, enum.Enum):
     PREDICTED_INFERRED = 4        # Level 4: Predicted / inferred
 
 
+class ProjectionStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    NEEDS_FEEDBACK = "NEEDS_FEEDBACK"
+
+
+class FeedbackStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RESOLVED = "RESOLVED"
+    DISMISSED = "DISMISSED"
+    DEV_ISSUE = "DEV_ISSUE"
+
+
 # ── Research Projects ──────────────────────────────────────────
 # One project = one research package (paper + supplementary data).
 # Maps to a subfolder under the data root directory.
@@ -188,6 +204,7 @@ class KnowledgeFrame(Base):
     content: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     extraction_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     times_checked: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    extraction_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     extracted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -203,4 +220,149 @@ class KnowledgeFrame(Base):
 
     __table_args__ = (
         Index("ix_frame_project_id", "project_id"),
+    )
+
+
+# ── Extraction Passes ────────────────────────────────────────────
+
+
+class ExtractionPass(Base):
+    __tablename__ = "extraction_passes"
+
+    pass_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    frame_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    pass_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    pass_type: Mapped[str] = mapped_column(String(50), nullable=False)  # "initial", "review"
+    content_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    changes_made: Mapped[dict | None] = mapped_column(JSONB)
+    agent_notes: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_extraction_pass_frame_id", "frame_id"),
+    )
+
+
+# ── Spaces (domain-specific extraction configurations) ───────────
+
+
+class Space(Base):
+    __tablename__ = "spaces"
+
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # The space definition — what to extract
+    extraction_schema: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Prompt components
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    field_descriptions: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+# ── Projections ──────────────────────────────────────────────────
+
+
+class Projection(Base):
+    __tablename__ = "projections"
+
+    projection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    frame_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    status: Mapped[ProjectionStatus] = mapped_column(
+        Enum(ProjectionStatus, name="projection_status"),
+        default=ProjectionStatus.PENDING,
+        nullable=False,
+    )
+
+    data: Mapped[dict | None] = mapped_column(JSONB)
+    validation_result: Mapped[dict | None] = mapped_column(JSONB)
+    agent_notes: Mapped[str | None] = mapped_column(Text)
+
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    space_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_projection_space_frame", "space_id", "frame_id", unique=True),
+    )
+
+
+# ── Feedback ─────────────────────────────────────────────────────
+
+
+class Feedback(Base):
+    __tablename__ = "feedbacks"
+
+    feedback_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # Source: which projection/agent created this feedback
+    source_projection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    source_agent: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    # Target: which frame/project this feedback is about
+    target_frame_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    target_project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    # The feedback itself
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    # categories: "missing_data", "ambiguous_data", "inconsistency", "wrong_evidence_level", "other"
+    field_path: Mapped[str | None] = mapped_column(Text)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[str | None] = mapped_column(Text)
+
+    # Resolution
+    status: Mapped[FeedbackStatus] = mapped_column(
+        Enum(FeedbackStatus, name="feedback_status"),
+        default=FeedbackStatus.OPEN,
+        nullable=False,
+    )
+    resolution_notes: Mapped[str | None] = mapped_column(Text)
+    resolved_by: Mapped[str | None] = mapped_column(String(100))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_feedback_target_frame", "target_frame_id"),
+        Index("ix_feedback_target_project", "target_project_id"),
+        Index("ix_feedback_status", "status"),
     )

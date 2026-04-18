@@ -1,0 +1,1 @@
+"""MKB Streamlit UI package."""

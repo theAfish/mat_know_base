@@ -1,6 +1,6 @@
 # mat-know-base
 
-A self-hosted system for ingesting scientific papers and related data into a structured knowledge base. Files are stored immutably using content-addressable storage (SHA256 deduplication), with metadata tracked in PostgreSQL + pgvector and raw binaries in MinIO (S3-compatible). A processing pipeline converts raw files into LLM-readable formats. An LLM agent then extracts structured **knowledge frames** — one per research package — containing concepts, experimental data, materials, methods, synthesis routes, and evidence-level-tagged statements.
+A self-hosted system for ingesting scientific papers and related data into a structured knowledge base. Files are stored immutably using content-addressable storage (SHA256 deduplication), with metadata tracked in PostgreSQL + pgvector and raw binaries in MinIO (S3-compatible). A processing pipeline converts raw files into LLM-readable formats. An LLM agent then extracts structured **knowledge frames** — one per research project — with flexible, agent-decided structure capturing all scientific knowledge from the source material.
 
 ## Architecture
 
@@ -20,32 +20,31 @@ data/papers/smith2024/     Research package (paper + supplementary)
 │                 │  ◄────┤  PDF  → .md        │
 │  assets         │       │  DOCX → .md        │
 │  processed_assets│      │  CSV  → .parquet   │
-│  ingestion_batches│     │  IMG  → .json      │
-│  batch_assets   │       └───────────────────┘
-│                 │
-│  knowledge_frames│  ◄── LLM extraction agent
-└─────────────────┘       (one frame per batch)
+│  project_assets │       │  IMG  → .json      │
+│                 │       └───────────────────┘
+│  knowledge_frames│
+│  extraction_passes│ ◄── LLM extraction agent (multi-pass)
+│  spaces          │
+│  projections     │ ◄── Projection agent (space-specific)
+│  feedbacks       │ ◄── Feedback loop between agents
+└─────────────────┘
 ```
 
 ### Data Flow
 
-1. **Ingest** — Raw files are SHA256-deduplicated, uploaded to MinIO, registered in PostgreSQL as a batch
+1. **Ingest** — Raw files are SHA256-deduplicated, uploaded to MinIO, registered in PostgreSQL as a project
 2. **Process** — Raw files are converted to LLM-readable formats (Markdown, Parquet, JSON metadata)
-3. **Extract** — An LLM agent reads processed data and produces one **knowledge frame** per batch
-4. **Query** *(future)* — Downstream tools extract formatted databases and knowledge graphs from frames
+3. **Extract** — An LLM agent reads processed data and produces one **knowledge frame** per project (with optional multi-pass review)
+4. **Project** — Domain-specific "spaces" define structured extraction schemas; projection agents extract targeted data from knowledge frames
+5. **Feedback** — Projection agents flag unclear data; KB agents review and resolve feedback on user activation
 
 ### Knowledge Frame
 
-Each batch (research package) produces one knowledge frame containing:
+Each research project produces one knowledge frame with:
 
-- **Paper metadata** — title, authors, journal, year, DOI
-- **Concepts** — key scientific concepts with descriptions
-- **Materials** — materials studied with chemical formulas and properties
-- **Experimental data** — measurements with values, units, conditions, and methods
-- **Methods** — experimental/computational techniques used
-- **Synthesis routes** — input materials → output materials with conditions
-- **Statements** — scientific claims and findings
-- **Relationships** — subject-predicate-object triples between concepts
+- **Paper metadata** (fixed) — title, authors, journal, year, DOI
+- **Domain** (fixed) — research domain string
+- **Free-form sections** (agent-decided) — the agent chooses what categories best represent the paper's knowledge (e.g., materials, experimental_data, synthesis_routes, mechanisms, etc.)
 
 Every extracted item is tagged with an **evidence level**:
 - **Level 1**: Causal experimental evidence
@@ -53,51 +52,19 @@ Every extracted item is tagged with an **evidence level**:
 - **Level 3**: Correlative evidence
 - **Level 4**: Predicted / inferred
 
+### Spaces & Projections
+
+A **Space** defines a domain-specific extraction schema (e.g., "biomineralization templates"). A **Projection** is the result of applying a Space to a knowledge frame — extracting structured data per the schema definition.
+
+### Agentic Feedback
+
+Projection agents can flag ambiguous or missing data. The KB extraction agent can review these feedback items (on user activation) and update the knowledge frame accordingly.
+
 ## Prerequisites
 
 - Python 3.10+
 - Docker & Docker Compose
 - `libmagic` (usually pre-installed on Linux; `brew install libmagic` on macOS)
-
-## Using Docker
-
-This project includes a `docker-compose.yaml` to run the required infrastructure (PostgreSQL + `pgvector` and MinIO). You can use the provided `Makefile` targets or `docker compose` directly to manage the services.
-
-Start services:
-```bash
-make up
-# or
-docker compose up -d
-```
-
-Stop services:
-```bash
-make down
-# or
-docker compose down
-```
-
-View status and logs:
-```bash
-docker compose ps
-make logs
-# or
-docker compose logs -f
-```
-
-Service endpoints:
-- MinIO console: http://localhost:9001  (minioadmin / minioadmin)
-- MinIO S3 API: http://localhost:9000
-- PostgreSQL: localhost:5432 (user: `mkb`, password: `mkb_dev`, database: `mkb`)
-
-MinIO buckets: the compose file includes a one-shot `minio-init` service which creates the required buckets. It runs during `make up` when the `minio` service becomes healthy. To re-run it manually:
-```bash
-docker compose run --rm minio-init
-```
-
-Notes:
-- Copy `.env.example` to `.env` before starting the stack (see Quick Start below).
-- The Python application is not containerized by default. If you'd like, I can add a `Dockerfile` and a `docker-compose` service for the app so the whole stack runs in containers.
 
 ## Quick Start
 
@@ -124,59 +91,83 @@ The recommended interface is `mkb.api`. See `examples/basic_usage.py` for a comp
 ```python
 from mkb import api
 
-# Ensure DB tables exist
+# Setup
 api.setup()
 
-# Ingest a directory of files as one research package
-result = api.ingest("./data/papers/smith2024_catalysis", label="Smith 2024")
-
-# Process all raw assets into LLM-readable formats
+# Ingest & process
+result = api.ingest("./data/papers/smith2024", label="Smith 2024")
 api.process()
 
-# Run LLM extraction on all unextracted batches
-api.extract()
+# Extract with multi-pass review
+api.extract(max_passes=2, verbose=True)
 
-# Get the knowledge frame for a batch
-frame = api.get_frame(batch_id="...")
-print(frame["content"]["materials"])
-print(frame["content"]["experimental_data"])
+# Query frames
+frame = api.get_frame(project_id="...")
+print(frame["content"]["paper"])
+print(frame["content"].keys())  # agent-decided sections
 
-# List all frames
-for f in api.list_frames():
-    print(f["batch_id"], f["status"], f["extraction_summary"])
+# Spaces & projections
+api.create_space(
+    name="biomineralization",
+    domain="biomineralization",
+    extraction_schema={...},
+    system_prompt="...",
+    field_descriptions={...},
+)
+api.project(space_id="...", project_id="...")
 
-# List batches and assets
-api.list_batches()
-api.list_assets(batch_id="...")
+# Feedback
+api.list_feedback(project_id="...", status="OPEN")
+api.review_feedback(project_id="...")
+
+# Streamlit UI
+# python -m mkb ui
 ```
 
-## CLI (Secondary Interface)
-
-The CLI wraps `mkb.api` for terminal use.
+## CLI
 
 ```bash
 # Database
-python -m mkb setup                    # Create tables
-python -m mkb reset-db                 # Drop and recreate (destructive!)
+python -m mkb setup
+python -m mkb reset-db
 
 # Ingestion
 python -m mkb ingest ./data/papers/smith2024 --label "Smith 2024"
+python -m mkb sync --root-dir ./data/papers
 
 # Processing
-python -m mkb process                  # Process all pending
-python -m mkb process --batch-id <id>  # Process one batch
+python -m mkb process
+python -m mkb process --project-id <uuid>
 
 # Knowledge extraction
-python -m mkb extract                  # Extract all pending
-python -m mkb extract --batch-id <id>  # Extract one batch
-python -m mkb extract --model openai/gpt-4o  # Override model
+python -m mkb extract                              # all pending
+python -m mkb extract --project-id <uuid>           # one project
+python -m mkb extract --max-passes 3               # multi-pass
+python -m mkb extract --model openai/gpt-4o         # override model
+python -m mkb extraction-history <project_id>       # view pass history
 
 # Listing
-python -m mkb batches                  # List batches
-python -m mkb assets                   # List assets
-python -m mkb assets --batch-id <id>   # Assets in a batch
-python -m mkb frames                   # List knowledge frames
-python -m mkb frame <batch_id>         # Show full frame (JSON)
+python -m mkb projects
+python -m mkb assets --project-id <uuid>
+python -m mkb frames
+python -m mkb frame <project_id>
+
+# Spaces & Projections
+python -m mkb space create --name catalysis --domain catalysis --schema-file schema.json
+python -m mkb space load space_definition.json
+python -m mkb space list
+python -m mkb space show catalysis
+python -m mkb project-run --space <id> --project-id <uuid>
+python -m mkb project-run --space <id> --all
+python -m mkb projections --space-id <uuid>
+
+# Feedback
+python -m mkb feedback --project-id <uuid> --status OPEN
+python -m mkb review-feedback --project-id <uuid>
+python -m mkb resolve-feedback <feedback_id> --status RESOLVED --notes "Fixed"
+
+# UI
+python -m mkb ui --port 8501
 ```
 
 ## LLM Configuration
@@ -193,38 +184,70 @@ OPENAI_API_BASE=<your_openai_compatible_base_url>
 
 ```
 src/mkb/
-├── api.py              # Primary Python interface
-├── cli.py              # CLI (thin wrapper around api)
-├── config.py           # Settings from .env
+├── api.py                          # Primary Python interface
+├── cli.py                          # CLI (thin wrapper around api)
+├── config.py                       # Settings from .env
 ├── db/
-│   ├── engine.py       # SQLAlchemy engine + init_db()
-│   └── models.py       # ORM models (Asset, KnowledgeFrame, etc.)
+│   ├── engine.py                   # SQLAlchemy engine + init_db()
+│   └── models.py                   # ORM models (12 tables + enums)
 ├── storage/
-│   └── s3.py           # MinIO upload/download/exists/delete
+│   └── s3.py                       # MinIO upload/download/exists/delete
 ├── ingest/
-│   └── worker.py       # CAS ingestion (SHA256, MIME detection, batching)
+│   └── worker.py                   # CAS ingestion (SHA256, MIME, batching)
 ├── processors/
-│   ├── base.py         # Abstract Processor + ProcessingResult
-│   ├── coordinator.py  # Routes assets to processors
+│   ├── base.py                     # Abstract Processor + ProcessingResult
+│   ├── coordinator.py              # Routes assets to processors
 │   ├── pdf_processor.py
 │   ├── text_processor.py
 │   ├── dataframe_processor.py
 │   └── image_processor.py
-└── agents/
-    ├── extraction.py   # LLM agent factory and runner
-    └── tools.py        # Agent tools (reading + frame writing)
+├── agents/
+│   ├── extraction.py               # KB extraction agent + multi-pass orchestration
+│   ├── review.py                   # Review agent for multi-turn extraction
+│   ├── projection.py               # Projection agent (space-specific extraction)
+│   ├── feedback_reviewer.py        # Feedback review agent
+│   ├── dev_agent.py                # Dev agent interface (design only)
+│   ├── runner.py                   # Generic AgentRunner wrapper
+│   ├── prompts/                    # Agent prompts
+│   │   ├── kb_extraction.py        # Flexible KB extraction prompt
+│   │   ├── review.py               # Review pass prompt
+│   │   ├── projection.py           # Projection prompt builder
+│   │   └── feedback_review.py      # Feedback review prompt
+│   └── tools/                      # Agent tool functions
+│       ├── reading.py              # Reading tools (markdown, dataframe, image, search)
+│       ├── frames.py               # Frame save/get/update tools
+│       ├── projection.py           # Projection save + flag_for_feedback
+│       └── feedback.py             # Feedback query + resolve tools
+├── spaces/
+│   └── registry.py                 # Space CRUD operations
+├── feedback/
+│   └── manager.py                  # Feedback CRUD + resolution
+└── ui/
+    ├── app.py                      # Streamlit entry point
+    ├── pages/                      # UI pages
+    │   ├── projects.py
+    │   ├── frames.py
+    │   ├── projections.py
+    │   └── feedback.py
+    └── components/                 # Reusable UI components
+        ├── frame_viewer.py
+        └── graph_viz.py
 ```
 
 ## Database Tables
 
 | Table | Purpose |
 |---|---|
+| `research_projects` | One per research package (paper + supplementary) |
 | `assets` | One row per unique raw file (SHA256 deduplicated) |
-| `ingestion_batches` | Groups related files ingested together |
-| `batch_assets` | Many-to-many link between batches and assets |
+| `project_assets` | Many-to-many link between projects and assets |
 | `processed_assets` | One row per successful conversion output |
 | `processing_logs` | Audit trail for processing attempts |
-| `knowledge_frames` | One structured frame per batch (JSONB content + metadata) |
+| `knowledge_frames` | One structured frame per project (JSONB content + metadata) |
+| `extraction_passes` | Audit trail for each extraction/review pass |
+| `spaces` | Domain-specific extraction configurations |
+| `projections` | Results of projecting frames through spaces |
+| `feedbacks` | Feedback items between agents |
 
 ## Services
 
@@ -233,3 +256,4 @@ src/mkb/
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | MinIO S3 API | http://localhost:9000 | minioadmin / minioadmin |
 | PostgreSQL | localhost:5432 | mkb / mkb_dev |
+| Streamlit UI | http://localhost:8501 | — |

@@ -1,9 +1,8 @@
 """
-Agent tool functions for knowledge extraction.
+Reading tools for the LLM agent to explore project data.
 
-Reading tools let the LLM agent explore project data (processed markdown,
-dataframes, images). Writing tools let it save a structured knowledge
-frame for the project.
+Includes tools for reading processed markdown, dataframes, images,
+and searching across project files.
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ import base64
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -21,12 +19,9 @@ from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Asset,
-    FrameStatus,
-    KnowledgeFrame,
     ProcessedAsset,
     ProcessingType,
     ProjectAsset,
-    ResearchProject,
 )
 from mkb.storage.s3 import download_bytes, object_exists
 
@@ -305,99 +300,7 @@ def search_in_project(project_id: str, query: str) -> list[dict]:
         return results
 
 
-# =====================================================================
-# Knowledge frame tools
-# =====================================================================
-
-
-def save_knowledge_frame(
-    project_id: str,
-    content: dict,
-    summary: str = "",
-) -> dict:
-    """Save or update a knowledge frame for a research project.
-
-    content should be a dict with keys like: paper, concepts, materials,
-    experimental_data, methods, synthesis_routes, statements, relationships.
-    Each item in the lists should have an evidence_level (1-4):
-      1 = Causal experimental evidence
-      2 = Direct experimental observation
-      3 = Correlative evidence
-      4 = Predicted / inferred
-
-    This also marks the frame as COMPLETED.
-    """
-    pid = uuid.UUID(project_id)
-    now = datetime.now(timezone.utc)
-
-    with SyncSessionLocal() as session:
-        project = session.query(ResearchProject).filter_by(project_id=pid).first()
-        if not project:
-            return {"error": f"Project {project_id} not found."}
-
-        links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [str(l.asset_id) for l in links]
-        source_meta = {
-            "project_label": project.label,
-            "source_path": project.source_path,
-            "asset_ids": asset_ids,
-            "project_id": project_id,
-        }
-
-        existing = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
-        if existing:
-            existing.content = content
-            existing.extraction_summary = summary
-            existing.status = FrameStatus.COMPLETED
-            existing.extracted_at = now
-            existing.source_metadata = source_meta
-            existing.times_checked = existing.times_checked + 1
-            session.commit()
-            return {"frame_id": str(existing.frame_id), "status": "updated"}
-
-        frame = KnowledgeFrame(
-            frame_id=uuid.uuid4(),
-            project_id=pid,
-            status=FrameStatus.COMPLETED,
-            content=content,
-            extraction_summary=summary,
-            times_checked=1,
-            extracted_at=now,
-            source_metadata=source_meta,
-        )
-        session.add(frame)
-        session.commit()
-        return {"frame_id": str(frame.frame_id), "status": "created"}
-
-
-def get_existing_frame(project_id: str) -> dict:
-    """Get the existing knowledge frame for a project, if any.
-
-    Returns the frame content and metadata, or an indication that none exists.
-    Useful for re-extraction to see what was previously extracted.
-    """
-    pid = uuid.UUID(project_id)
-    with SyncSessionLocal() as session:
-        frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
-        if not frame:
-            return {"exists": False}
-        return {
-            "exists": True,
-            "frame_id": str(frame.frame_id),
-            "status": frame.status.value,
-            "content": frame.content,
-            "extraction_summary": frame.extraction_summary,
-            "times_checked": frame.times_checked,
-            "extracted_at": frame.extracted_at.isoformat() if frame.extracted_at else None,
-        }
-
-
-# =====================================================================
-# All tools for agent registration
-# =====================================================================
-
-ALL_TOOLS = [
-    # Reading
+READING_TOOLS = [
     list_project_files,
     read_processed_markdown,
     read_markdown_section,
@@ -408,7 +311,4 @@ ALL_TOOLS = [
     read_image_metadata,
     get_image_base64,
     search_in_project,
-    # Writing
-    save_knowledge_frame,
-    get_existing_frame,
 ]

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_BASE", "MKB_OPENAI_API_BASE"),
     )
 
+    # ── UI ──────────────────────────────────────────────────────
+    ui_port: int = 8501
+
     model_config = {"env_prefix": "MKB_", "env_file": ".env", "extra": "ignore"}
 
 
