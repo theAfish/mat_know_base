@@ -1,9 +1,9 @@
 """SQLAlchemy engine and session factories."""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import text
 
 from mkb.config import settings
 
@@ -16,12 +16,38 @@ sync_engine = create_engine(settings.pg_dsn_sync, echo=False)
 SyncSessionLocal = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
 
 
+def _apply_schema_compatibility(engine: Engine) -> None:
+    """Patch additive schema changes for older databases."""
+    compatibility_updates = {
+        "knowledge_frames": {
+            "extraction_version": (
+                "ALTER TABLE knowledge_frames "
+                "ADD COLUMN extraction_version INTEGER NOT NULL DEFAULT 0"
+            ),
+        },
+    }
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        for table_name, updates in compatibility_updates.items():
+            if not inspector.has_table(table_name):
+                continue
+
+            existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+            for column_name, ddl in updates.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(ddl))
+                    existing_columns.add(column_name)
+
+
 def init_db() -> None:
-    """Create all tables from ORM metadata (idempotent)."""
+    """Create all tables from ORM metadata and patch older schemas."""
     from mkb.db.models import Base
+
     # Ensure the pgvector extension is available for the `vector` column type.
     with sync_engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         conn.commit()
 
     Base.metadata.create_all(sync_engine)
+    _apply_schema_compatibility(sync_engine)

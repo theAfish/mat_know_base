@@ -240,6 +240,7 @@ def get_frame(project_id: str | uuid.UUID) -> dict | None:
     """Get the knowledge frame for a project. Returns None if not found."""
     from mkb.db.models import KnowledgeFrame
 
+    init_db()
     pid = uuid.UUID(str(project_id))
     with SyncSessionLocal() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
@@ -264,6 +265,7 @@ def list_frames(status: str | None = None) -> list[dict]:
     """List all knowledge frames, optionally filtered by status."""
     from mkb.db.models import FrameStatus, KnowledgeFrame
 
+    init_db()
     with SyncSessionLocal() as session:
         q = session.query(KnowledgeFrame).order_by(KnowledgeFrame.created_at.desc())
         if status:
@@ -287,6 +289,7 @@ def get_extraction_history(project_id: str | uuid.UUID) -> list[dict]:
     """Get the extraction pass history for a project's frame."""
     from mkb.db.models import ExtractionPass, KnowledgeFrame
 
+    init_db()
     pid = uuid.UUID(str(project_id))
     with SyncSessionLocal() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
@@ -504,6 +507,7 @@ def list_projects(limit: int = 50) -> list[dict]:
     """List research projects."""
     from mkb.db.models import KnowledgeFrame, ProjectAsset, ResearchProject
 
+    init_db()
     with SyncSessionLocal() as session:
         projects = (
             session.query(ResearchProject)
@@ -646,17 +650,19 @@ def project_all(
 
 def get_projection(projection_id: str | uuid.UUID) -> dict | None:
     """Get a projection by ID."""
-    from mkb.db.models import Projection
+    from mkb.db.models import KnowledgeFrame, Projection
 
     pid = uuid.UUID(str(projection_id))
     with SyncSessionLocal() as session:
         proj = session.query(Projection).filter_by(projection_id=pid).first()
         if not proj:
             return None
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=proj.frame_id).first()
         return {
             "projection_id": str(proj.projection_id),
             "space_id": str(proj.space_id),
             "frame_id": str(proj.frame_id),
+            "project_id": str(frame.project_id) if frame else None,
             "status": proj.status.value,
             "data": proj.data,
             "validation_result": proj.validation_result,
@@ -672,7 +678,7 @@ def list_projections(
     frame_id: str | uuid.UUID | None = None,
 ) -> list[dict]:
     """List projections, optionally filtered by space or frame."""
-    from mkb.db.models import Projection
+    from mkb.db.models import KnowledgeFrame, Projection
 
     with SyncSessionLocal() as session:
         q = session.query(Projection).order_by(Projection.created_at.desc())
@@ -686,6 +692,7 @@ def list_projections(
                 "projection_id": str(p.projection_id),
                 "space_id": str(p.space_id),
                 "frame_id": str(p.frame_id),
+                "project_id": str(frame.project_id) if (frame := session.query(KnowledgeFrame).filter_by(frame_id=p.frame_id).first()) else None,
                 "status": p.status.value,
                 "agent_notes": p.agent_notes,
                 "extracted_at": p.extracted_at.isoformat() if p.extracted_at else None,

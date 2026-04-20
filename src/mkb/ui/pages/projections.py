@@ -1,7 +1,66 @@
 """Projections page — view and manage space projections."""
 
+from __future__ import annotations
+
+import pandas as pd
 import streamlit as st
+
 from mkb import api
+
+
+def _stringify_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return "; ".join(f"{key}: {_stringify_value(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return ", ".join(_stringify_value(item) for item in value)
+    return str(value)
+
+
+def _mapping_to_rows(mapping: dict) -> list[dict[str, str]]:
+    return [
+        {"Field": str(key), "Value": _stringify_value(value)}
+        for key, value in mapping.items()
+    ]
+
+
+def _render_mapping_table(mapping: dict):
+    table = pd.DataFrame(_mapping_to_rows(mapping)).set_index("Field")
+    st.table(table)
+
+
+def _render_projection_section(name: str, value, source_project_id: str | None = None):
+    st.markdown(f"#### {name.replace('_', ' ').title()}")
+
+    if isinstance(value, list):
+        if not value:
+            st.caption("No entries.")
+            return
+
+        if all(isinstance(item, dict) for item in value):
+            rows = []
+            for item in value:
+                row = {str(key): _stringify_value(val) for key, val in item.items()}
+                if source_project_id:
+                    row["references"] = source_project_id
+                rows.append(row)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            return
+
+        st.write([_stringify_value(item) for item in value])
+        return
+
+    if isinstance(value, dict):
+        _render_mapping_table(value)
+        return
+
+    st.write(value)
+
+
+def _render_projection_data(data: dict, source_project_id: str | None = None):
+    for section_name, section_value in data.items():
+        _render_projection_section(section_name, section_value, source_project_id=source_project_id)
 
 
 def render():
@@ -53,7 +112,9 @@ def render():
         with col1:
             st.write(f"{icon} {p['status']}")
         with col2:
-            st.write(f"Frame: {p['frame_id'][:12]}...")
+            if p.get("project_id"):
+                st.write(f"Project: {p['project_id'][:12]}...")
+            st.caption(f"Frame: {p['frame_id'][:12]}...")
         with col3:
             if st.button("View", key=f"proj_{p['projection_id']}"):
                 st.session_state["selected_projection"] = p["projection_id"]
@@ -66,10 +127,15 @@ def render():
             st.subheader("Projection Data")
             st.write(f"**Status:** {proj['status']}")
             st.write(f"**Space Version:** {proj['space_version']}")
+            if proj.get("project_id"):
+                st.write(f"**Source Project ID:** {proj['project_id']}")
             if proj.get("agent_notes"):
                 st.write(f"**Agent Notes:** {proj['agent_notes']}")
             if proj.get("data"):
-                st.json(proj["data"])
+                _render_projection_data(proj["data"], source_project_id=proj.get("project_id"))
             if proj.get("validation_result"):
                 with st.expander("Validation"):
-                    st.json(proj["validation_result"])
+                    if isinstance(proj["validation_result"], dict):
+                        _render_mapping_table(proj["validation_result"])
+                    else:
+                        st.write(proj["validation_result"])

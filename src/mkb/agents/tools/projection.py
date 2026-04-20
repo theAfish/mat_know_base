@@ -23,6 +23,42 @@ from mkb.db.models import (
 logger = logging.getLogger(__name__)
 
 
+def _inject_source_project_references(data, source_project_id: str):
+    """Recursively attach source-project references to extracted records."""
+    if isinstance(data, list):
+        return [
+            _inject_source_project_references(item, source_project_id)
+            for item in data
+        ]
+
+    if isinstance(data, dict):
+        enriched = {
+            key: _inject_source_project_references(value, source_project_id)
+            for key, value in data.items()
+        }
+
+        lower_keys = {str(key).lower() for key in enriched}
+        if "references" in lower_keys:
+            for key in list(enriched.keys()):
+                if str(key).lower() == "references":
+                    enriched[key] = source_project_id
+        elif "reference" in lower_keys:
+            for key in list(enriched.keys()):
+                if str(key).lower() == "reference":
+                    enriched[key] = source_project_id
+        else:
+            scalar_fields = [
+                key for key, value in enriched.items()
+                if not isinstance(value, (dict, list))
+            ]
+            if scalar_fields:
+                enriched["references"] = source_project_id
+
+        return enriched
+
+    return data
+
+
 def get_frame_content(frame_id: str) -> dict:
     """Read the knowledge frame content for projection.
 
@@ -66,6 +102,11 @@ def save_projection(
         projection = session.query(Projection).filter_by(projection_id=pid).first()
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
+
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
+        source_project_id = str(frame.project_id) if frame else None
+        if source_project_id:
+            data = _inject_source_project_references(data, source_project_id)
 
         projection.data = data
         projection.validation_result = {"notes": validation_notes} if validation_notes else None
