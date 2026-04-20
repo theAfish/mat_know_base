@@ -6,16 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from mkb import api
-
-
-def _stringify_value(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, dict):
-        return "; ".join(f"{key}: {_stringify_value(item)}" for key, item in value.items())
-    if isinstance(value, list):
-        return ", ".join(_stringify_value(item) for item in value)
-    return str(value)
+from mkb.spaces.schema_utils import stringify_value as _stringify_value
 
 
 def _mapping_to_rows(mapping: dict) -> list[dict[str, str]]:
@@ -145,7 +136,7 @@ def _render_combined_projection_table(projections: list[dict]):
         st.caption(f"Showing rows {start_index}-{end_index} of {len(rows)}")
 
         table = pd.DataFrame(page_rows)
-        priority_columns = ["project_id", "extracted_at", "projection_id"]
+        priority_columns = ["project_id", "source_project_id", "extracted_at", "projection_id"]
         ordered_columns = priority_columns + [
             column for column in table.columns if column not in priority_columns
         ]
@@ -169,8 +160,8 @@ def _render_projection_section(name: str, value, source_project_id: str | None =
             rows = []
             for item in value:
                 row = {str(key): _stringify_value(val) for key, val in item.items()}
-                if source_project_id:
-                    row["references"] = source_project_id
+                if source_project_id and "source_project_id" not in row:
+                    row["source_project_id"] = source_project_id
                 rows.append(row)
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
             return

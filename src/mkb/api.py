@@ -652,7 +652,8 @@ def project_all(
 
 def get_projection(projection_id: str | uuid.UUID) -> dict | None:
     """Get a projection by ID."""
-    from mkb.db.models import KnowledgeFrame, Projection
+    from mkb.db.models import KnowledgeFrame, Projection, Space
+    from mkb.spaces.schema_utils import normalize_projection_data
 
     init_db()
     pid = uuid.UUID(str(projection_id))
@@ -661,14 +662,27 @@ def get_projection(projection_id: str | uuid.UUID) -> dict | None:
         if not proj:
             return None
         frame = session.query(KnowledgeFrame).filter_by(frame_id=proj.frame_id).first()
+        space = session.query(Space).filter_by(space_id=proj.space_id).first()
+        normalized_data, normalized_validation = normalize_projection_data(
+            proj.data or {},
+            space.extraction_schema if space else {},
+        )
+
+        validation_result = proj.validation_result or {}
+        if normalized_validation:
+            validation_result = {
+                **normalized_validation,
+                **validation_result,
+            }
+
         return {
             "projection_id": str(proj.projection_id),
             "space_id": str(proj.space_id),
             "frame_id": str(proj.frame_id),
             "project_id": str(frame.project_id) if frame else None,
             "status": proj.status.value,
-            "data": proj.data,
-            "validation_result": proj.validation_result,
+            "data": normalized_data,
+            "validation_result": validation_result or None,
             "agent_notes": proj.agent_notes,
             "extracted_at": proj.extracted_at.isoformat() if proj.extracted_at else None,
             "space_version": proj.space_version,
@@ -684,7 +698,8 @@ def list_projections(
     newest_only: bool = False,
 ) -> list[dict]:
     """List projections, optionally filtered by space, frame, or project."""
-    from mkb.db.models import KnowledgeFrame, Projection
+    from mkb.db.models import KnowledgeFrame, Projection, Space
+    from mkb.spaces.schema_utils import normalize_projection_data
 
     init_db()
     with SyncSessionLocal() as session:
@@ -722,7 +737,12 @@ def list_projections(
                 "space_version": projection.space_version,
             }
             if include_data:
-                item["data"] = projection.data
+                space = session.query(Space).filter_by(space_id=projection.space_id).first()
+                normalized_data, _ = normalize_projection_data(
+                    projection.data or {},
+                    space.extraction_schema if space else {},
+                )
+                item["data"] = normalized_data
             results.append(item)
 
         return results

@@ -19,13 +19,15 @@ from mkb.db.models import (
     KnowledgeFrame,
     Projection,
     ProjectionStatus,
+    Space,
 )
+from mkb.spaces.schema_utils import normalize_projection_data
 
 logger = logging.getLogger(__name__)
 
 
 def _inject_source_project_references(data, source_project_id: str):
-    """Recursively attach source-project references to extracted records."""
+    """Recursively attach source-project metadata to extracted records."""
     if isinstance(data, list):
         return [
             _inject_source_project_references(item, source_project_id)
@@ -39,21 +41,12 @@ def _inject_source_project_references(data, source_project_id: str):
         }
 
         lower_keys = {str(key).lower() for key in enriched}
-        if "references" in lower_keys:
-            for key in list(enriched.keys()):
-                if str(key).lower() == "references":
-                    enriched[key] = source_project_id
-        elif "reference" in lower_keys:
-            for key in list(enriched.keys()):
-                if str(key).lower() == "reference":
-                    enriched[key] = source_project_id
-        else:
-            scalar_fields = [
-                key for key, value in enriched.items()
-                if not isinstance(value, (dict, list))
-            ]
-            if scalar_fields:
-                enriched["references"] = source_project_id
+        scalar_fields = [
+            key for key, value in enriched.items()
+            if not isinstance(value, (dict, list))
+        ]
+        if scalar_fields and "source_project_id" not in lower_keys:
+            enriched["source_project_id"] = source_project_id
 
         return enriched
 
@@ -111,12 +104,25 @@ def save_projection(
             return {"error": f"Projection {projection_id} not found."}
 
         frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
+        space = session.query(Space).filter_by(space_id=projection.space_id).first()
+
+        normalized_data, validation_result = normalize_projection_data(
+            data,
+            space.extraction_schema if space else {},
+        )
+
         source_project_id = str(frame.project_id) if frame else None
         if source_project_id:
-            data = _inject_source_project_references(data, source_project_id)
+            normalized_data = _inject_source_project_references(normalized_data, source_project_id)
 
-        projection.data = data
-        projection.validation_result = {"notes": validation_notes} if validation_notes else None
+        if validation_notes:
+            validation_result = {
+                **validation_result,
+                "notes": validation_notes,
+            }
+
+        projection.data = normalized_data
+        projection.validation_result = validation_result or None
         projection.agent_notes = agent_notes
         projection.status = ProjectionStatus.COMPLETED
         projection.extracted_at = now

@@ -1,4 +1,5 @@
 from mkb.agents.tools.projection import _inject_source_project_references
+from mkb.spaces.schema_utils import normalize_extraction_schema, normalize_projection_data
 from mkb.ui.pages.projections import (
     _build_projection_section_rows,
     _filter_latest_projections,
@@ -22,7 +23,9 @@ def test_inject_source_project_references_sets_project_id_on_records():
 
     enriched = _inject_source_project_references(data, "project-123")
 
-    assert [row["references"] for row in enriched["templates"]] == ["project-123", "project-123"]
+    assert enriched["templates"][0]["references"] == "doi:old"
+    assert [row["source_project_id"] for row in enriched["templates"]] == ["project-123", "project-123"]
+    assert enriched["overall_assessment"]["source_project_id"] == "project-123"
     assert enriched["overall_assessment"]["confidence"] == "high"
 
 
@@ -40,6 +43,64 @@ def test_mapping_to_rows_formats_nested_values_for_table_display():
         {"Field": "evidence_count", "Value": "3"},
         {"Field": "highlights", "Value": "nucleation, orientation"},
     ]
+
+
+def test_normalize_projection_data_coerces_list_fields_and_filters_non_primary_rows():
+    schema = normalize_extraction_schema(
+        {
+            "templates": {
+                "type": "list",
+                "filter": {"field": "experimental_role", "equals": "primary_template"},
+                "item_schema": {
+                    "template_name": {"type": "string", "required": True},
+                    "source_species": {"type": "list", "item_type": "string", "required": True},
+                    "functional_tags": {"type": "list", "item_type": "string", "required": True},
+                    "experimental_role": {"type": "string"},
+                    "evidence_level": {"type": "integer", "required": True},
+                },
+            }
+        }
+    )
+
+    normalized, validation = normalize_projection_data(
+        {
+            "templates": [
+                {
+                    "template_name": "AMTN",
+                    "source_species": "Homo sapiens",
+                    "functional_tags": "Nucleation promotion",
+                    "experimental_role": "primary_template",
+                    "evidence_level": "2",
+                },
+                {
+                    "template_name": "Myoglobin",
+                    "source_species": "Homo sapiens",
+                    "functional_tags": ["comparison"],
+                    "experimental_role": "control",
+                    "evidence_level": 4,
+                },
+            ]
+        },
+        schema,
+    )
+
+    assert normalized == {
+        "templates": [
+            {
+                "template_name": "AMTN",
+                "source_species": ["Homo sapiens"],
+                "functional_tags": ["Nucleation promotion"],
+                "experimental_role": "primary_template",
+                "evidence_level": 2,
+            }
+        ]
+    }
+    assert validation["filtered_counts"] == {"templates": 1}
+    assert validation["coerced_fields"] == {
+        "templates[].source_species": 1,
+        "templates[].functional_tags": 1,
+        "templates[].evidence_level": 1,
+    }
 
 
 def test_projection_to_section_rows_keeps_sections_separate_and_preserves_history_metadata():

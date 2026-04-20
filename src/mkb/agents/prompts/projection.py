@@ -66,7 +66,9 @@ Domain: {domain}
 - Extract ONLY from the knowledge frame content — do not fabricate data
 - Preserve numerical precision — do not round values
 - Include units wherever applicable
-- If a field has multiple possible values, include all of them
+- If a field has multiple possible values and the schema says `type: list`, keep them as a JSON array internally
+- Use role fields carefully: mark controls, comparisons, and background references explicitly rather than treating them as primary extracted entities
+- If `evidence_level` is present, assign the highest supported level using this rubric: 1 = in vivo functional validation, 2 = in vitro direct mineralization experiment, 3 = indirect experimental evidence, 4 = prediction/hypothesis/inference
 - Note confidence level in your agent_notes for fields where the mapping is uncertain
 - Flag rather than guess — when in doubt, use flag_for_feedback
 """

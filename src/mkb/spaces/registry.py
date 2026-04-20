@@ -15,6 +15,7 @@ from pathlib import Path
 
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Space
+from mkb.spaces.schema_utils import normalize_extraction_schema
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,14 @@ def create_space(
         if existing:
             return {"error": f"Space '{name}' already exists.", "space_id": str(existing.space_id)}
 
+        normalized_schema = normalize_extraction_schema(extraction_schema)
+
         space = Space(
             space_id=uuid.uuid4(),
             name=name,
             description=description,
             domain=domain,
-            extraction_schema=extraction_schema,
+            extraction_schema=normalized_schema,
             system_prompt=system_prompt,
             field_descriptions=field_descriptions,
             version=1,
@@ -100,10 +103,13 @@ def update_space(
             return {"error": f"Space {space_id} not found."}
 
         for key, value in changes.items():
-            if key in allowed_fields:
-                setattr(space, key, value)
-            else:
+            if key not in allowed_fields:
                 logger.warning("Ignoring unknown field: %s", key)
+                continue
+
+            if key == "extraction_schema":
+                value = normalize_extraction_schema(value)
+            setattr(space, key, value)
 
         space.version = space.version + 1
         session.commit()
@@ -141,7 +147,7 @@ def _space_to_dict(space: Space) -> dict:
         "name": space.name,
         "description": space.description,
         "domain": space.domain,
-        "extraction_schema": space.extraction_schema,
+        "extraction_schema": normalize_extraction_schema(space.extraction_schema),
         "system_prompt": space.system_prompt,
         "field_descriptions": space.field_descriptions,
         "version": space.version,
