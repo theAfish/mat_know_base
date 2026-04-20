@@ -111,7 +111,7 @@ cp .env.example .env
 make up
 
 # 4. Create database tables
-python -m mkb setup
+mkb setup
 ```
 
 ## Python API (Primary Interface)
@@ -157,59 +157,59 @@ api.list_reviewed_projections(space_id="...")
 api.get_reviewed_projection(reviewed_projection_id="...")
 
 # Streamlit UI
-# python -m mkb ui
+# mkb ui
 ```
 
 ## CLI
 
 ```bash
 # Database
-python -m mkb setup
-python -m mkb reset-db
+mkb setup
+mkb reset-db
 
 # Ingestion
-python -m mkb ingest ./data/papers/smith2024 --label "Smith 2024"
-python -m mkb sync --root-dir ./data/papers
+mkb ingest ./data/papers/smith2024 --label "Smith 2024"
+mkb sync --root-dir ./data/papers
 
 # Processing
-python -m mkb process
-python -m mkb process --project-id <uuid>
+mkb process
+mkb process --project-id <uuid>
 
 # Knowledge extraction
-python -m mkb extract                              # all pending
-python -m mkb extract --project-id <uuid>           # one project
-python -m mkb extract --max-passes 3               # multi-pass
-python -m mkb extract --model openai/gpt-4o         # override model
-python -m mkb extraction-history <project_id>       # view pass history
+mkb extract                              # all pending
+mkb extract --project-id <uuid>          # one project
+mkb extract --max-passes 3               # multi-pass
+mkb extract --model openai/gpt-4o        # override model
+mkb extraction-history <project_id>      # view pass history
 
 # Listing
-python -m mkb projects
-python -m mkb assets --project-id <uuid>
-python -m mkb frames
-python -m mkb frame <project_id>
+mkb projects
+mkb assets --project-id <uuid>
+mkb frames
+mkb frame <project_id>
 
 # Spaces & Projections
-python -m mkb space create --name catalysis --domain catalysis --schema-file schema.json
-python -m mkb space load space_definition.json
-python -m mkb space list
-python -m mkb space show catalysis
-python -m mkb project-run --space <id> --project-id <uuid>
-python -m mkb project-run --space <id> --all
-python -m mkb projections --space-id <uuid>
+mkb space create --name catalysis --domain catalysis --schema-file schema.json
+mkb space load space_definition.json
+mkb space list
+mkb space show catalysis
+mkb project-run --space <id> --project-id <uuid>
+mkb project-run --space <id> --all
+mkb projections --space-id <uuid>
 
 # Feedback
-python -m mkb feedback --project-id <uuid> --status OPEN
-python -m mkb review-feedback --project-id <uuid>
-python -m mkb resolve-feedback <feedback_id> --status RESOLVED --notes "Fixed"
+mkb feedback --project-id <uuid> --status OPEN
+mkb review-feedback --project-id <uuid>
+mkb resolve-feedback <feedback_id> --status RESOLVED --notes "Fixed"
 
 # Projection Review (multi-agent consolidation)
-python -m mkb review-projections --space <id> --project-id <uuid>
-python -m mkb review-projections --space <id> --all
-python -m mkb reviewed-projections --space-id <uuid>
-python -m mkb reviewed-projection <reviewed_projection_id>
+mkb review-projections --space <id> --project-id <uuid>
+mkb review-projections --space <id> --all
+mkb reviewed-projections --space-id <uuid>
+mkb reviewed-projection <reviewed_projection_id>
 
 # UI
-python -m mkb ui --port 8501
+mkb ui --port 8501
 ```
 
 ## LLM Configuration

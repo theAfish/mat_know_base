@@ -38,6 +38,9 @@ dev = [
     "ipython",
 ]
 
+[project.scripts]
+mkb = "mkb.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
