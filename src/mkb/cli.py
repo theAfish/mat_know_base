@@ -225,6 +225,51 @@ def cmd_resolve_feedback(args):
     _json_dump(result)
 
 
+# ── Projection review commands ──────────────────────────────────
+
+
+def cmd_review_projections(args):
+    from mkb.api import review_projections, review_projections_all
+    if args.all:
+        result = review_projections_all(
+            space_id=args.space,
+            model=args.model,
+            verbose=args.verbose,
+        )
+    else:
+        if not args.project_id:
+            print("Error: --project-id is required unless --all is specified.")
+            sys.exit(1)
+        result = review_projections(
+            space_id=args.space,
+            project_id=args.project_id,
+            model=args.model,
+            verbose=args.verbose,
+        )
+    _json_dump(result)
+
+
+def cmd_reviewed_projections(args):
+    from mkb.api import list_reviewed_projections
+    reviewed = list_reviewed_projections(space_id=args.space_id)
+    for r in reviewed:
+        print(
+            f"  {r['reviewed_projection_id']}  {r['status']:<10}  "
+            f"space={r['space_id'][:8]}  project={r['project_id'][:8]}  "
+            f"v{r['space_version']}  {r['reviewed_at'] or ''}"
+        )
+    print(f"\n{len(reviewed)} reviewed projection(s).")
+
+
+def cmd_reviewed_projection_show(args):
+    from mkb.api import get_reviewed_projection
+    rp = get_reviewed_projection(args.reviewed_projection_id)
+    if not rp:
+        print(f"Reviewed projection {args.reviewed_projection_id} not found.")
+        sys.exit(1)
+    _json_dump(rp)
+
+
 # ── UI command ───────────────────────────────────────────────────
 
 
@@ -371,6 +416,20 @@ def main():
     p.add_argument("--status", required=True, help="RESOLVED, DISMISSED, or DEV_ISSUE")
     p.add_argument("--notes", default="", help="Resolution notes")
 
+    # ── Projection Review subcommands ──
+    p = sub.add_parser("review-projections", help="Review and consolidate projections for a project")
+    p.add_argument("--space", "-s", required=True, help="Space ID or name")
+    p.add_argument("--project-id", "-p", default=None)
+    p.add_argument("--all", "-a", action="store_true", help="Review all projects in the space")
+    p.add_argument("--model", "-m", default=None)
+    p.add_argument("--verbose", "-v", action="store_true")
+
+    p = sub.add_parser("reviewed-projections", help="List reviewed projections")
+    p.add_argument("--space-id", "-s", default=None)
+
+    p = sub.add_parser("reviewed-projection", help="Show reviewed projection details")
+    p.add_argument("reviewed_projection_id")
+
     # ── UI ──
     p = sub.add_parser("ui", help="Launch the Streamlit UI")
     p.add_argument("--port", type=int, default=8501)
@@ -415,6 +474,9 @@ def main():
         "feedback": cmd_feedback,
         "review-feedback": cmd_review_feedback,
         "resolve-feedback": cmd_resolve_feedback,
+        "review-projections": cmd_review_projections,
+        "reviewed-projections": cmd_reviewed_projections,
+        "reviewed-projection": cmd_reviewed_projection_show,
         "ui": cmd_ui,
     }
 

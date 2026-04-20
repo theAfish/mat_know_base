@@ -774,6 +774,125 @@ def review_feedback(
     return run_feedback_review(pid, model=model, verbose=verbose)
 
 
+def review_projections(
+    space_id: str | uuid.UUID,
+    project_id: str | uuid.UUID,
+    model: str | None = None,
+    verbose: bool = False,
+) -> dict:
+    """Run projection review — consolidate and correct all projections for a project.
+
+    A strict reviewer agent compares all projection runs, cross-references
+    against the knowledge frame and source material, and produces a single
+    reviewed (consolidated, corrected) projection.
+    """
+    from mkb.agents.projection_reviewer import run_projection_review
+
+    init_db()
+    sid = uuid.UUID(str(space_id))
+    pid = uuid.UUID(str(project_id))
+    return run_projection_review(sid, pid, model=model, verbose=verbose)
+
+
+def review_projections_all(
+    space_id: str | uuid.UUID,
+    model: str | None = None,
+    verbose: bool = False,
+) -> dict:
+    """Run projection review on all projects in a space."""
+    from mkb.agents.projection_reviewer import run_projection_review_all
+
+    init_db()
+    sid = uuid.UUID(str(space_id))
+    return run_projection_review_all(sid, model=model, verbose=verbose)
+
+
+def get_reviewed_projection(reviewed_projection_id: str | uuid.UUID) -> dict | None:
+    """Get a reviewed projection by ID."""
+    from mkb.db.models import KnowledgeFrame, ReviewedProjection, Space
+    from mkb.spaces.schema_utils import normalize_projection_data
+
+    init_db()
+    rpid = uuid.UUID(str(reviewed_projection_id))
+    with SyncSessionLocal() as session:
+        rp = session.query(ReviewedProjection).filter_by(reviewed_projection_id=rpid).first()
+        if not rp:
+            return None
+        space = session.query(Space).filter_by(space_id=rp.space_id).first()
+        normalized_data, normalized_validation = normalize_projection_data(
+            rp.data or {},
+            space.extraction_schema if space else {},
+        )
+
+        validation_result = rp.validation_result or {}
+        if normalized_validation:
+            validation_result = {**normalized_validation, **validation_result}
+
+        return {
+            "reviewed_projection_id": str(rp.reviewed_projection_id),
+            "space_id": str(rp.space_id),
+            "project_id": str(rp.project_id),
+            "frame_id": str(rp.frame_id),
+            "status": rp.status.value,
+            "data": normalized_data,
+            "validation_result": validation_result or None,
+            "review_notes": rp.review_notes,
+            "source_projection_ids": rp.source_projection_ids,
+            "space_version": rp.space_version,
+            "reviewed_at": rp.reviewed_at.isoformat() if rp.reviewed_at else None,
+            "created_at": rp.created_at.isoformat() if rp.created_at else None,
+        }
+
+
+def list_reviewed_projections(
+    space_id: str | uuid.UUID | None = None,
+    project_id: str | uuid.UUID | None = None,
+    include_data: bool = False,
+) -> list[dict]:
+    """List reviewed projections, optionally filtered by space and/or project."""
+    from mkb.db.models import ReviewedProjection, Space
+    from mkb.spaces.schema_utils import normalize_projection_data
+
+    init_db()
+    with SyncSessionLocal() as session:
+        q = session.query(ReviewedProjection).order_by(
+            ReviewedProjection.reviewed_at.desc()
+        )
+        if space_id:
+            q = q.filter(ReviewedProjection.space_id == uuid.UUID(str(space_id)))
+        if project_id:
+            q = q.filter(ReviewedProjection.project_id == uuid.UUID(str(project_id)))
+
+        reviewed = q.all()
+        results = []
+        for rp in reviewed:
+            item = {
+                "reviewed_projection_id": str(rp.reviewed_projection_id),
+                "space_id": str(rp.space_id),
+                "project_id": str(rp.project_id),
+                "frame_id": str(rp.frame_id),
+                "status": rp.status.value,
+                "review_notes": rp.review_notes,
+                "source_projection_ids": rp.source_projection_ids,
+                "space_version": rp.space_version,
+                "reviewed_at": rp.reviewed_at.isoformat() if rp.reviewed_at else None,
+                "created_at": rp.created_at.isoformat() if rp.created_at else None,
+            }
+            if include_data:
+                space = session.query(Space).filter_by(space_id=rp.space_id).first()
+                normalized_data, _ = normalize_projection_data(
+                    rp.data or {},
+                    space.extraction_schema if space else {},
+                )
+                item["data"] = normalized_data
+            results.append(item)
+
+        return results
+
+
+# ── Feedback ─────────────────────────────────────────────────────
+
+
 def resolve_feedback(
     feedback_id: str | uuid.UUID,
     status: str,

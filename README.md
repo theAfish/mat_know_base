@@ -60,6 +60,36 @@ A **Space** defines a domain-specific extraction schema (e.g., "biomineralizatio
 
 Projection agents can flag ambiguous or missing data. The KB extraction agent can review these feedback items (on user activation) and update the knowledge frame accordingly.
 
+### Projection Review (Multi-Agent)
+
+A strict **Projection Reviewer** agent consolidates and corrects projection data through a multi-agent review process:
+
+```
+User activates review
+        │
+        ▼
+┌─────────────────────────┐
+│  Projection Reviewer    │  reads all projections + frame + source
+│  (strict data auditor)  │
+└────────┬────────────────┘
+         │ delegates verification
+         ▼
+┌─────────────────────────┐
+│  Projection Fixer       │  re-reads source material
+│  (sub-agent)            │  returns corrections
+└─────────────────────────┘
+         │
+         ▼
+   Single reviewed projection
+   (consolidated, corrected)
+```
+
+The reviewer:
+1. Loads all projection runs (from single or multiple extraction events)
+2. Cross-references against the knowledge frame and original source files
+3. Delegates complex verification to the fixer sub-agent
+4. Produces a single **reviewed projection** — consolidated, corrected, deduplicated
+
 ## Prerequisites
 
 - Python 3.10+
@@ -120,6 +150,12 @@ api.project(space_id="...", project_id="...")
 api.list_feedback(project_id="...", status="OPEN")
 api.review_feedback(project_id="...")
 
+# Projection review (multi-agent)
+api.review_projections(space_id="...", project_id="...")
+api.review_projections_all(space_id="...")
+api.list_reviewed_projections(space_id="...")
+api.get_reviewed_projection(reviewed_projection_id="...")
+
 # Streamlit UI
 # python -m mkb ui
 ```
@@ -166,6 +202,12 @@ python -m mkb feedback --project-id <uuid> --status OPEN
 python -m mkb review-feedback --project-id <uuid>
 python -m mkb resolve-feedback <feedback_id> --status RESOLVED --notes "Fixed"
 
+# Projection Review (multi-agent consolidation)
+python -m mkb review-projections --space <id> --project-id <uuid>
+python -m mkb review-projections --space <id> --all
+python -m mkb reviewed-projections --space-id <uuid>
+python -m mkb reviewed-projection <reviewed_projection_id>
+
 # UI
 python -m mkb ui --port 8501
 ```
@@ -205,6 +247,8 @@ src/mkb/
 │   ├── extraction.py               # KB extraction agent + multi-pass orchestration
 │   ├── review.py                   # Review agent for multi-turn extraction
 │   ├── projection.py               # Projection agent (space-specific extraction)
+│   ├── projection_reviewer.py      # Projection reviewer (multi-agent consolidation)
+│   ├── projection_fixer.py         # Fixer sub-agent (source verification)
 │   ├── feedback_reviewer.py        # Feedback review agent
 │   ├── dev_agent.py                # Dev agent interface (design only)
 │   ├── runner.py                   # Generic AgentRunner wrapper
@@ -212,11 +256,14 @@ src/mkb/
 │   │   ├── kb_extraction.py        # Flexible KB extraction prompt
 │   │   ├── review.py               # Review pass prompt
 │   │   ├── projection.py           # Projection prompt builder
+│   │   ├── projection_review.py    # Projection reviewer prompt
+│   │   ├── projection_fixer.py     # Fixer sub-agent prompt
 │   │   └── feedback_review.py      # Feedback review prompt
 │   └── tools/                      # Agent tool functions
 │       ├── reading.py              # Reading tools (markdown, dataframe, image, search)
 │       ├── frames.py               # Frame save/get/update tools
 │       ├── projection.py           # Projection save + flag_for_feedback
+│       ├── projection_review.py    # Projection review + re-extraction tools
 │       └── feedback.py             # Feedback query + resolve tools
 ├── spaces/
 │   └── registry.py                 # Space CRUD operations
@@ -247,6 +294,7 @@ src/mkb/
 | `extraction_passes` | Audit trail for each extraction/review pass |
 | `spaces` | Domain-specific extraction configurations |
 | `projections` | Results of projecting frames through spaces |
+| `reviewed_projections` | Consolidated, corrected projection results from multi-agent review |
 | `feedbacks` | Feedback items between agents |
 
 ## Services

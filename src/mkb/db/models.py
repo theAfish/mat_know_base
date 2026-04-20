@@ -51,6 +51,7 @@ class ProjectionStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     NEEDS_FEEDBACK = "NEEDS_FEEDBACK"
+    REVIEWED = "REVIEWED"
 
 
 class FeedbackStatus(str, enum.Enum):
@@ -365,4 +366,44 @@ class Feedback(Base):
         Index("ix_feedback_target_frame", "target_frame_id"),
         Index("ix_feedback_target_project", "target_project_id"),
         Index("ix_feedback_status", "status"),
+    )
+
+
+# ── Reviewed Projections ────────────────────────────────────────
+
+
+class ReviewedProjection(Base):
+    __tablename__ = "reviewed_projections"
+
+    reviewed_projection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    frame_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    status: Mapped[ProjectionStatus] = mapped_column(
+        Enum(ProjectionStatus, name="projection_status", create_type=False),
+        default=ProjectionStatus.PENDING,
+        nullable=False,
+    )
+
+    data: Mapped[dict | None] = mapped_column(JSONB)
+    validation_result: Mapped[dict | None] = mapped_column(JSONB)
+    review_notes: Mapped[str | None] = mapped_column(Text)
+    source_projection_ids: Mapped[list | None] = mapped_column(JSONB)
+
+    space_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_reviewed_projection_space_project", "space_id", "project_id"),
     )
