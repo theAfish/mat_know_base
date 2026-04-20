@@ -181,7 +181,8 @@ def cmd_projections(args):
     from mkb.api import list_projections
     projections = list_projections(space_id=args.space_id)
     for p in projections:
-        print(f"  {p['projection_id']}  {p['status']:<16}  space={p['space_id'][:8]}  frame={p['frame_id'][:8]}  v{p['space_version']}")
+        reviewed = f"  reviewed={p['times_reviewed']}" if p.get('times_reviewed') else ""
+        print(f"  {p['projection_id']}  {p['status']:<16}  space={p['space_id'][:8]}  frame={p['frame_id'][:8]}  v{p['space_version']}{reviewed}")
     print(f"\n{len(projections)} projection(s).")
 
 
@@ -248,26 +249,6 @@ def cmd_review_projections(args):
         )
     _json_dump(result)
 
-
-def cmd_reviewed_projections(args):
-    from mkb.api import list_reviewed_projections
-    reviewed = list_reviewed_projections(space_id=args.space_id)
-    for r in reviewed:
-        print(
-            f"  {r['reviewed_projection_id']}  {r['status']:<10}  "
-            f"space={r['space_id'][:8]}  project={r['project_id'][:8]}  "
-            f"v{r['space_version']}  {r['reviewed_at'] or ''}"
-        )
-    print(f"\n{len(reviewed)} reviewed projection(s).")
-
-
-def cmd_reviewed_projection_show(args):
-    from mkb.api import get_reviewed_projection
-    rp = get_reviewed_projection(args.reviewed_projection_id)
-    if not rp:
-        print(f"Reviewed projection {args.reviewed_projection_id} not found.")
-        sys.exit(1)
-    _json_dump(rp)
 
 
 # ── UI command ───────────────────────────────────────────────────
@@ -424,11 +405,6 @@ def main():
     p.add_argument("--model", "-m", default=None)
     p.add_argument("--verbose", "-v", action="store_true")
 
-    p = sub.add_parser("reviewed-projections", help="List reviewed projections")
-    p.add_argument("--space-id", "-s", default=None)
-
-    p = sub.add_parser("reviewed-projection", help="Show reviewed projection details")
-    p.add_argument("reviewed_projection_id")
 
     # ── UI ──
     p = sub.add_parser("ui", help="Launch the Streamlit UI")
@@ -475,8 +451,6 @@ def main():
         "review-feedback": cmd_review_feedback,
         "resolve-feedback": cmd_resolve_feedback,
         "review-projections": cmd_review_projections,
-        "reviewed-projections": cmd_reviewed_projections,
-        "reviewed-projection": cmd_reviewed_projection_show,
         "ui": cmd_ui,
     }
 

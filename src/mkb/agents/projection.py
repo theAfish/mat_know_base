@@ -9,20 +9,17 @@ per a domain-specific schema.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
 
+from mkb.agents._utils import SpaceConfig, create_llm, sync_agent_run
 from mkb.agents.prompts.projection import build_projection_prompt
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.projection import PROJECTION_TOOLS
-from mkb.config import settings
-from mkb.db.engine import SyncSessionLocal, init_db
+from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     FrameStatus,
     KnowledgeFrame,
@@ -36,13 +33,8 @@ logger = logging.getLogger(__name__)
 APP_NAME = "mkb_projection"
 
 
-def build_projection_agent(space: Space, model: str | None = None) -> Agent:
+def build_projection_agent(space: Space | SpaceConfig, model: str | None = None) -> Agent:
     """Create a projection agent configured for a specific space."""
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-    if settings.openai_api_base:
-        os.environ.setdefault("OPENAI_API_BASE", settings.openai_api_base)
-
     prompt = build_projection_prompt(
         domain=space.domain,
         system_prompt=space.system_prompt,
@@ -50,7 +42,7 @@ def build_projection_agent(space: Space, model: str | None = None) -> Agent:
         field_descriptions=space.field_descriptions,
     )
 
-    llm = LiteLlm(model=model or settings.extraction_model)
+    llm = create_llm(model)
     return Agent(
         name="projection_agent",
         model=llm,
@@ -92,23 +84,15 @@ async def _run_projection_async(
         projection_id = projection.projection_id
         space_name = space.name
 
-        # Need to access space attributes before session closes
-        space_domain = space.domain
-        space_system_prompt = space.system_prompt
-        space_extraction_schema = space.extraction_schema
-        space_field_descriptions = space.field_descriptions
+        # Capture space attributes before session closes
+        space_cfg = SpaceConfig(
+            domain=space.domain,
+            system_prompt=space.system_prompt,
+            extraction_schema=space.extraction_schema,
+            field_descriptions=space.field_descriptions,
+        )
 
-    # Build agent with space-specific prompt
-    # Reconstruct a minimal space-like object for the agent builder
-    class SpaceProxy:
-        pass
-    sp = SpaceProxy()
-    sp.domain = space_domain
-    sp.system_prompt = space_system_prompt
-    sp.extraction_schema = space_extraction_schema
-    sp.field_descriptions = space_field_descriptions
-
-    agent = build_projection_agent(sp, model)
+    agent = build_projection_agent(space_cfg, model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"projection_{projection_id}"
@@ -155,24 +139,24 @@ async def _run_projection_async(
     }
 
 
-def run_projection(
+@sync_agent_run
+async def run_projection(
     space_id: uuid.UUID,
     frame_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Synchronous wrapper — run projection on one frame."""
-    init_db()
-    return asyncio.run(_run_projection_async(space_id, frame_id, model, verbose))
+    """Run projection on one frame."""
+    return await _run_projection_async(space_id, frame_id, model, verbose)
 
 
-def run_projection_all(
+@sync_agent_run
+async def run_projection_all(
     space_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
     """Run projection on all completed frames using a space definition."""
-    init_db()
     sid = space_id
 
     with SyncSessionLocal() as db:
@@ -186,7 +170,7 @@ def run_projection_all(
     results = []
     for fid in frame_ids:
         logger.info("Projecting frame %s with space %s ...", fid, sid)
-        result = run_projection(sid, fid, model=model, verbose=verbose)
+        result = await _run_projection_async(sid, fid, model=model, verbose=verbose)
         results.append(result)
         logger.info("  → %s", result.get("status", "unknown"))
 

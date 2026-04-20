@@ -59,7 +59,7 @@ def _filter_latest_projections(projections: list[dict]) -> list[dict]:
 
 
 def _projection_to_section_rows(projection: dict) -> dict[str, list[dict[str, str]]]:
-    if projection.get("status") != "COMPLETED" or not projection.get("data"):
+    if projection.get("status") not in ("COMPLETED", "REVIEWED") or not projection.get("data"):
         return {}
 
     metadata = {
@@ -181,6 +181,14 @@ def _render_projection_data(data: dict, source_project_id: str | None = None):
         _render_projection_section(section_name, section_value, source_project_id=source_project_id)
 
 
+def _review_badge(projection: dict) -> str:
+    """Return a review status badge string."""
+    times = projection.get("times_reviewed", 0)
+    if times > 0:
+        return f"Reviewed ({times}x)"
+    return "Raw"
+
+
 def render():
     st.header("Projections")
 
@@ -208,18 +216,7 @@ def render():
             st.write(f"**Description:** {space['description']}")
         st.json(space["extraction_schema"])
 
-    # Main tabs: Raw Projections vs Reviewed Projections
-    tab_raw, tab_reviewed = st.tabs(["Raw Projections", "Reviewed Projections"])
-
-    with tab_raw:
-        _render_raw_projections_tab(space_id)
-
-    with tab_reviewed:
-        _render_reviewed_projections_tab(space_id)
-
-
-def _render_raw_projections_tab(space_id: str):
-    """Render the raw projections tab (existing behavior)."""
+    # Projections view (unified — no tabs)
     view_mode = st.radio(
         "Projection versions",
         ["Newest only", "All history"],
@@ -227,7 +224,6 @@ def _render_raw_projections_tab(space_id: str):
     )
     newest_only = view_mode == "Newest only"
 
-    # Projections list
     projections = api.list_projections(
         space_id=space_id,
         include_data=True,
@@ -241,13 +237,14 @@ def _render_raw_projections_tab(space_id: str):
         st.info("No projections for this space yet.")
         return
 
-    st.caption(f"Showing {len(projections)} projection run(s) for this space.")
+    st.caption(f"Showing {len(projections)} projection(s) for this space.")
     _render_combined_projection_table(projections)
     st.divider()
 
     # Status colors
     status_colors = {
         "COMPLETED": "🟢",
+        "REVIEWED": "🟣",
         "IN_PROGRESS": "🟡",
         "PENDING": "⚪",
         "FAILED": "🔴",
@@ -256,6 +253,7 @@ def _render_raw_projections_tab(space_id: str):
 
     for p in projections:
         icon = status_colors.get(p["status"], "⚪")
+        badge = _review_badge(p)
         col1, col2, col3 = st.columns([1, 3, 1])
         with col1:
             st.write(f"{icon} {p['status']}")
@@ -263,10 +261,11 @@ def _render_raw_projections_tab(space_id: str):
             if p.get("project_id"):
                 st.write(f"Project: {p['project_id'][:12]}...")
             timestamp = _projection_timestamp(p)
+            info_parts = [f"Frame: {p['frame_id'][:12]}..."]
             if timestamp:
-                st.caption(f"Frame: {p['frame_id'][:12]}... | Extracted: {timestamp}")
-            else:
-                st.caption(f"Frame: {p['frame_id'][:12]}...")
+                info_parts.append(f"Extracted: {timestamp}")
+            info_parts.append(badge)
+            st.caption(" | ".join(info_parts))
         with col3:
             if st.button("View", key=f"proj_{p['projection_id']}"):
                 st.session_state["selected_projection"] = p["projection_id"]
@@ -279,10 +278,16 @@ def _render_raw_projections_tab(space_id: str):
             st.subheader("Projection Data")
             st.write(f"**Status:** {proj['status']}")
             st.write(f"**Space Version:** {proj['space_version']}")
+            st.write(f"**Review Status:** {_review_badge(proj)}")
             if proj.get("project_id"):
                 st.write(f"**Source Project ID:** {proj['project_id']}")
             if proj.get("agent_notes"):
                 st.write(f"**Agent Notes:** {proj['agent_notes']}")
+            if proj.get("review_notes"):
+                with st.expander("Review Notes"):
+                    st.write(proj["review_notes"])
+            if proj.get("reviewed_at"):
+                st.write(f"**Last Reviewed:** {proj['reviewed_at']}")
             if proj.get("data"):
                 _render_projection_data(proj["data"], source_project_id=proj.get("project_id"))
             if proj.get("validation_result"):
@@ -293,88 +298,3 @@ def _render_raw_projections_tab(space_id: str):
                         st.write(proj["validation_result"])
         elif proj is None or proj["space_id"] != space_id:
             st.session_state.pop("selected_projection", None)
-
-
-def _render_reviewed_projections_tab(space_id: str):
-    """Render the reviewed projections tab."""
-    reviewed_list = api.list_reviewed_projections(space_id=space_id, include_data=True)
-
-    if not reviewed_list:
-        st.info(
-            "No reviewed projections yet. Use the CLI to run a projection review:\n\n"
-            "`mkb review-projections --space <id> --project-id <uuid>`"
-        )
-        return
-
-    st.caption(f"Showing {len(reviewed_list)} reviewed projection(s) for this space.")
-
-    # Render combined table from reviewed projections
-    reviewed_as_projections = [
-        {
-            "projection_id": rp["reviewed_projection_id"],
-            "project_id": rp["project_id"],
-            "status": rp["status"],
-            "data": rp.get("data"),
-            "extracted_at": rp.get("reviewed_at"),
-            "created_at": rp.get("created_at"),
-        }
-        for rp in reviewed_list
-    ]
-    _render_combined_projection_table(reviewed_as_projections)
-    st.divider()
-
-    status_colors = {
-        "REVIEWED": "🟣",
-        "COMPLETED": "🟢",
-        "IN_PROGRESS": "🟡",
-        "PENDING": "⚪",
-        "FAILED": "🔴",
-    }
-
-    for rp in reviewed_list:
-        icon = status_colors.get(rp["status"], "⚪")
-        col1, col2, col3 = st.columns([1, 3, 1])
-        with col1:
-            st.write(f"{icon} {rp['status']}")
-        with col2:
-            st.write(f"Project: {rp['project_id'][:12]}...")
-            reviewed_at = rp.get("reviewed_at") or rp.get("created_at") or ""
-            source_count = len(rp.get("source_projection_ids") or [])
-            st.caption(
-                f"Reviewed: {reviewed_at} | "
-                f"Sources: {source_count} projection(s) | "
-                f"v{rp['space_version']}"
-            )
-        with col3:
-            if st.button("View", key=f"rp_{rp['reviewed_projection_id']}"):
-                st.session_state["selected_reviewed_projection"] = rp["reviewed_projection_id"]
-
-    # Detail view
-    if "selected_reviewed_projection" in st.session_state:
-        rp = api.get_reviewed_projection(st.session_state["selected_reviewed_projection"])
-        if rp and rp["space_id"] == space_id:
-            st.divider()
-            st.subheader("Reviewed Projection Data")
-            st.write(f"**Status:** {rp['status']}")
-            st.write(f"**Space Version:** {rp['space_version']}")
-            st.write(f"**Project ID:** {rp['project_id']}")
-            if rp.get("reviewed_at"):
-                st.write(f"**Reviewed At:** {rp['reviewed_at']}")
-            if rp.get("source_projection_ids"):
-                st.write(f"**Source Projections:** {len(rp['source_projection_ids'])} run(s) reviewed")
-                with st.expander("Source Projection IDs"):
-                    for pid in rp["source_projection_ids"]:
-                        st.code(pid)
-            if rp.get("review_notes"):
-                with st.expander("Review Notes"):
-                    st.write(rp["review_notes"])
-            if rp.get("data"):
-                _render_projection_data(rp["data"], source_project_id=rp.get("project_id"))
-            if rp.get("validation_result"):
-                with st.expander("Validation"):
-                    if isinstance(rp["validation_result"], dict):
-                        _render_mapping_table(rp["validation_result"])
-                    else:
-                        st.write(rp["validation_result"])
-        elif rp is None or rp["space_id"] != space_id:
-            st.session_state.pop("selected_reviewed_projection", None)

@@ -2,13 +2,12 @@
 Projection review tools for the projection reviewer agent.
 
 These tools let the reviewer agent read all projections for a project,
-access knowledge frames, save consolidated reviewed projections, and
-delegate re-extraction to a fixer sub-agent.
+access knowledge frames, save the winning projection (updating it in-place
+and soft-deleting the rest), and delegate re-extraction to a fixer sub-agent.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -19,7 +18,6 @@ from mkb.db.models import (
     KnowledgeFrame,
     Projection,
     ProjectionStatus,
-    ReviewedProjection,
     Space,
 )
 from mkb.spaces.schema_utils import normalize_projection_data
@@ -30,8 +28,8 @@ logger = logging.getLogger(__name__)
 def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
     """Get all projection data for a space+project combination.
 
-    Returns all projection runs (all timestamps) so the reviewer can
-    compare, merge, and identify discrepancies.
+    Returns all non-deleted projection runs (grouped by timestamp) so the
+    reviewer can compare, pick the best, and merge corrections.
 
     Args:
         space_id: The space to filter projections by.
@@ -59,6 +57,7 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
         projections = (
             session.query(Projection)
             .filter_by(space_id=sid, frame_id=frame.frame_id)
+            .filter(Projection.deleted_at.is_(None))
             .order_by(Projection.created_at.desc())
             .all()
         )
@@ -81,6 +80,7 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
                 "validation_result": validation,
                 "agent_notes": proj.agent_notes,
                 "space_version": proj.space_version,
+                "times_reviewed": proj.times_reviewed,
                 "extracted_at": proj.extracted_at.isoformat() if proj.extracted_at else None,
                 "created_at": proj.created_at.isoformat() if proj.created_at else None,
             })
@@ -124,44 +124,38 @@ def get_frame_for_review(project_id: str) -> dict:
 
 
 def save_reviewed_projection(
-    space_id: str,
-    project_id: str,
+    winning_projection_id: str,
     data: dict,
     review_notes: str = "",
-    source_projection_ids: list | None = None,
 ) -> dict:
-    """Save the consolidated reviewed projection.
+    """Save the reviewed projection by updating the winning projection in-place.
 
-    This creates or updates a single reviewed projection for a space+project,
-    replacing any previous reviewed version.
+    Updates the winning projection's data with the corrected/consolidated
+    version, increments its review count, and soft-deletes all other
+    projections for the same space+frame.
 
     Args:
-        space_id: The space this review applies to.
-        project_id: The project this review applies to.
-        data: The consolidated, corrected projection data.
-        review_notes: Agent's review summary and corrections made.
-        source_projection_ids: List of projection IDs that were reviewed/merged.
+        winning_projection_id: The projection ID chosen as the winner.
+        data: The corrected, consolidated projection data.
+        review_notes: Reviewer's summary of corrections and decisions made.
 
     Returns:
-        Dict with reviewed_projection_id and status.
+        Dict with projection_id, status, and count of soft-deleted projections.
     """
-    sid = parse_uuidish(space_id)
-    if not sid:
-        return {"error": invalid_identifier_message("space_id", space_id)}
-    pid = parse_uuidish(project_id)
-    if not pid:
-        return {"error": invalid_identifier_message("project_id", project_id)}
+    wid = parse_uuidish(winning_projection_id)
+    if not wid:
+        return {"error": invalid_identifier_message("winning_projection_id", winning_projection_id)}
 
     now = datetime.now(timezone.utc)
 
     with SyncSessionLocal() as session:
-        space = session.query(Space).filter_by(space_id=sid).first()
-        if not space:
-            return {"error": f"Space {space_id} not found."}
+        winner = session.query(Projection).filter_by(projection_id=wid).first()
+        if not winner:
+            return {"error": f"Projection {winning_projection_id} not found."}
 
-        frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
-        if not frame:
-            return {"error": f"No knowledge frame found for project {project_id}."}
+        space = session.query(Space).filter_by(space_id=winner.space_id).first()
+        if not space:
+            return {"error": f"Space {winner.space_id} not found."}
 
         # Normalize the data against the space schema
         normalized_data, validation_result = normalize_projection_data(
@@ -170,50 +164,39 @@ def save_reviewed_projection(
         )
 
         # Inject source_project_id references
-        from mkb.agents.tools.projection import _inject_source_project_references
-        normalized_data = _inject_source_project_references(normalized_data, str(pid))
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=winner.frame_id).first()
+        if frame:
+            from mkb.agents.tools.projection import _inject_source_project_references
+            normalized_data = _inject_source_project_references(
+                normalized_data, str(frame.project_id)
+            )
 
-        # Upsert: replace existing reviewed projection for this space+project
-        existing = (
-            session.query(ReviewedProjection)
-            .filter_by(space_id=sid, project_id=pid)
-            .first()
+        # Update the winner in-place
+        winner.data = normalized_data
+        winner.validation_result = validation_result or None
+        winner.review_notes = review_notes
+        winner.status = ProjectionStatus.REVIEWED
+        winner.times_reviewed = winner.times_reviewed + 1
+        winner.reviewed_at = now
+
+        # Soft-delete all OTHER projections for the same space+frame
+        others = (
+            session.query(Projection)
+            .filter_by(space_id=winner.space_id, frame_id=winner.frame_id)
+            .filter(Projection.projection_id != wid)
+            .filter(Projection.deleted_at.is_(None))
+            .all()
         )
+        for other in others:
+            other.deleted_at = now
 
-        if existing:
-            existing.data = normalized_data
-            existing.validation_result = validation_result or None
-            existing.review_notes = review_notes
-            existing.source_projection_ids = source_projection_ids or []
-            existing.status = ProjectionStatus.REVIEWED
-            existing.space_version = space.version
-            existing.frame_id = frame.frame_id
-            existing.reviewed_at = now
-            session.commit()
-            return {
-                "reviewed_projection_id": str(existing.reviewed_projection_id),
-                "status": "updated",
-            }
-
-        reviewed = ReviewedProjection(
-            reviewed_projection_id=uuid.uuid4(),
-            space_id=sid,
-            project_id=pid,
-            frame_id=frame.frame_id,
-            data=normalized_data,
-            validation_result=validation_result or None,
-            review_notes=review_notes,
-            source_projection_ids=source_projection_ids or [],
-            status=ProjectionStatus.REVIEWED,
-            space_version=space.version,
-            reviewed_at=now,
-        )
-        session.add(reviewed)
         session.commit()
 
         return {
-            "reviewed_projection_id": str(reviewed.reviewed_projection_id),
-            "status": "created",
+            "projection_id": str(winner.projection_id),
+            "status": "reviewed",
+            "times_reviewed": winner.times_reviewed,
+            "soft_deleted_count": len(others),
         }
 
 

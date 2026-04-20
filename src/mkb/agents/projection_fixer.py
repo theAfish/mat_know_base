@@ -8,18 +8,15 @@ returns corrections/findings to the reviewer.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import uuid
 
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
 
+from mkb.agents._utils import create_llm, sync_agent_run
 from mkb.agents.prompts.projection_fixer import PROJECTION_FIXER_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools import ALL_TOOLS
-from mkb.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +25,7 @@ APP_NAME = "mkb_projection_fixer"
 
 def build_fixer_agent(model: str | None = None) -> Agent:
     """Create a projection fixer agent with reading + frame tools."""
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-    if settings.openai_api_base:
-        os.environ.setdefault("OPENAI_API_BASE", settings.openai_api_base)
-
-    llm = LiteLlm(model=model or settings.extraction_model)
+    llm = create_llm(model)
     return Agent(
         name="projection_fixer",
         model=llm,
@@ -88,14 +80,13 @@ async def _run_fixer_async(
     }
 
 
-def run_fixer(
+@sync_agent_run
+async def run_fixer(
     project_id: uuid.UUID,
     fields: str,
     context: str = "",
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Synchronous wrapper — run fixer on specific fields."""
-    return asyncio.run(
-        _run_fixer_async(project_id, fields, context, model, verbose)
-    )
+    """Run fixer on specific fields."""
+    return await _run_fixer_async(project_id, fields, context, model, verbose)
