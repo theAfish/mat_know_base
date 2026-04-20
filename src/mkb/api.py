@@ -7,13 +7,115 @@ interface; the CLI is a thin wrapper around these functions.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from pathlib import Path
 
+from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal, init_db
 
 logger = logging.getLogger(__name__)
+
+
+def _sha256_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
+
+
+def _inspect_manual_processed_dir(
+    processed_dir: str | Path,
+    primary_file: str | None = None,
+) -> dict:
+    """Inspect a handmade processed-output directory and describe its bundle."""
+    root = Path(processed_dir).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Processed directory not found: {root}")
+
+    files = sorted(p for p in root.rglob("*") if p.is_file())
+    if not files:
+        raise FileNotFoundError(f"No files found in processed directory: {root}")
+
+    if primary_file:
+        primary_path = (root / primary_file).resolve()
+        if not primary_path.is_file():
+            raise FileNotFoundError(f"Primary file not found: {primary_path}")
+    else:
+        def _priority(path: Path) -> tuple[int, str]:
+            suffix = path.suffix.lower()
+            if suffix in {".md", ".markdown"}:
+                rank = 0
+            elif suffix in {".parquet", ".csv", ".tsv"}:
+                rank = 1
+            elif suffix == ".json":
+                rank = 2
+            elif suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                rank = 4
+            else:
+                rank = 3
+            return rank, path.relative_to(root).as_posix()
+
+        primary_path = sorted(files, key=_priority)[0]
+
+    primary_relpath = primary_path.relative_to(root).as_posix()
+    primary_bytes = primary_path.read_bytes()
+
+    ext = primary_path.suffix.lower()
+    if ext in {".md", ".markdown", ".txt"}:
+        processing_type = "MARKDOWN"
+    elif ext in {".parquet", ".csv", ".tsv", ".json"}:
+        processing_type = "DATAFRAME"
+    elif ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        processing_type = "IMAGE"
+    else:
+        processing_type = "MARKDOWN"
+
+    artifact_files = sorted(
+        p.relative_to(root).as_posix()
+        for p in files
+        if p != primary_path
+    )
+
+    bundle_hash = hashlib.sha256()
+    bundle_hash.update(primary_bytes)
+    for relpath in artifact_files:
+        data = (root / relpath).read_bytes()
+        bundle_hash.update(relpath.encode("utf-8"))
+        bundle_hash.update(_sha256_bytes(data).encode("utf-8"))
+
+    from mkb.db.models import ProcessingType
+
+    return {
+        "local_dir": str(root),
+        "primary_name": primary_path.name,
+        "primary_relpath": primary_relpath,
+        "processing_type": ProcessingType(processing_type),
+        "output_format": primary_path.suffix.lstrip(".") or "bin",
+        "artifact_files": artifact_files,
+        "size_bytes": len(primary_bytes),
+        "sha256": bundle_hash.hexdigest(),
+    }
+
+
+def _choose_asset_for_manual_output(assets: list, primary_name: str | None = None):
+    """Choose the most likely raw asset for a handmade processed bundle."""
+    if not assets:
+        return None
+    if not primary_name:
+        return assets[0]
+
+    primary_stem = Path(primary_name).stem.lower()
+    for asset in assets:
+        if Path(asset.filename).stem.lower() == primary_stem:
+            return asset
+
+    for asset in assets:
+        asset_stem = Path(asset.filename).stem.lower()
+        if primary_stem in asset_stem or asset_stem in primary_stem:
+            return asset
+
+    return assets[0]
 
 
 # ── Lifecycle ────────────────────────────────────────────────────
@@ -210,6 +312,192 @@ def get_extraction_history(project_id: str | uuid.UUID) -> list[dict]:
 
 
 # ── Projects & Assets ────────────────────────────────────────────
+
+
+def list_processed_assets(
+    project_id: str | uuid.UUID | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """List processed outputs, optionally filtered by project."""
+    from mkb.db.models import Asset, ProcessedAsset, ProjectAsset
+
+    with SyncSessionLocal() as session:
+        q = session.query(ProcessedAsset).order_by(ProcessedAsset.created_at.desc())
+        if project_id is not None:
+            pid = uuid.UUID(str(project_id))
+            links = session.query(ProjectAsset).filter_by(project_id=pid).all()
+            asset_ids = [l.asset_id for l in links]
+            if not asset_ids:
+                return []
+            q = q.filter(ProcessedAsset.asset_id.in_(asset_ids))
+
+        rows = q.limit(limit).all()
+        result = []
+        for row in rows:
+            asset = session.query(Asset).filter_by(asset_id=row.asset_id).first()
+            meta = row.conversion_metadata or {}
+            result.append({
+                "processed_asset_id": str(row.processed_asset_id),
+                "asset_id": str(row.asset_id),
+                "filename": asset.filename if asset else None,
+                "processing_type": row.processing_type.value,
+                "output_format": row.output_format,
+                "s3_key": row.s3_key,
+                "local_dir": meta.get("local_dir"),
+                "primary_relpath": meta.get("primary_relpath"),
+                "artifact_count": meta.get("artifact_count", 0),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            })
+        return result
+
+
+def link_manual_processed_data(
+    processed_dir: str | Path,
+    paper_dir: str | Path | None = None,
+    project_id: str | uuid.UUID | None = None,
+    asset_id: str | uuid.UUID | None = None,
+    primary_file: str | None = None,
+    processing_type: str | None = None,
+    output_format: str | None = None,
+) -> dict:
+    """Attach a handmade processed-output folder to an existing project asset.
+
+    This is intended for debugging or backfilling local outputs that were created
+    outside the normal processing pipeline.
+    """
+    from mkb.db.models import Asset, ProcessedAsset, ProcessingLog, ProcessingType, ProjectAsset, ResearchProject
+
+    bundle = _inspect_manual_processed_dir(processed_dir, primary_file=primary_file)
+    paper_path = Path(paper_dir).resolve() if paper_dir is not None else None
+
+    if processing_type:
+        proc_type = ProcessingType(processing_type.upper())
+    else:
+        proc_type = bundle["processing_type"]
+    out_format = output_format or bundle["output_format"]
+
+    with SyncSessionLocal() as session:
+        project = None
+        if project_id is not None:
+            pid = uuid.UUID(str(project_id))
+            project = session.query(ResearchProject).filter_by(project_id=pid).first()
+        elif paper_path is not None:
+            project = session.query(ResearchProject).filter_by(source_path=str(paper_path)).first()
+            if project is None and paper_path.is_dir():
+                ingest_result = ingest(paper_path, label=paper_path.name)
+                pid = uuid.UUID(ingest_result["project_id"])
+                project = session.query(ResearchProject).filter_by(project_id=pid).first()
+
+        if not project:
+            raise ValueError("Could not find a target project. Provide --paper-dir or --project-id.")
+
+        if asset_id is not None:
+            target_asset = session.query(Asset).filter_by(asset_id=uuid.UUID(str(asset_id))).first()
+        else:
+            links = session.query(ProjectAsset).filter_by(project_id=project.project_id).all()
+            asset_ids = [l.asset_id for l in links]
+            assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all() if asset_ids else []
+            target_asset = _choose_asset_for_manual_output(assets, bundle["primary_name"])
+
+        if not target_asset:
+            raise ValueError(
+                "No raw asset found for the target project. Ingest the paper folder first or pass --asset-id."
+            )
+
+        link = session.query(ProjectAsset).filter_by(
+            project_id=project.project_id,
+            asset_id=target_asset.asset_id,
+        ).first()
+        if not link:
+            session.add(ProjectAsset(project_id=project.project_id, asset_id=target_asset.asset_id))
+
+        s3_key = f"{project.project_id}/{target_asset.asset_id}/{bundle['primary_relpath']}"
+        metadata = {
+            "project_id": str(project.project_id),
+            "local_dir": bundle["local_dir"],
+            "primary_relpath": bundle["primary_relpath"],
+            "artifact_files": bundle["artifact_files"],
+            "artifact_count": len(bundle["artifact_files"]),
+            "linked_via": "debug_manual_link",
+            "paper_dir": str(paper_path) if paper_path is not None else None,
+        }
+
+        existing = (
+            session.query(ProcessedAsset)
+            .filter_by(asset_id=target_asset.asset_id, processing_type=proc_type)
+            .order_by(ProcessedAsset.created_at.desc())
+            .first()
+        )
+
+        if existing:
+            existing.output_format = out_format
+            existing.s3_bucket = settings.s3_bucket_processed
+            existing.s3_key = s3_key
+            existing.sha256 = bundle["sha256"]
+            existing.size_bytes = bundle["size_bytes"]
+            existing.conversion_metadata = metadata
+            existing.raw_asset_hash = target_asset.sha256
+            processed_asset = existing
+            action = "updated"
+        else:
+            processed_asset = ProcessedAsset(
+                processed_asset_id=uuid.uuid4(),
+                asset_id=target_asset.asset_id,
+                processing_type=proc_type,
+                output_format=out_format,
+                s3_bucket=settings.s3_bucket_processed,
+                s3_key=s3_key,
+                sha256=bundle["sha256"],
+                size_bytes=bundle["size_bytes"],
+                conversion_metadata=metadata,
+                raw_asset_hash=target_asset.sha256,
+            )
+            session.add(processed_asset)
+            action = "created"
+
+        asset_meta = dict(target_asset.metadata_ or {})
+        processing_meta = dict(asset_meta.get("processing") or {})
+        processing_meta.update(
+            {
+                "last_status": "SUCCESS",
+                "last_processing_type": proc_type.value,
+                "last_output_format": out_format,
+                "last_processed_asset_id": str(processed_asset.processed_asset_id),
+                "last_processed_local_dir": bundle["local_dir"],
+                "source": "manual_debug_link",
+            }
+        )
+        asset_meta["processing"] = processing_meta
+        target_asset.metadata_ = asset_meta
+
+        session.add(
+            ProcessingLog(
+                log_id=uuid.uuid4(),
+                asset_id=target_asset.asset_id,
+                processing_type=proc_type,
+                status="SUCCESS",
+                processed_asset_id=processed_asset.processed_asset_id,
+                details={
+                    "debug": True,
+                    "action": action,
+                    "primary_relpath": bundle["primary_relpath"],
+                    "artifact_count": len(bundle["artifact_files"]),
+                },
+            )
+        )
+        session.commit()
+
+        return {
+            "status": action,
+            "project_id": str(project.project_id),
+            "asset_id": str(target_asset.asset_id),
+            "processed_asset_id": str(processed_asset.processed_asset_id),
+            "processing_type": proc_type.value,
+            "output_format": out_format,
+            "local_dir": bundle["local_dir"],
+            "primary_relpath": bundle["primary_relpath"],
+            "artifact_files": bundle["artifact_files"],
+        }
 
 
 def list_projects(limit: int = 50) -> list[dict]:

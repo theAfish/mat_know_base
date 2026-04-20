@@ -239,6 +239,33 @@ def cmd_ui(args):
     subprocess.run(cmd)
 
 
+def cmd_processed(args):
+    from mkb.api import list_processed_assets
+    processed = list_processed_assets(project_id=args.project_id, limit=args.limit)
+    for p in processed:
+        target = p["primary_relpath"] or p["s3_key"]
+        print(
+            f"  {p['asset_id']}  {p['processing_type']:<10}  "
+            f"{p['output_format']:<8}  {target}"
+        )
+    print(f"\n{len(processed)} processed asset(s).")
+
+
+def cmd_debug_link_processed(args):
+    from mkb.api import link_manual_processed_data
+
+    result = link_manual_processed_data(
+        processed_dir=args.processed_dir,
+        paper_dir=args.paper_dir,
+        project_id=args.project_id,
+        asset_id=args.asset_id,
+        primary_file=args.primary_file,
+        processing_type=args.processing_type,
+        output_format=args.output_format,
+    )
+    _json_dump(result)
+
+
 # ── Argument Parsing ─────────────────────────────────────────────
 
 
@@ -348,6 +375,21 @@ def main():
     p = sub.add_parser("ui", help="Launch the Streamlit UI")
     p.add_argument("--port", type=int, default=8501)
 
+    # processed
+    p = sub.add_parser("processed", help="List processed outputs")
+    p.add_argument("--project-id", "-p", default=None)
+    p.add_argument("--limit", "-n", type=int, default=100)
+
+    # debug-link-processed
+    p = sub.add_parser("debug-link-processed", help="Attach a handmade processed folder to a paper/project")
+    p.add_argument("--processed-dir", required=True, help="Local processed folder to register")
+    p.add_argument("--paper-dir", default=None, help="Paper directory to resolve the target project")
+    p.add_argument("--project-id", "-p", default=None, help="Existing project ID to attach to")
+    p.add_argument("--asset-id", "-a", default=None, help="Optional raw asset ID override")
+    p.add_argument("--primary-file", default=None, help="Optional relative primary file inside the processed dir")
+    p.add_argument("--processing-type", default=None, help="Optional override: MARKDOWN, DATAFRAME, IMAGE")
+    p.add_argument("--output-format", default=None, help="Optional override for output format")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -364,6 +406,8 @@ def main():
         "assets": cmd_assets,
         "frames": cmd_frames,
         "frame": cmd_frame,
+        "processed": cmd_processed,
+        "debug-link-processed": cmd_debug_link_processed,
         "extraction-history": cmd_extraction_history,
         "project-run": cmd_project_run,
         "projections": cmd_projections,
