@@ -51,6 +51,11 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                     )
                 )
 
+        # Ensure REVIEWED value exists in projection_status enum
+        conn.execute(
+            text("ALTER TYPE projection_status ADD VALUE IF NOT EXISTS 'REVIEWED'")
+        )
+
 
 def init_db() -> None:
     """Create all tables from ORM metadata and patch older schemas."""
