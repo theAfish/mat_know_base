@@ -618,6 +618,7 @@ def project(
     from mkb.agents.projection import run_projection
     from mkb.db.models import KnowledgeFrame
 
+    init_db()
     sid = uuid.UUID(str(space_id))
 
     if frame_id:
@@ -644,6 +645,7 @@ def project_all(
     """Run projection on all completed frames using a space definition."""
     from mkb.agents.projection import run_projection_all
 
+    init_db()
     sid = uuid.UUID(str(space_id))
     return run_projection_all(sid, model=model, verbose=verbose)
 
@@ -652,6 +654,7 @@ def get_projection(projection_id: str | uuid.UUID) -> dict | None:
     """Get a projection by ID."""
     from mkb.db.models import KnowledgeFrame, Projection
 
+    init_db()
     pid = uuid.UUID(str(projection_id))
     with SyncSessionLocal() as session:
         proj = session.query(Projection).filter_by(projection_id=pid).first()
@@ -676,30 +679,53 @@ def get_projection(projection_id: str | uuid.UUID) -> dict | None:
 def list_projections(
     space_id: str | uuid.UUID | None = None,
     frame_id: str | uuid.UUID | None = None,
+    project_id: str | uuid.UUID | None = None,
+    include_data: bool = False,
+    newest_only: bool = False,
 ) -> list[dict]:
-    """List projections, optionally filtered by space or frame."""
+    """List projections, optionally filtered by space, frame, or project."""
     from mkb.db.models import KnowledgeFrame, Projection
 
+    init_db()
     with SyncSessionLocal() as session:
-        q = session.query(Projection).order_by(Projection.created_at.desc())
+        q = (
+            session.query(Projection, KnowledgeFrame.project_id)
+            .outerjoin(KnowledgeFrame, Projection.frame_id == KnowledgeFrame.frame_id)
+            .order_by(Projection.created_at.desc(), Projection.extracted_at.desc())
+        )
         if space_id:
-            q = q.filter_by(space_id=uuid.UUID(str(space_id)))
+            q = q.filter(Projection.space_id == uuid.UUID(str(space_id)))
         if frame_id:
-            q = q.filter_by(frame_id=uuid.UUID(str(frame_id)))
+            q = q.filter(Projection.frame_id == uuid.UUID(str(frame_id)))
+        if project_id:
+            q = q.filter(KnowledgeFrame.project_id == uuid.UUID(str(project_id)))
         projections = q.all()
-        return [
-            {
-                "projection_id": str(p.projection_id),
-                "space_id": str(p.space_id),
-                "frame_id": str(p.frame_id),
-                "project_id": str(frame.project_id) if (frame := session.query(KnowledgeFrame).filter_by(frame_id=p.frame_id).first()) else None,
-                "status": p.status.value,
-                "agent_notes": p.agent_notes,
-                "extracted_at": p.extracted_at.isoformat() if p.extracted_at else None,
-                "space_version": p.space_version,
+
+        results = []
+        seen_keys: set[tuple[str, str]] = set()
+        for projection, projection_project_id in projections:
+            project_value = str(projection_project_id) if projection_project_id else None
+            dedupe_key = (str(projection.space_id), project_value or str(projection.frame_id))
+            if newest_only and dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+
+            item = {
+                "projection_id": str(projection.projection_id),
+                "space_id": str(projection.space_id),
+                "frame_id": str(projection.frame_id),
+                "project_id": project_value,
+                "status": projection.status.value,
+                "agent_notes": projection.agent_notes,
+                "extracted_at": projection.extracted_at.isoformat() if projection.extracted_at else None,
+                "created_at": projection.created_at.isoformat() if projection.created_at else None,
+                "space_version": projection.space_version,
             }
-            for p in projections
-        ]
+            if include_data:
+                item["data"] = projection.data
+            results.append(item)
+
+        return results
 
 
 # ── Feedback ─────────────────────────────────────────────────────

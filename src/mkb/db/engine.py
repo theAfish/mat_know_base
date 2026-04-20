@@ -39,6 +39,18 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                     conn.execute(text(ddl))
                     existing_columns.add(column_name)
 
+        if inspector.has_table("projections"):
+            indexes = {index["name"]: index for index in inspector.get_indexes("projections")}
+            projection_index = indexes.get("ix_projection_space_frame")
+            if projection_index and projection_index.get("unique"):
+                conn.execute(text("DROP INDEX IF EXISTS ix_projection_space_frame"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_projection_space_frame "
+                        "ON projections (space_id, frame_id)"
+                    )
+                )
+
 
 def init_db() -> None:
     """Create all tables from ORM metadata and patch older schemas."""

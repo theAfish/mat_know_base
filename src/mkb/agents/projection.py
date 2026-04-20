@@ -22,7 +22,7 @@ from mkb.agents.prompts.projection import build_projection_prompt
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.projection import PROJECTION_TOOLS
 from mkb.config import settings
-from mkb.db.engine import SyncSessionLocal
+from mkb.db.engine import SyncSessionLocal, init_db
 from mkb.db.models import (
     FrameStatus,
     KnowledgeFrame,
@@ -78,22 +78,15 @@ async def _run_projection_async(
         if frame.status != FrameStatus.COMPLETED:
             return {"status": "error", "message": f"Frame is not completed (status: {frame.status.value})"}
 
-        # Create or get projection record
-        projection = db.query(Projection).filter_by(
-            space_id=space_id, frame_id=frame_id
-        ).first()
-        if not projection:
-            projection = Projection(
-                projection_id=uuid.uuid4(),
-                space_id=space_id,
-                frame_id=frame_id,
-                status=ProjectionStatus.IN_PROGRESS,
-                space_version=space.version,
-            )
-            db.add(projection)
-        else:
-            projection.status = ProjectionStatus.IN_PROGRESS
-            projection.space_version = space.version
+        # Always create a fresh projection record so history is preserved
+        projection = Projection(
+            projection_id=uuid.uuid4(),
+            space_id=space_id,
+            frame_id=frame_id,
+            status=ProjectionStatus.IN_PROGRESS,
+            space_version=space.version,
+        )
+        db.add(projection)
         db.commit()
 
         projection_id = projection.projection_id
@@ -169,6 +162,7 @@ def run_projection(
     verbose: bool = False,
 ) -> dict:
     """Synchronous wrapper — run projection on one frame."""
+    init_db()
     return asyncio.run(_run_projection_async(space_id, frame_id, model, verbose))
 
 
@@ -177,7 +171,8 @@ def run_projection_all(
     model: str | None = None,
     verbose: bool = False,
 ) -> dict:
-    """Run projection on all completed frames that don't have a projection for this space."""
+    """Run projection on all completed frames using a space definition."""
+    init_db()
     sid = space_id
 
     with SyncSessionLocal() as db:
@@ -185,15 +180,7 @@ def run_projection_all(
         if not space:
             return {"status": "error", "message": f"Space {sid} not found"}
 
-        # Find completed frames without a projection for this space
-        existing_frame_ids = [
-            p.frame_id for p in
-            db.query(Projection.frame_id).filter_by(space_id=sid).all()
-        ]
-        q = db.query(KnowledgeFrame).filter_by(status=FrameStatus.COMPLETED)
-        if existing_frame_ids:
-            q = q.filter(~KnowledgeFrame.frame_id.in_(existing_frame_ids))
-        frames = q.all()
+        frames = db.query(KnowledgeFrame).filter_by(status=FrameStatus.COMPLETED).all()
         frame_ids = [f.frame_id for f in frames]
 
     results = []

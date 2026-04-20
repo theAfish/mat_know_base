@@ -8,9 +8,9 @@ during knowledge extraction and projection.
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timezone
 
+from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Feedback, FeedbackStatus
 
@@ -23,7 +23,10 @@ def get_pending_feedback(project_id: str) -> list[dict]:
     Used by the KB extraction agent during feedback review to see
     what issues have been flagged by projection agents.
     """
-    pid = uuid.UUID(project_id)
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return [{"error": invalid_identifier_message("project_id", project_id)}]
+
     with SyncSessionLocal() as session:
         items = (
             session.query(Feedback)
@@ -59,13 +62,21 @@ def resolve_feedback_item(
     Returns:
         Dict with feedback_id and new status.
     """
-    fid = uuid.UUID(feedback_id)
+    fid = parse_uuidish(feedback_id)
+    if not fid:
+        return {"error": invalid_identifier_message("feedback_id", feedback_id)}
+
+    try:
+        resolved_status = FeedbackStatus(status)
+    except ValueError:
+        return {"error": f"Invalid status: {status!r}"}
+
     with SyncSessionLocal() as session:
         fb = session.query(Feedback).filter_by(feedback_id=fid).first()
         if not fb:
             return {"error": f"Feedback {feedback_id} not found."}
 
-        fb.status = FeedbackStatus(status)
+        fb.status = resolved_status
         fb.resolution_notes = resolution_notes
         fb.resolved_by = "kb_agent"
         fb.resolved_at = datetime.now(timezone.utc)

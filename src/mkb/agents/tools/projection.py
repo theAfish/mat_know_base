@@ -11,6 +11,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Feedback,
@@ -64,7 +65,10 @@ def get_frame_content(frame_id: str) -> dict:
 
     Returns the full frame content dict, or an error if not found.
     """
-    fid = uuid.UUID(frame_id)
+    fid = parse_uuidish(frame_id)
+    if not fid:
+        return {"error": invalid_identifier_message("frame_id", frame_id)}
+
     with SyncSessionLocal() as session:
         frame = session.query(KnowledgeFrame).filter_by(frame_id=fid).first()
         if not frame:
@@ -95,7 +99,10 @@ def save_projection(
     Returns:
         Dict with projection_id and status.
     """
-    pid = uuid.UUID(projection_id)
+    pid = parse_uuidish(projection_id)
+    if not pid:
+        return {"error": invalid_identifier_message("projection_id", projection_id)}
+
     now = datetime.now(timezone.utc)
 
     with SyncSessionLocal() as session:
@@ -137,7 +144,9 @@ def flag_for_feedback(
     Returns:
         Dict with feedback_id.
     """
-    pid = uuid.UUID(projection_id)
+    pid = parse_uuidish(projection_id)
+    if not pid:
+        return {"error": invalid_identifier_message("projection_id", projection_id)}
 
     with SyncSessionLocal() as session:
         projection = session.query(Projection).filter_by(projection_id=pid).first()

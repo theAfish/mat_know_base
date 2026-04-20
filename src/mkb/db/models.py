@@ -312,7 +312,7 @@ class Projection(Base):
     )
 
     __table_args__ = (
-        Index("ix_projection_space_frame", "space_id", "frame_id", unique=True),
+        Index("ix_projection_space_frame", "space_id", "frame_id"),
     )
 
 

@@ -11,6 +11,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     FrameStatus,
@@ -68,7 +69,10 @@ def save_knowledge_frame(
 
     This also marks the frame as COMPLETED.
     """
-    pid = uuid.UUID(project_id)
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return {"error": invalid_identifier_message("project_id", project_id)}
+
     now = datetime.now(timezone.utc)
 
     # Handle content passed as JSON string
@@ -131,7 +135,10 @@ def get_existing_frame(project_id: str) -> dict:
     Returns the frame content and metadata, or an indication that none exists.
     Useful for re-extraction to see what was previously extracted.
     """
-    pid = uuid.UUID(project_id)
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return {"exists": False, "error": invalid_identifier_message("project_id", project_id)}
+
     with SyncSessionLocal() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if not frame:
@@ -170,7 +177,10 @@ def update_knowledge_frame(
     Returns:
         Dict with frame_id, status, and summary of changes made.
     """
-    pid = uuid.UUID(project_id)
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return {"error": invalid_identifier_message("project_id", project_id)}
+
     now = datetime.now(timezone.utc)
 
     # Handle args passed as JSON strings

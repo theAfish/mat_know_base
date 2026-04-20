@@ -54,6 +54,8 @@ For EACH feedback item:
 # Guidelines
 
 - Always verify against the source material before making changes
+- Use the exact `asset_id` returned by `list_project_files` or `search_in_project` when calling file-reading tools
+- If a requested detail is not stated after checking the relevant source sections, resolve it as `DISMISSED` with a short explanation instead of continuing to guess or over-search
 - Be specific in your resolution notes
 - Don't remove existing correct information while fixing issues
 - If multiple feedback items relate to the same area, address them together

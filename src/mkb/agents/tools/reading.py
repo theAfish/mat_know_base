@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from mkb.config import settings
+from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Asset,
@@ -26,6 +26,26 @@ from mkb.db.models import (
 from mkb.storage.s3 import download_bytes, object_exists
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_asset_id(session, asset_ref: str) -> tuple[uuid.UUID | None, str | None]:
+    """Resolve an asset reference from a UUID, embedded UUID, or filename."""
+    asset_id = parse_uuidish(asset_ref)
+    if asset_id:
+        return asset_id, None
+
+    candidate = str(asset_ref).strip().strip("\"'")
+    if candidate:
+        asset = (
+            session.query(Asset)
+            .filter(Asset.filename == candidate)
+            .order_by(Asset.created_at.desc())
+            .first()
+        )
+        if asset:
+            return asset.asset_id, None
+
+    return None, invalid_identifier_message("asset_id", asset_ref)
 
 
 def _select_processed_asset(
@@ -68,7 +88,10 @@ def _read_processed_bytes(pa: ProcessedAsset) -> bytes:
 
 def list_project_files(project_id: str) -> list[dict]:
     """List every file in a research project with its processing status."""
-    pid = uuid.UUID(project_id)
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return [{"error": invalid_identifier_message("project_id", project_id)}]
+
     with SyncSessionLocal() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
         asset_ids = [l.asset_id for l in links]
@@ -91,8 +114,11 @@ def list_project_files(project_id: str) -> list[dict]:
 
 def read_processed_markdown(asset_id: str) -> str:
     """Read the full processed Markdown content for a given asset."""
-    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return error or invalid_identifier_message("asset_id", asset_id)
+
         pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN)
         if not pa:
             return f"No processed markdown found for asset {asset_id}."
@@ -164,8 +190,11 @@ def _list_headings(lines: list[str]) -> list[str]:
 
 def read_raw_text(asset_id: str) -> str:
     """Read the raw text content of an asset directly from object storage."""
-    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return error or invalid_identifier_message("asset_id", asset_id)
+
         asset = session.query(Asset).filter_by(asset_id=aid).first()
         if not asset:
             return f"Asset {asset_id} not found."
@@ -180,8 +209,11 @@ def read_raw_text(asset_id: str) -> str:
 
 def read_dataframe_summary(asset_id: str) -> str:
     """Read a summary of a processed dataframe (Parquet) for an asset."""
-    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return error or invalid_identifier_message("asset_id", asset_id)
+
         pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
         if not pa:
             return f"No processed dataframe found for asset {asset_id}."
@@ -205,8 +237,11 @@ def read_dataframe_summary(asset_id: str) -> str:
 def read_dataframe_rows(asset_id: str, start_row: int = 0, end_row: int = 20) -> str:
     """Read specific rows from a processed dataframe (capped at 100)."""
     end_row = min(end_row, start_row + 100)
-    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return error or invalid_identifier_message("asset_id", asset_id)
+
         pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
         if not pa:
             return f"No processed dataframe found for asset {asset_id}."
@@ -223,8 +258,11 @@ def read_dataframe_rows(asset_id: str, start_row: int = 0, end_row: int = 20) ->
 
 def read_image_metadata(asset_id: str) -> str:
     """Read the processed image metadata JSON for an image asset."""
-    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return error or invalid_identifier_message("asset_id", asset_id)
+
         pa = _select_processed_asset(session, aid, ProcessingType.IMAGE)
         if not pa:
             return f"No processed image metadata found for asset {asset_id}."
@@ -237,8 +275,11 @@ def read_image_metadata(asset_id: str) -> str:
 
 def get_image_base64(asset_id: str) -> dict:
     """Get the raw image bytes as a base64-encoded string."""
-    aid = uuid.UUID(asset_id)
     with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return {"error": error or invalid_identifier_message("asset_id", asset_id)}
+
         asset = session.query(Asset).filter_by(asset_id=aid).first()
         if not asset:
             return {"error": f"Asset {asset_id} not found."}
@@ -254,7 +295,10 @@ def get_image_base64(asset_id: str) -> dict:
 
 def search_in_project(project_id: str, query: str) -> list[dict]:
     """Search for a text pattern across all processed Markdown files in a project."""
-    pid = uuid.UUID(project_id)
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return [{"error": invalid_identifier_message("project_id", project_id)}]
+
     query_lower = query.lower()
 
     with SyncSessionLocal() as session:
