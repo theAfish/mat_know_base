@@ -69,3 +69,37 @@ def test_apply_schema_compatibility_rebuilds_projection_index_without_uniqueness
     }
     assert "ix_projection_space_frame" in indexes
     assert not indexes["ix_projection_space_frame"]["unique"]
+
+
+def test_apply_schema_compatibility_adds_missing_projection_review_columns_and_index():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE projections (
+                    projection_id TEXT PRIMARY KEY,
+                    space_id TEXT NOT NULL,
+                    frame_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    data TEXT,
+                    validation_result TEXT,
+                    agent_notes TEXT,
+                    extracted_at TEXT,
+                    space_version INTEGER NOT NULL,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+        )
+
+    _apply_schema_compatibility(engine)
+
+    inspector = inspect(engine)
+    columns = {col["name"] for col in inspector.get_columns("projections")}
+    indexes = {index["name"]: index for index in inspector.get_indexes("projections")}
+
+    assert {"times_reviewed", "review_notes", "reviewed_at", "deleted_at"}.issubset(columns)
+    assert "ix_projection_deleted_at" in indexes

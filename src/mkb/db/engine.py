@@ -25,6 +25,24 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                 "ADD COLUMN extraction_version INTEGER NOT NULL DEFAULT 0"
             ),
         },
+        "projections": {
+            "times_reviewed": (
+                "ALTER TABLE projections "
+                "ADD COLUMN times_reviewed INTEGER NOT NULL DEFAULT 0"
+            ),
+            "review_notes": (
+                "ALTER TABLE projections "
+                "ADD COLUMN review_notes TEXT"
+            ),
+            "reviewed_at": (
+                "ALTER TABLE projections "
+                "ADD COLUMN reviewed_at TIMESTAMP WITH TIME ZONE"
+            ),
+            "deleted_at": (
+                "ALTER TABLE projections "
+                "ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE"
+            ),
+        },
     }
 
     with engine.begin() as conn:
@@ -50,11 +68,19 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                         "ON projections (space_id, frame_id)"
                     )
                 )
+            if "ix_projection_deleted_at" not in indexes:
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_projection_deleted_at "
+                        "ON projections (deleted_at)"
+                    )
+                )
 
-        # Ensure REVIEWED value exists in projection_status enum
-        conn.execute(
-            text("ALTER TYPE projection_status ADD VALUE IF NOT EXISTS 'REVIEWED'")
-        )
+        if engine.dialect.name == "postgresql":
+            # Ensure REVIEWED value exists in projection_status enum.
+            conn.execute(
+                text("ALTER TYPE projection_status ADD VALUE IF NOT EXISTS 'REVIEWED'")
+            )
 
 
 def init_db() -> None:
