@@ -68,6 +68,7 @@ Domain: {domain}
 - Include units wherever applicable
 - If a field has multiple possible values and the schema says `type: list`, keep them as a JSON array internally
 - Use role fields carefully: mark controls, comparisons, and background references explicitly rather than treating them as primary extracted entities
+- For each row-like extracted record, include `is_core_study_data: true` when it represents the main material/data/function being investigated; set it to `false` for complementary, control, comparison, validation, or testing-only entries
 - If `evidence_level` is present, assign the highest supported level using this rubric: 1 = in vivo functional validation, 2 = in vitro direct mineralization experiment, 3 = indirect experimental evidence, 4 = prediction/hypothesis/inference
 - Note confidence level in your agent_notes for fields where the mapping is uncertain
 - Flag rather than guess — when in doubt, use flag_for_feedback

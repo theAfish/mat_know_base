@@ -25,12 +25,70 @@ from mkb.spaces.schema_utils import normalize_projection_data
 
 logger = logging.getLogger(__name__)
 
+_CORE_STUDY_TRUE_MARKERS = {
+    "core",
+    "focus",
+    "investigated",
+    "lead",
+    "main",
+    "primary",
+    "study",
+    "target",
+}
+_CORE_STUDY_FALSE_MARKERS = {
+    "background",
+    "benchmark",
+    "comparison",
+    "complementary",
+    "control",
+    "reference",
+    "supplementary",
+    "supporting",
+    "test",
+    "testing",
+    "validation",
+}
 
-def _inject_source_project_references(data, source_project_id: str):
+
+def _coerce_core_study_flag(value) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1", "core", "primary", "main"}:
+            return True
+        if lowered in {"false", "no", "0", "control", "comparison", "supplementary"}:
+            return False
+    return None
+
+
+def _infer_core_study_data(mapping: dict) -> bool | None:
+    explicit_value = _coerce_core_study_flag(mapping.get("is_core_study_data"))
+    if explicit_value is not None:
+        return explicit_value
+
+    for key in ("experimental_role", "role", "data_role", "study_role", "item_role"):
+        value = mapping.get(key)
+        if value in (None, ""):
+            continue
+        normalized = str(value).lower().replace("_", " ").replace("-", " ")
+        if any(marker in normalized for marker in _CORE_STUDY_FALSE_MARKERS):
+            return False
+        if any(marker in normalized for marker in _CORE_STUDY_TRUE_MARKERS):
+            return True
+
+    return None
+
+
+def _inject_source_project_references(data, source_project_id: str, *, _from_list: bool = False):
     """Recursively attach source-project metadata to extracted records."""
     if isinstance(data, list):
         return [
-            _inject_source_project_references(item, source_project_id)
+            _inject_source_project_references(item, source_project_id, _from_list=True)
             for item in data
         ]
 
@@ -47,6 +105,10 @@ def _inject_source_project_references(data, source_project_id: str):
         ]
         if scalar_fields and "source_project_id" not in lower_keys:
             enriched["source_project_id"] = source_project_id
+
+        if _from_list and scalar_fields:
+            inferred_flag = _infer_core_study_data(enriched)
+            enriched["is_core_study_data"] = True if inferred_flag is None else inferred_flag
 
         return enriched
 

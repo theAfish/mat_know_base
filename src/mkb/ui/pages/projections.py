@@ -23,10 +23,14 @@ def _projection_section_to_rows(value, metadata: dict[str, str]) -> list[dict[st
         if not value:
             return []
         if all(isinstance(item, dict) for item in value):
-            return [
+            rows = [
                 {**base_row, **{str(key): _stringify_value(item_value) for key, item_value in item.items()}}
                 for item in value
             ]
+            return sorted(
+                rows,
+                key=lambda row: str(row.get("is_core_study_data", "")).lower() not in {"true", "1", "yes"},
+            )
         return [{**base_row, "value": _stringify_value(item)} for item in value]
 
     if isinstance(value, dict):
@@ -136,7 +140,7 @@ def _render_combined_projection_table(projections: list[dict]):
         st.caption(f"Showing rows {start_index}-{end_index} of {len(rows)}")
 
         table = pd.DataFrame(page_rows)
-        priority_columns = ["project_id", "source_project_id", "extracted_at", "projection_id"]
+        priority_columns = ["project_id", "is_core_study_data", "source_project_id", "extracted_at", "projection_id"]
         ordered_columns = priority_columns + [
             column for column in table.columns if column not in priority_columns
         ]

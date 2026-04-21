@@ -12,8 +12,12 @@ from mkb.ui.pages.projections import (
 def test_inject_source_project_references_sets_project_id_on_records():
     data = {
         "templates": [
-            {"template_name": "Amelotin", "references": "doi:old"},
-            {"template_name": "ODAM"},
+            {
+                "template_name": "Amelotin",
+                "references": "doi:old",
+                "experimental_role": "primary_template",
+            },
+            {"template_name": "ODAM", "experimental_role": "control"},
         ],
         "overall_assessment": {
             "confidence": "high",
@@ -25,6 +29,8 @@ def test_inject_source_project_references_sets_project_id_on_records():
 
     assert enriched["templates"][0]["references"] == "doi:old"
     assert [row["source_project_id"] for row in enriched["templates"]] == ["project-123", "project-123"]
+    assert enriched["templates"][0]["is_core_study_data"] is True
+    assert enriched["templates"][1]["is_core_study_data"] is False
     assert enriched["overall_assessment"]["source_project_id"] == "project-123"
     assert enriched["overall_assessment"]["confidence"] == "high"
 
@@ -114,8 +120,12 @@ def test_projection_to_section_rows_keeps_sections_separate_and_preserves_histor
             "extracted_at": "2026-04-20T00:00:00Z",
             "data": {
                 "templates": [
-                    {"name": "Amelogenin", "functional_tags": ["nucleation", "growth"]},
-                    {"name": "ODAM", "evidence_level": 2},
+                    {
+                        "name": "Amelogenin",
+                        "functional_tags": ["nucleation", "growth"],
+                        "is_core_study_data": True,
+                    },
+                    {"name": "ODAM", "evidence_level": 2, "is_core_study_data": False},
                 ],
                 "summary": {"confidence": "high"},
             },
@@ -130,6 +140,7 @@ def test_projection_to_section_rows_keeps_sections_separate_and_preserves_histor
                 "extracted_at": "2026-04-20T00:00:00Z",
                 "name": "Amelogenin",
                 "functional_tags": "nucleation, growth",
+                "is_core_study_data": "True",
             },
             {
                 "project_id": "project-1",
@@ -137,6 +148,7 @@ def test_projection_to_section_rows_keeps_sections_separate_and_preserves_histor
                 "extracted_at": "2026-04-20T00:00:00Z",
                 "name": "ODAM",
                 "evidence_level": "2",
+                "is_core_study_data": "False",
             },
         ],
         "summary": [

@@ -22,6 +22,7 @@ You are reviewing projection results — structured data extracted from research
 - **No fabricated data**: Every value must be traceable to the source material
 - **No missing data**: If the source contains data that fits the schema, it must be extracted
 - **No duplicates**: Merge identical or near-identical entries across projection runs
+- **Correct core-study labeling**: Verify `is_core_study_data` distinguishes the true study target from controls, complementary, validation, or testing-only data
 - **Correct evidence levels**: Verify evidence_level assignments match the rubric
 - **Numerical precision**: Values must match the source exactly — no rounding
 - **Units**: All numerical values must include appropriate units
