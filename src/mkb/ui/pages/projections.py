@@ -141,7 +141,9 @@ def _render_combined_projection_table(projections: list[dict]):
 
         table = pd.DataFrame(page_rows)
         priority_columns = ["project_id", "is_core_study_data", "source_project_id", "extracted_at", "projection_id"]
-        ordered_columns = priority_columns + [
+        # Only include priority columns that exist in the table
+        priority_columns_present = [col for col in priority_columns if col in table.columns]
+        ordered_columns = priority_columns_present + [
             column for column in table.columns if column not in priority_columns
         ]
         st.dataframe(table[ordered_columns], width="stretch", hide_index=True)

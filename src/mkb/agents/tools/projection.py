@@ -2,7 +2,8 @@
 Projection tools for the projection agent.
 
 These tools let the projection agent read knowledge frame content,
-save projection results, and flag data for feedback.
+save projection results, interact live with the extraction agent
+for clarification, and flag fundamental pipeline issues as feedback.
 """
 
 from __future__ import annotations
@@ -193,6 +194,71 @@ def save_projection(
         return {"projection_id": str(projection.projection_id), "status": "completed"}
 
 
+def request_frame_clarification(
+    projection_id: str,
+    question: str,
+    context: str = "",
+    field: str = "",
+) -> dict:
+    """Ask the extraction agent to clarify or update the knowledge frame in real time.
+
+    Use this when the knowledge frame is missing data, contains an ambiguous
+    entry, or needs more detail on a specific aspect so that the projection
+    can proceed accurately.  This directly invokes the KB extraction agent:
+    it reads the source files and applies targeted updates to the frame before
+    returning control to the projection agent.
+
+    Do NOT use this for fundamental pipeline/architecture issues — use
+    ``flag_for_feedback`` for those instead.
+
+    Args:
+        projection_id: The current projection's ID (used to locate the frame).
+        question: Specific question or clarification request for the extraction agent.
+        context: Relevant excerpt from the knowledge frame that is unclear (optional).
+        field: The schema field or section path where clarification is needed (optional).
+
+    Returns:
+        Dict with keys:
+          - ``updated`` (bool): whether the frame was modified.
+          - ``clarification_summary`` (str): extraction agent's explanation.
+          - ``updated_frame_content`` (dict | None): the current frame content
+            after the clarification run (read it back via ``get_frame_content``
+            to continue projection with the latest data).
+    """
+    pid = parse_uuidish(projection_id)
+    if not pid:
+        return {"error": invalid_identifier_message("projection_id", projection_id)}
+
+    with SyncSessionLocal() as session:
+        projection = session.query(Projection).filter_by(projection_id=pid).first()
+        if not projection:
+            return {"error": f"Projection {projection_id} not found."}
+
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
+        if not frame:
+            return {"error": "Associated frame not found."}
+
+        frame_id = frame.frame_id
+        project_id = frame.project_id
+
+    # Import here to avoid circular imports at module load time.
+    from mkb.agents.clarification import run_clarification_in_thread
+
+    logger.info(
+        "Projection %s requesting clarification from extraction agent: %s",
+        projection_id,
+        question[:120],
+    )
+
+    return run_clarification_in_thread(
+        project_id=project_id,
+        frame_id=frame_id,
+        question=question,
+        context=context,
+        field=field,
+    )
+
+
 def flag_for_feedback(
     projection_id: str,
     field: str,
@@ -200,13 +266,27 @@ def flag_for_feedback(
     question: str,
     context: str = "",
 ) -> dict:
-    """Flag unclear or ambiguous data for feedback to the KB extraction agent.
+    """Record a fundamental pipeline or architectural issue encountered during projection.
+
+    Use this **only** for issues that reflect problems with the system design,
+    the extraction pipeline, or recurring structural deficiencies in how
+    knowledge frames are built — not for ordinary missing or ambiguous data.
+    For the latter, call ``request_frame_clarification`` instead so the
+    extraction agent can resolve it immediately.
+
+    Typical cases for feedback:
+    - A schema field category is systematically absent from all frames
+      (possible domain gap in the extraction prompt).
+    - Evidence-level assignment is consistently wrong across multiple frames
+      (likely a prompt or guideline issue).
+    - A whole class of experimental data is never extracted (extraction
+      architecture gap).
 
     Args:
         projection_id: The projection encountering the issue.
         field: The field path where the issue was found (e.g., "catalysts[2].selectivity").
-        issue: Category of the issue (missing_data, ambiguous_data, inconsistency, wrong_evidence_level, other).
-        question: The specific question or clarification needed.
+        issue: Category (missing_data, ambiguous_data, inconsistency, wrong_evidence_level, other).
+        question: Description of the architectural or pipeline concern.
         context: Relevant excerpt from the knowledge frame.
 
     Returns:
@@ -252,5 +332,6 @@ def flag_for_feedback(
 PROJECTION_TOOLS = [
     get_frame_content,
     save_projection,
+    request_frame_clarification,
     flag_for_feedback,
 ]

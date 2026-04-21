@@ -195,6 +195,37 @@ def cmd_projection_show(args):
     _json_dump(proj)
 
 
+def cmd_kg_extract(args):
+    from mkb.api import extract_knowledge_graph
+
+    result = extract_knowledge_graph(
+        project_id=args.project_id,
+        frame_id=args.frame_id,
+        model=args.model,
+        verbose=args.verbose,
+        clear_existing=not args.no_clear_existing,
+        clear_legacy_frame_sections=not args.keep_legacy_frame_graphs,
+    )
+    _json_dump(result)
+
+
+def cmd_kg_clear(args):
+    from mkb.api import clear_knowledge_graphs
+
+    result = clear_knowledge_graphs(
+        project_id=args.project_id,
+        remove_legacy_frame_sections=not args.keep_legacy_frame_graphs,
+    )
+    _json_dump(result)
+
+
+def cmd_kg_show(args):
+    from mkb.api import get_knowledge_graph
+
+    result = get_knowledge_graph(project_id=args.project_id)
+    _json_dump(result)
+
+
 # ── Feedback commands ────────────────────────────────────────────
 
 
@@ -382,6 +413,22 @@ def main():
     p = sub.add_parser("projection", help="Show projection details")
     p.add_argument("projection_id")
 
+    # ── Knowledge Graph subcommands ──
+    p = sub.add_parser("kg-extract", help="Extract concept-only knowledge graphs into the global space")
+    p.add_argument("--project-id", "-p", default=None)
+    p.add_argument("--frame-id", "-f", default=None)
+    p.add_argument("--model", "-m", default=None)
+    p.add_argument("--verbose", "-v", action="store_true")
+    p.add_argument("--no-clear-existing", action="store_true", help="Do not clear previous KG projections for the target frame(s)")
+    p.add_argument("--keep-legacy-frame-graphs", action="store_true", help="Do not remove legacy graph sections from frame content")
+
+    p = sub.add_parser("kg-clear", help="Clear old extracted knowledge graphs")
+    p.add_argument("--project-id", "-p", default=None)
+    p.add_argument("--keep-legacy-frame-graphs", action="store_true", help="Do not remove legacy graph sections from frame content")
+
+    p = sub.add_parser("kg-show", help="Show merged global concept graph")
+    p.add_argument("--project-id", "-p", default=None)
+
     # ── Feedback subcommands ──
     p = sub.add_parser("feedback", help="List feedback items")
     p.add_argument("--project-id", "-p", default=None)
@@ -447,6 +494,9 @@ def main():
         "project-run": cmd_project_run,
         "projections": cmd_projections,
         "projection": cmd_projection_show,
+        "kg-extract": cmd_kg_extract,
+        "kg-clear": cmd_kg_clear,
+        "kg-show": cmd_kg_show,
         "feedback": cmd_feedback,
         "review-feedback": cmd_review_feedback,
         "resolve-feedback": cmd_resolve_feedback,

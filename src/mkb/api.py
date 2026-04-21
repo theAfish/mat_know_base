@@ -755,6 +755,116 @@ def list_projections(
         return results
 
 
+# ── Knowledge Graphs ────────────────────────────────────────────
+
+
+def clear_knowledge_graphs(
+    project_id: str | uuid.UUID | None = None,
+    remove_legacy_frame_sections: bool = True,
+) -> dict:
+    """Delete (soft-delete) old KG projections and optionally purge legacy frame graph sections."""
+    from mkb.knowledge_graph import clear_knowledge_graph_projections, purge_legacy_graph_sections
+
+    init_db()
+    pid = uuid.UUID(str(project_id)) if project_id else None
+    deleted = clear_knowledge_graph_projections(project_id=pid, include_legacy_spaces=True)
+
+    purged = {"updated_frames": 0, "project_id": str(pid) if pid else None}
+    if remove_legacy_frame_sections:
+        purged = purge_legacy_graph_sections(project_id=pid)
+
+    return {
+        "deleted_projections": deleted,
+        "purged_legacy_frame_sections": purged,
+    }
+
+
+def extract_knowledge_graph(
+    project_id: str | uuid.UUID | None = None,
+    frame_id: str | uuid.UUID | None = None,
+    model: str | None = None,
+    verbose: bool = False,
+    clear_existing: bool = True,
+    clear_legacy_frame_sections: bool = True,
+) -> dict:
+    """Run concept-graph extraction using one global cross-domain space.
+
+    If frame_id is provided, extract for that frame.
+    If project_id is provided, resolve that project's frame and extract.
+    Otherwise run for all completed frames.
+    """
+    from mkb.agents.knowledge_graph import run_knowledge_graph, run_knowledge_graph_all
+    from mkb.db.models import KnowledgeFrame
+    from mkb.knowledge_graph import ensure_global_kg_space_id, purge_legacy_graph_sections
+
+    init_db()
+
+    if clear_legacy_frame_sections:
+        if project_id:
+            purge_legacy_graph_sections(project_id=uuid.UUID(str(project_id)))
+        else:
+            purge_legacy_graph_sections()
+
+    if frame_id is not None:
+        fid = uuid.UUID(str(frame_id))
+        result = run_knowledge_graph(fid, model=model, verbose=verbose, clear_existing=clear_existing)
+    elif project_id is not None:
+        pid = uuid.UUID(str(project_id))
+        with SyncSessionLocal() as session:
+            frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
+            if not frame:
+                return {"error": f"No frame for project {project_id}"}
+            fid = frame.frame_id
+        result = run_knowledge_graph(fid, model=model, verbose=verbose, clear_existing=clear_existing)
+    else:
+        result = run_knowledge_graph_all(model=model, verbose=verbose, clear_existing=clear_existing)
+
+    return {
+        "global_space_id": str(ensure_global_kg_space_id()),
+        **result,
+    }
+
+
+def get_knowledge_graph(
+    project_id: str | uuid.UUID | None = None,
+) -> dict:
+    """Get the merged concept graph from the singleton global KG space."""
+    from mkb.agents.tools.knowledge_graph import normalize_knowledge_graph_payload
+    from mkb.db.models import KnowledgeFrame, Projection, ProjectionStatus
+    from mkb.knowledge_graph import ensure_global_kg_space_id
+
+    init_db()
+    sid = ensure_global_kg_space_id()
+
+    with SyncSessionLocal() as session:
+        q = (
+            session.query(Projection)
+            .filter(Projection.space_id == sid)
+            .filter(Projection.deleted_at.is_(None))
+            .filter(Projection.status.in_([ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]))
+        )
+        if project_id:
+            pid = uuid.UUID(str(project_id))
+            q = q.join(KnowledgeFrame, Projection.frame_id == KnowledgeFrame.frame_id)
+            q = q.filter(KnowledgeFrame.project_id == pid)
+        rows = q.all()
+
+    aggregate = {"concepts": [], "relations": []}
+    for row in rows:
+        payload, _ = normalize_knowledge_graph_payload(row.data or {})
+        aggregate["concepts"].extend(payload["concepts"])
+        aggregate["relations"].extend(payload["relations"])
+
+    merged, validation = normalize_knowledge_graph_payload(aggregate)
+    return {
+        "space_id": str(sid),
+        "projection_count": len(rows),
+        "graph": merged,
+        "validation": validation,
+        "project_id": str(project_id) if project_id else None,
+    }
+
+
 # ── Feedback ─────────────────────────────────────────────────────
 
 
