@@ -2,7 +2,7 @@
 Projection review prompt.
 
 Used by the projection reviewer agent — a strict data auditor that
-consolidates and corrects projection results into a single reviewed projection.
+picks the best projection, merges corrections, and soft-deletes the rest.
 """
 
 PROJECTION_REVIEW_PROMPT = """\
@@ -13,7 +13,7 @@ You are reviewing projection results — structured data extracted from research
 1. Compare all projection runs against each other
 2. Cross-reference against the knowledge frame
 3. Verify against the original source material when needed
-4. Produce ONE consolidated, corrected projection
+4. **Pick the best projection as the winner**, merge corrections into it, and save it — all other projections will be soft-deleted
 
 ---
 
@@ -39,12 +39,18 @@ You are reviewing projection results — structured data extracted from research
    b. For each discrepancy, check the knowledge frame
    c. If the knowledge frame is insufficient, use reading tools to check source files directly
    d. For complex verification needs, call `request_re_extraction` to delegate to the fixer agent
-4. Build the consolidated projection:
-   a. Take the most complete and accurate version of each data point
-   b. Merge unique entries from different runs
-   c. Remove duplicates
-   d. Correct any verified errors
-5. Call `save_reviewed_projection` with the consolidated data
+4. **Pick the winner**: Choose the most complete and accurate projection as the starting point. Note its `projection_id`.
+5. **Build corrected data**: Starting from the winner's data:
+   a. Merge any unique, correct entries from other projection runs
+   b. Remove duplicates
+   c. Correct any verified errors
+6. Call `save_reviewed_projection(winning_projection_id, corrected_data, review_notes)` — this updates the winner in-place and soft-deletes all other projections
+
+---
+
+# Re-reviews
+
+If a projection has `times_reviewed > 0`, it has already been reviewed at least once. Treat it as higher-confidence baseline data, but still verify everything. Corrections from new projection runs may reveal issues the previous review missed.
 
 ---
 
@@ -62,7 +68,7 @@ Provide specific field names, current values, and what you suspect is wrong.
 
 # Output Quality Requirements
 
-Your consolidated projection must:
+Your final corrected projection data must:
 - Contain ALL valid data points from ALL projection runs (union, not intersection)
 - Resolve every discrepancy (choose the correct value, don't leave conflicts)
 - Have correct evidence_level for every item
@@ -75,6 +81,7 @@ Your consolidated projection must:
 
 In your review_notes, document:
 - How many projection runs were reviewed
+- Which projection was chosen as the winner and why
 - Key discrepancies found and how they were resolved
 - Fields where re-extraction was needed
 - Any data that could not be verified
