@@ -7,8 +7,9 @@ Uses pyvis for rendering: labels are hidden by default and appear only on
 hover (as tooltips), and Barnes-Hut physics keeps large graphs responsive.
 """
 
+import base64
+
 import streamlit as st
-import streamlit.components.v1 as components
 
 try:
     from pyvis.network import Network
@@ -77,9 +78,12 @@ def _make_net(height: int = 500, directed: bool = True) -> "Network":
 
 
 def _render_net(net: "Network") -> None:
-    """Render a pyvis Network inside Streamlit via an inline HTML iframe."""
+    """Render a pyvis Network inside Streamlit via an iframe data URL."""
     html = net.generate_html()
-    components.html(html, height=net.height if isinstance(net.height, int) else int(net.height.rstrip("px")), scrolling=False)
+    encoded_html = base64.b64encode(html.encode("utf-8")).decode("ascii")
+    iframe_src = f"data:text/html;base64,{encoded_html}"
+    height = net.height if isinstance(net.height, int) else int(net.height.rstrip("px"))
+    st.iframe(iframe_src, height=height)
 
 
 def render_knowledge_graph(content: dict):
