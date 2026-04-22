@@ -1,17 +1,20 @@
 """Knowledge graph visualization component.
 
-Renders relationships from knowledge frames as an interactive graph
-using streamlit-agraph.
+Supports both legacy per-frame graph extraction and merged global
+concept-graph rendering.
+
+Uses pyvis for rendering: labels are hidden by default and appear only on
+hover (as tooltips), and Barnes-Hut physics keeps large graphs responsive.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
-    from streamlit_agraph import agraph, Node, Edge, Config
-    HAS_AGRAPH = True
+    from pyvis.network import Network
+    HAS_PYVIS = True
 except ImportError:
-    HAS_AGRAPH = False
-
+    HAS_PYVIS = False
 
 # Evidence level colors for edges
 EDGE_COLORS = {
@@ -21,22 +24,73 @@ EDGE_COLORS = {
     4: "#f97316",  # orange — predicted
 }
 
+# Barnes-Hut physics options — fast for large graphs
+_PHYSICS_OPTIONS = """
+{
+  "physics": {
+    "enabled": true,
+    "solver": "barnesHut",
+    "barnesHut": {
+      "gravitationalConstant": -8000,
+      "centralGravity": 0.3,
+      "springLength": 120,
+      "springConstant": 0.04,
+      "damping": 0.09,
+      "avoidOverlap": 0.1
+    },
+    "stabilization": {
+      "enabled": true,
+      "iterations": 200,
+      "updateInterval": 25
+    }
+  },
+  "nodes": {
+    "font": { "size": 0 },
+    "borderWidth": 1,
+    "shadow": false
+  },
+  "edges": {
+    "font": { "size": 0 },
+    "smooth": { "type": "dynamic" },
+    "arrows": { "to": { "enabled": true, "scaleFactor": 0.5 } }
+  },
+  "interaction": {
+    "hover": true,
+    "tooltipDelay": 100,
+    "hideEdgesOnDrag": true,
+    "hideNodesOnDrag": false
+  }
+}
+"""
+
+
+def _make_net(height: int = 500, directed: bool = True) -> "Network":
+    net = Network(
+        height=f"{height}px",
+        width="100%",
+        directed=directed,
+        bgcolor="#0e1117",
+        font_color="#e2e8f0",
+    )
+    net.set_options(_PHYSICS_OPTIONS)
+    return net
+
+
+def _render_net(net: "Network") -> None:
+    """Render a pyvis Network inside Streamlit via an inline HTML iframe."""
+    html = net.generate_html()
+    components.html(html, height=net.height if isinstance(net.height, int) else int(net.height.rstrip("px")), scrolling=False)
+
 
 def render_knowledge_graph(content: dict):
-    """Render a knowledge graph from frame content.
-
-    Extracts nodes from all list sections and edges from
-    relationship-like entries.
-    """
-    if not HAS_AGRAPH:
-        st.warning("streamlit-agraph not installed. Install it with: pip install streamlit-agraph")
+    """Render a knowledge graph from frame content."""
+    if not HAS_PYVIS:
+        st.warning("pyvis not installed. Install it with: pip install pyvis")
         return
 
-    nodes = []
-    edges = []
-    node_ids = set()
+    net = _make_net(height=520)
+    node_ids: set[str] = set()
 
-    # Extract nodes from all list sections
     for key, value in content.items():
         if key in ("paper", "domain"):
             continue
@@ -47,56 +101,96 @@ def render_knowledge_graph(content: dict):
             if not isinstance(item, dict):
                 continue
 
-            # Check if this is a relationship (has subject/predicate/object)
             if all(k in item for k in ("subject", "predicate", "object")):
-                subj = str(item["subject"])
-                obj = str(item["object"])
-                pred = str(item["predicate"])
+                subj = str(item["subject"]).strip()
+                obj = str(item["object"]).strip()
+                pred = str(item["predicate"]).strip()
                 ev = item.get("evidence_level", 3)
+                try:
+                    ev = int(ev)
+                except (TypeError, ValueError):
+                    ev = 3
+                color = EDGE_COLORS.get(ev, "#888")
 
                 if subj not in node_ids:
-                    nodes.append(Node(id=subj, label=subj, size=20))
+                    net.add_node(subj, label="", title=subj, size=14, color="#34d399")
                     node_ids.add(subj)
                 if obj not in node_ids:
-                    nodes.append(Node(id=obj, label=obj, size=20))
+                    net.add_node(obj, label="", title=obj, size=14, color="#34d399")
                     node_ids.add(obj)
-
-                edges.append(Edge(
-                    source=subj,
-                    target=obj,
-                    label=pred,
-                    color=EDGE_COLORS.get(ev, "#888"),
-                ))
+                net.add_edge(subj, obj, title=pred, color=color)
             else:
-                # Extract entity name as a node
-                name = item.get("name") or item.get("claim", "")[:40] or item.get("property", "")
+                name = (item.get("name") or item.get("claim", "")[:40] or item.get("property", "")).strip()
                 if name and name not in node_ids:
-                    nodes.append(Node(
-                        id=name,
-                        label=name,
-                        size=15,
-                        color=_section_color(key),
-                    ))
+                    net.add_node(name, label="", title=name, size=12, color=_section_color(key))
                     node_ids.add(name)
 
-    if not nodes:
+    if not node_ids:
         st.info("No graph data to visualize. The frame may not contain relationships or named entities.")
         return
 
-    # Legend
+    st.caption("Hover nodes/edges to see labels. Edge colors: 🟢 Causal | 🔵 Direct | 🟡 Correlative | 🟠 Predicted")
+    _render_net(net)
+
+
+def render_global_knowledge_graph(graph: dict):
+    """Render a merged concept graph returned by api.get_knowledge_graph()."""
+    if not HAS_PYVIS:
+        st.warning("pyvis not installed. Install it with: pip install pyvis")
+        return
+
+    if not isinstance(graph, dict):
+        st.info("No graph data available.")
+        return
+
+    concepts = graph.get("concepts") or []
+    relations = graph.get("relations") or []
+    if not concepts:
+        st.info("No concept nodes available yet. Run `mkb kg-extract` first.")
+        return
+
+    net = _make_net(height=720)
+    node_ids: set[str] = set()
+
+    for concept in concepts:
+        if not isinstance(concept, dict):
+            continue
+        label = str(concept.get("label") or "").strip()
+        if not label or label in node_ids:
+            continue
+        aliases = concept.get("aliases") or []
+        alias_text = ", ".join(str(a).strip() for a in aliases if str(a).strip())
+        tooltip = f"{label}\nAliases: {alias_text}" if alias_text else label
+        net.add_node(label, label="", title=tooltip, size=16, color="#34d399")
+        node_ids.add(label)
+
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        source = str(relation.get("source") or "").strip()
+        target = str(relation.get("target") or "").strip()
+        rel = str(relation.get("relation") or "").strip()
+        if not source or not target or not rel:
+            continue
+        if source not in node_ids:
+            net.add_node(source, label="", title=source, size=14, color="#34d399")
+            node_ids.add(source)
+        if target not in node_ids:
+            net.add_node(target, label="", title=target, size=14, color="#34d399")
+            node_ids.add(target)
+
+        ev = relation.get("evidence_level", 3)
+        try:
+            ev = int(ev)
+        except (TypeError, ValueError):
+            ev = 3
+        net.add_edge(source, target, title=rel, color=EDGE_COLORS.get(ev, "#888"))
+
     st.caption(
-        "Edge colors: 🟢 Causal | 🔵 Direct | 🟡 Correlative | 🟠 Predicted"
+        "Merged global concept graph. **Hover** nodes/edges to see labels. "
+        "Edge colors: causal (🟢) | direct (🔵) | correlative (🟡) | predicted (🟠)"
     )
-
-    config = Config(
-        width=800,
-        height=500,
-        directed=True,
-        physics=True,
-        hierarchical=False,
-    )
-
-    agraph(nodes=nodes, edges=edges, config=config)
+    _render_net(net)
 
 
 # Section-based node colors

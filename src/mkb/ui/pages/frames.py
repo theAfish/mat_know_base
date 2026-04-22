@@ -5,7 +5,7 @@ import json
 import streamlit as st
 from mkb import api
 from mkb.ui.components.frame_viewer import render_frame_content
-from mkb.ui.components.graph_viz import render_knowledge_graph
+from mkb.ui.components.graph_viz import render_global_knowledge_graph
 
 
 def render():
@@ -55,7 +55,11 @@ def render():
         render_frame_content(content)
 
     with tabs[1]:
-        render_knowledge_graph(content)
+        graph_payload = api.get_knowledge_graph()
+        graph = graph_payload.get("graph") if isinstance(graph_payload, dict) else None
+        projection_count = graph_payload.get("projection_count", 0) if isinstance(graph_payload, dict) else 0
+        st.caption(f"Graph projections merged: {projection_count}")
+        render_global_knowledge_graph(graph or {})
 
     with tabs[2]:
         st.json(content)
