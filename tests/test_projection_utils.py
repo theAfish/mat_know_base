@@ -2,9 +2,11 @@ from mkb.agents.tools.projection import _inject_source_project_references
 from mkb.spaces.schema_utils import normalize_extraction_schema, normalize_projection_data
 from mkb.ui.pages.projections import (
     _build_projection_section_rows,
+    _default_visible_columns,
     _filter_latest_projections,
     _mapping_to_rows,
     _paginate_table_rows,
+    _paper_folder_name,
     _projection_to_section_rows,
 )
 
@@ -233,3 +235,51 @@ def test_paginate_table_rows_limits_output_to_requested_page():
 
     assert total_pages == 3
     assert page_rows == [{"row": str(index)} for index in range(101, 121)]
+
+
+def test_paper_folder_name_uses_terminal_folder_segment():
+    assert _paper_folder_name("data/papers/Lee_2010") == "Lee_2010"
+    assert _paper_folder_name("/abs/path/to/data/papers/Lee_2010/") == "Lee_2010"
+    assert _paper_folder_name(None) == ""
+
+
+def test_default_visible_columns_hides_id_like_columns_by_default():
+    columns = ["project_id", "paper_name", "source_project_id", "evidence", "projection_id"]
+
+    visible = _default_visible_columns(columns)
+
+    assert visible == ["paper_name", "evidence"]
+
+
+def test_projection_to_section_rows_adds_source_paper_name_when_lookup_available():
+    rows = _projection_to_section_rows(
+        {
+            "projection_id": "projection-1",
+            "project_id": "project-1",
+            "status": "COMPLETED",
+            "extracted_at": "2026-04-20T00:00:00Z",
+            "data": {
+                "templates": [
+                    {
+                        "name": "Amelogenin",
+                        "source_project_id": "project-2",
+                    }
+                ]
+            },
+        },
+        project_paper_lookup={"project-1": "Paper A", "project-2": "Paper B"},
+    )
+
+    assert rows == {
+        "templates": [
+            {
+                "project_id": "project-1",
+                "projection_id": "projection-1",
+                "extracted_at": "2026-04-20T00:00:00Z",
+                "paper_name": "Paper A",
+                "name": "Amelogenin",
+                "source_project_id": "project-2",
+                "source_paper_name": "Paper B",
+            }
+        ]
+    }

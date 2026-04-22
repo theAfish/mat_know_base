@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -16,8 +18,59 @@ def _mapping_to_rows(mapping: dict) -> list[dict[str, str]]:
     ]
 
 
-def _projection_section_to_rows(value, metadata: dict[str, str]) -> list[dict[str, str]]:
+def _paper_folder_name(source_path: str | None) -> str:
+    if not source_path:
+        return ""
+    normalized = source_path.rstrip("/\\")
+    if not normalized:
+        return ""
+    return Path(normalized).name
+
+
+def _build_project_paper_lookup(projections: list[dict]) -> dict[str, str]:
+    project_ids = {str(p.get("project_id")) for p in projections if p.get("project_id")}
+    if not project_ids:
+        return {}
+
+    projects = api.list_projects(limit=max(200, len(project_ids) * 4))
+    lookup: dict[str, str] = {}
+    for project in projects:
+        project_id = project.get("project_id")
+        if not project_id:
+            continue
+        paper_name = _paper_folder_name(project.get("source_path")) or str(project.get("label") or "")
+        if paper_name:
+            lookup[str(project_id)] = paper_name
+    return lookup
+
+
+def _default_visible_columns(columns: list[str]) -> list[str]:
+    id_like_columns = [
+        column
+        for column in columns
+        if column.lower() == "id" or column.lower().endswith("_id") or "_id_" in column.lower()
+    ]
+    priority_columns = [
+        "paper_name",
+        "source_paper_name",
+        "is_core_study_data",
+        "extracted_at",
+    ]
+    priority_present = [column for column in priority_columns if column in columns]
+
+    visible = priority_present + [
+        column for column in columns if column not in set(priority_present + id_like_columns)
+    ]
+    return visible if visible else columns
+
+
+def _projection_section_to_rows(
+    value,
+    metadata: dict[str, str],
+    project_paper_lookup: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
     base_row = {**metadata}
+    project_paper_lookup = project_paper_lookup or {}
 
     if isinstance(value, list):
         if not value:
@@ -27,6 +80,10 @@ def _projection_section_to_rows(value, metadata: dict[str, str]) -> list[dict[st
                 {**base_row, **{str(key): _stringify_value(item_value) for key, item_value in item.items()}}
                 for item in value
             ]
+            for row in rows:
+                source_project_id = row.get("source_project_id")
+                if source_project_id and source_project_id in project_paper_lookup:
+                    row.setdefault("source_paper_name", project_paper_lookup[source_project_id])
             return sorted(
                 rows,
                 key=lambda row: str(row.get("is_core_study_data", "")).lower() not in {"true", "1", "yes"},
@@ -62,28 +119,40 @@ def _filter_latest_projections(projections: list[dict]) -> list[dict]:
     )
 
 
-def _projection_to_section_rows(projection: dict) -> dict[str, list[dict[str, str]]]:
+def _projection_to_section_rows(
+    projection: dict,
+    project_paper_lookup: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, str]]]:
     if projection.get("status") not in ("COMPLETED", "REVIEWED") or not projection.get("data"):
         return {}
 
+    project_id = projection.get("project_id") or ""
+    project_paper_lookup = project_paper_lookup or {}
+
     metadata = {
-        "project_id": projection.get("project_id") or "",
+        "project_id": project_id,
         "projection_id": projection.get("projection_id") or "",
         "extracted_at": _projection_timestamp(projection),
     }
+    if project_paper_lookup.get(project_id):
+        metadata["paper_name"] = project_paper_lookup[project_id]
 
     section_rows: dict[str, list[dict[str, str]]] = {}
     for section_name, section_value in projection["data"].items():
-        rows = _projection_section_to_rows(section_value, metadata)
+        rows = _projection_section_to_rows(section_value, metadata, project_paper_lookup)
         if rows:
             section_rows[section_name] = rows
     return section_rows
 
 
-def _build_projection_section_rows(projections: list[dict]) -> dict[str, list[dict[str, str]]]:
+def _build_projection_section_rows(
+    projections: list[dict],
+    project_paper_lookup: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, str]]]:
+    project_paper_lookup = project_paper_lookup or {}
     section_rows: dict[str, list[dict[str, str]]] = {}
     for projection in projections:
-        for section_name, rows in _projection_to_section_rows(projection).items():
+        for section_name, rows in _projection_to_section_rows(projection, project_paper_lookup).items():
             section_rows.setdefault(section_name, []).extend(rows)
     return section_rows
 
@@ -102,7 +171,8 @@ def _paginate_table_rows(rows: list[dict[str, str]], page_size: int, page_number
 
 
 def _render_combined_projection_table(projections: list[dict]):
-    section_rows = _build_projection_section_rows(projections)
+    project_paper_lookup = _build_project_paper_lookup(projections)
+    section_rows = _build_projection_section_rows(projections, project_paper_lookup)
 
     st.subheader("All Extracted Projection Rows")
     if not section_rows:
@@ -140,13 +210,12 @@ def _render_combined_projection_table(projections: list[dict]):
         st.caption(f"Showing rows {start_index}-{end_index} of {len(rows)}")
 
         table = pd.DataFrame(page_rows)
-        priority_columns = ["project_id", "is_core_study_data", "source_project_id", "extracted_at", "projection_id"]
-        # Only include priority columns that exist in the table
-        priority_columns_present = [col for col in priority_columns if col in table.columns]
-        ordered_columns = priority_columns_present + [
-            column for column in table.columns if column not in priority_columns
-        ]
-        st.dataframe(table[ordered_columns], width="stretch", hide_index=True)
+        st.dataframe(
+            table,
+            column_order=_default_visible_columns(table.columns.tolist()),
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def _render_mapping_table(mapping: dict):
@@ -169,7 +238,13 @@ def _render_projection_section(name: str, value, source_project_id: str | None =
                 if source_project_id and "source_project_id" not in row:
                     row["source_project_id"] = source_project_id
                 rows.append(row)
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            table = pd.DataFrame(rows)
+            st.dataframe(
+                table,
+                column_order=_default_visible_columns(table.columns.tolist()),
+                width="stretch",
+                hide_index=True,
+            )
             return
 
         st.write([_stringify_value(item) for item in value])

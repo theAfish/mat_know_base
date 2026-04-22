@@ -90,6 +90,23 @@ The reviewer:
 3. Delegates complex verification to the fixer sub-agent
 4. Produces a single **reviewed projection** — consolidated, corrected, deduplicated
 
+### Knowledge Graph Construction (Global Concept Graph)
+
+Knowledge graph construction uses a dedicated KG extraction agent with one shared global space across all domains.
+
+Design goals:
+- **One global graph space**: all projects contribute to a shared graph so inter-domain links can emerge.
+- **Concept-only nodes**: only scientific concepts become nodes.
+- **Concept relations as edges**: edges encode directed concept-to-concept relations.
+- **Details in references**: values/conditions/metadata are stored as references back to frame/database context, not turned into extra nodes.
+- **Redundancy-aware build**: the agent checks existing graph content to reduce duplicate concepts/edges.
+
+Recommended usage flow:
+1. Extract knowledge frames first.
+2. Optionally clear old KG outputs.
+3. Run KG extraction.
+4. Inspect merged graph output.
+
 ## Prerequisites
 
 - Python 3.10+
@@ -156,6 +173,12 @@ api.review_projections_all(space_id="...")
 api.list_reviewed_projections(space_id="...")
 api.get_reviewed_projection(reviewed_projection_id="...")
 
+# Knowledge graph construction (global concept graph)
+api.clear_knowledge_graphs()
+api.extract_knowledge_graph(project_id="...")
+kg = api.get_knowledge_graph()
+print(len(kg["graph"]["concepts"]), len(kg["graph"]["relations"]))
+
 # Streamlit UI
 # mkb ui
 ```
@@ -208,8 +231,87 @@ mkb review-projections --space <id> --all
 mkb reviewed-projections --space-id <uuid>
 mkb reviewed-projection <reviewed_projection_id>
 
+# Knowledge graph construction (global concept graph)
+mkb kg-clear                                      # clear old KG projections (and legacy frame-graph sections)
+mkb kg-extract                                    # build KG for all completed frames
+mkb kg-extract --project-id <uuid>               # build KG for one project
+mkb kg-extract --frame-id <uuid>                 # build KG for one frame
+mkb kg-show                                       # show merged global concept graph
+mkb kg-show --project-id <uuid>                  # merged graph filtered to one project
+
 # UI
 mkb ui --port 8501
+```
+
+## Knowledge Graph Quickstart
+
+```bash
+# 1) Make sure knowledge frames exist
+mkb extract
+
+# 2) Optional clean rebuild
+mkb kg-clear
+
+# 3) Construct concept graph projections
+mkb kg-extract
+
+# 4) Inspect merged graph
+mkb kg-show
+```
+
+Project-scoped example:
+
+```bash
+mkb kg-clear --project-id <project_uuid>
+mkb kg-extract --project-id <project_uuid>
+mkb kg-show --project-id <project_uuid>
+```
+
+Notes:
+- `kg-extract` clears existing KG projections for target frame(s) by default. Use `--no-clear-existing` to keep prior projection history.
+- Legacy graph-like sections inside frame content are removed by default during cleanup/extraction. Use `--keep-legacy-frame-graphs` to skip that behavior.
+
+### Knowledge Graph Output Shape
+
+`mkb kg-show` and `api.get_knowledge_graph()` return a normalized concept graph:
+
+```json
+{
+        "graph": {
+                "concepts": [
+                        {
+                                "label": "Amelotin",
+                                "aliases": ["AMTN"],
+                                "source_project_ids": ["..."],
+                                "source_frame_ids": ["..."],
+                                "knowledge_refs": [
+                                        {
+                                                "project_id": "...",
+                                                "frame_id": "...",
+                                                "field_path": "...",
+                                                "snippet": "..."
+                                        }
+                                ]
+                        }
+                ],
+                "relations": [
+                        {
+                                "source": "Amelotin",
+                                "relation": "promotes",
+                                "target": "Hydroxyapatite nucleation",
+                                "evidence_level": 2,
+                                "source_project_id": "...",
+                                "source_frame_id": "...",
+                                "knowledge_ref": {
+                                        "project_id": "...",
+                                        "frame_id": "...",
+                                        "field_path": "...",
+                                        "snippet": "..."
+                                }
+                        }
+                ]
+        }
+}
 ```
 
 ## LLM Configuration
@@ -247,6 +349,7 @@ src/mkb/
 │   ├── extraction.py               # KB extraction agent + multi-pass orchestration
 │   ├── review.py                   # Review agent for multi-turn extraction
 │   ├── projection.py               # Projection agent (space-specific extraction)
+│   ├── knowledge_graph.py          # KG agent (global concept graph extraction)
 │   ├── projection_reviewer.py      # Projection reviewer (multi-agent consolidation)
 │   ├── projection_fixer.py         # Fixer sub-agent (source verification)
 │   ├── feedback_reviewer.py        # Feedback review agent
@@ -256,6 +359,7 @@ src/mkb/
 │   │   ├── kb_extraction.py        # Flexible KB extraction prompt
 │   │   ├── review.py               # Review pass prompt
 │   │   ├── projection.py           # Projection prompt builder
+│   │   ├── knowledge_graph.py      # Concept-graph extraction prompt
 │   │   ├── projection_review.py    # Projection reviewer prompt
 │   │   ├── projection_fixer.py     # Fixer sub-agent prompt
 │   │   └── feedback_review.py      # Feedback review prompt
@@ -263,6 +367,7 @@ src/mkb/
 │       ├── reading.py              # Reading tools (markdown, dataframe, image, search)
 │       ├── frames.py               # Frame save/get/update tools
 │       ├── projection.py           # Projection save + flag_for_feedback
+│       ├── knowledge_graph.py      # Concept-graph tools + redundancy checks
 │       ├── projection_review.py    # Projection review + re-extraction tools
 │       └── feedback.py             # Feedback query + resolve tools
 ├── spaces/
@@ -294,7 +399,6 @@ src/mkb/
 | `extraction_passes` | Audit trail for each extraction/review pass |
 | `spaces` | Domain-specific extraction configurations |
 | `projections` | Results of projecting frames through spaces |
-| `reviewed_projections` | Consolidated, corrected projection results from multi-agent review |
 | `feedbacks` | Feedback items between agents |
 
 ## Services

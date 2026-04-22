@@ -28,6 +28,7 @@ dependencies = [
     "litellm>=1.75.5",
     "streamlit>=1.38",
     "streamlit-agraph>=0.0.45",
+    "pyvis>=0.3.2",
 ]
 
 [project.optional-dependencies]
