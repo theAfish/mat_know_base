@@ -1,7 +1,5 @@
 """Knowledge Frames page — browse and inspect extracted knowledge."""
 
-import json
-
 import streamlit as st
 from mkb import api
 from mkb.ui.components.frame_viewer import render_frame_content
@@ -63,3 +61,7 @@ def render():
 
     with tabs[2]:
         st.json(content)
+
+
+if __name__ == "__main__":
+    render()

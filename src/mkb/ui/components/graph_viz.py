@@ -86,57 +86,6 @@ def _render_net(net: "Network") -> None:
     st.iframe(iframe_src, height=height)
 
 
-def render_knowledge_graph(content: dict):
-    """Render a knowledge graph from frame content."""
-    if not HAS_PYVIS:
-        st.warning("pyvis not installed. Install it with: pip install pyvis")
-        return
-
-    net = _make_net(height=520)
-    node_ids: set[str] = set()
-
-    for key, value in content.items():
-        if key in ("paper", "domain"):
-            continue
-        if not isinstance(value, list):
-            continue
-
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-
-            if all(k in item for k in ("subject", "predicate", "object")):
-                subj = str(item["subject"]).strip()
-                obj = str(item["object"]).strip()
-                pred = str(item["predicate"]).strip()
-                ev = item.get("evidence_level", 3)
-                try:
-                    ev = int(ev)
-                except (TypeError, ValueError):
-                    ev = 3
-                color = EDGE_COLORS.get(ev, "#888")
-
-                if subj not in node_ids:
-                    net.add_node(subj, label="", title=subj, size=14, color="#34d399")
-                    node_ids.add(subj)
-                if obj not in node_ids:
-                    net.add_node(obj, label="", title=obj, size=14, color="#34d399")
-                    node_ids.add(obj)
-                net.add_edge(subj, obj, title=pred, color=color)
-            else:
-                name = (item.get("name") or item.get("claim", "")[:40] or item.get("property", "")).strip()
-                if name and name not in node_ids:
-                    net.add_node(name, label="", title=name, size=12, color=_section_color(key))
-                    node_ids.add(name)
-
-    if not node_ids:
-        st.info("No graph data to visualize. The frame may not contain relationships or named entities.")
-        return
-
-    st.caption("Hover nodes/edges to see labels. Edge colors: 🟢 Causal | 🔵 Direct | 🟡 Correlative | 🟠 Predicted")
-    _render_net(net)
-
-
 def render_global_knowledge_graph(graph: dict):
     """Render a merged concept graph returned by api.get_knowledge_graph()."""
     if not HAS_PYVIS:

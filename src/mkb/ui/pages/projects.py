@@ -76,3 +76,7 @@ def _render_project_detail(project_id: str):
         st.write("**Extraction History**")
         for h in history:
             st.text(f"  Pass {h['pass_number']} ({h['pass_type']}) — {h.get('created_at', '')}")
+
+
+if __name__ == "__main__":
+    render()
