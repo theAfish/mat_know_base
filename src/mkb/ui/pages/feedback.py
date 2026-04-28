@@ -71,3 +71,7 @@ def render():
 
             if fb.get("resolution_notes"):
                 st.write(f"**Resolution:** {fb['resolution_notes']} (by {fb.get('resolved_by', 'N/A')})")
+
+
+if __name__ == "__main__":
+    render()

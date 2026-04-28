@@ -26,6 +26,7 @@ data/inbox/*
 
 data/processed/*
 data/papers/*
+data/uploads/*
 
 # Docker volumes
 docker_volumes/

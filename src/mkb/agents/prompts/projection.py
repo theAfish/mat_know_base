@@ -53,15 +53,18 @@ Domain: {domain}
 # Workflow
 
 1. Call `get_frame_content` to read the knowledge frame content.
+   - The response includes an `agent_annotations` field with two sub-keys:
+     - `clarifications`: past clarification Q&A that has already been resolved.
+     - `resolved_feedback`: past feedback items that have already been handled.
 2. Analyze the frame systematically, field by field.
 3. Extract data matching each field in the schema.
-4. **If a field is unclear, missing, or ambiguous**, call `request_frame_clarification` immediately.
-   - The KB extraction agent will read the source files and update the frame in real time.
+4. **If a field is unclear, missing, or ambiguous**, first check `agent_annotations.clarifications` to see if the same question was answered in a previous run. If a matching entry exists, use that answer directly — do NOT call `request_frame_clarification` again.
+   - Only call `request_frame_clarification` if the question is genuinely new (not in the annotations).
    - After it returns, call `get_frame_content` again to read the updated frame before continuing.
    - Repeat as needed for each gap — do not accumulate all questions; resolve them one at a time.
 5. For required fields where data is genuinely absent in the source, set the value to null and note the gap in your assessment.
 6. Call `save_projection` with the extracted data and your confidence assessment.
-7. Use `flag_for_feedback` only if you encounter a **structural or architectural problem** with the extraction pipeline itself (see guidelines below).
+7. Use `flag_for_feedback` only if you encounter a **structural or architectural problem** with the extraction pipeline itself (see guidelines below). Before flagging, check `agent_annotations.resolved_feedback` — if the same issue was already resolved or dismissed, do NOT re-flag it.
 
 ---
 
@@ -88,4 +91,6 @@ Domain: {domain}
 | A data class is structurally absent from the extraction architecture | `flag_for_feedback` |
 
 Prefer `request_frame_clarification` — it resolves the issue immediately. Only escalate to `flag_for_feedback` for recurring, architectural concerns that cannot be fixed by re-reading the source.
+
+**Important:** Always check `agent_annotations` before calling either tool. If the same question or issue was already handled in a prior run, skip the tool call and use the recorded answer.
 """

@@ -135,6 +135,7 @@ def get_frame_content(frame_id: str) -> dict:
             "status": frame.status.value,
             "content": frame.content or {},
             "extraction_summary": frame.extraction_summary,
+            "agent_annotations": frame.agent_annotations or {},
         }
 
 
@@ -250,13 +251,35 @@ def request_frame_clarification(
         question[:120],
     )
 
-    return run_clarification_in_thread(
+    result = run_clarification_in_thread(
         project_id=project_id,
         frame_id=frame_id,
         question=question,
         context=context,
         field=field,
     )
+
+    # Record the clarification in the frame's agent_annotations so future
+    # projection/extraction runs skip re-asking the same question.
+    now = datetime.now(timezone.utc)
+    annotation = {
+        "question": question,
+        "field": field or None,
+        "summary": result.get("clarification_summary") or "",
+        "frame_updated": result.get("updated", False),
+        "resolved_at": now.isoformat(),
+    }
+    with SyncSessionLocal() as session:
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=frame_id).first()
+        if frame:
+            annotations = dict(frame.agent_annotations or {})
+            clarifications = list(annotations.get("clarifications", []))
+            clarifications.append(annotation)
+            annotations["clarifications"] = clarifications
+            frame.agent_annotations = annotations
+            session.commit()
+
+    return result
 
 
 def flag_for_feedback(

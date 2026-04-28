@@ -6,6 +6,9 @@ Main entry point for the web interface.
 
 import streamlit as st
 
+
+PAGES = ["Projects", "Knowledge Frames", "Dataset Graph", "Projections", "Feedback"]
+
 st.set_page_config(
     page_title="Materials Knowledge Base",
     page_icon="🔬",
@@ -15,17 +18,30 @@ st.set_page_config(
 
 # Sidebar navigation
 st.sidebar.title("MKB")
+default_page = st.session_state.setdefault("page", PAGES[0])
+if "page_nav" not in st.session_state:
+    st.session_state["page_nav"] = default_page
+
+pending_page = st.session_state.pop("pending_page", None)
+if pending_page in PAGES:
+    st.session_state["page_nav"] = pending_page
+
 page = st.sidebar.radio(
     "Navigate",
-    ["Projects", "Knowledge Frames", "Projections", "Feedback"],
+    PAGES,
+    key="page_nav",
     label_visibility="collapsed",
 )
+st.session_state["page"] = page
 
 if page == "Projects":
     from mkb.ui.pages.projects import render
     render()
 elif page == "Knowledge Frames":
     from mkb.ui.pages.frames import render
+    render()
+elif page == "Dataset Graph":
+    from mkb.ui.pages.graph import render
     render()
 elif page == "Projections":
     from mkb.ui.pages.projections import render

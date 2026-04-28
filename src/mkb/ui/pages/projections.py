@@ -100,25 +100,6 @@ def _projection_timestamp(projection: dict) -> str:
     return projection.get("extracted_at") or projection.get("created_at") or ""
 
 
-def _filter_latest_projections(projections: list[dict]) -> list[dict]:
-    latest_by_key: dict[tuple[str, str], dict] = {}
-
-    for projection in projections:
-        key = (
-            projection.get("space_id") or "",
-            projection.get("project_id") or projection.get("frame_id") or projection.get("projection_id") or "",
-        )
-        current = latest_by_key.get(key)
-        if current is None or _projection_timestamp(projection) >= _projection_timestamp(current):
-            latest_by_key[key] = projection
-
-    return sorted(
-        latest_by_key.values(),
-        key=lambda projection: _projection_timestamp(projection),
-        reverse=True,
-    )
-
-
 def _projection_to_section_rows(
     projection: dict,
     project_paper_lookup: dict[str, str] | None = None,
@@ -311,9 +292,6 @@ def render():
         newest_only=newest_only,
     )
 
-    if newest_only:
-        projections = _filter_latest_projections(projections)
-
     if not projections:
         st.info("No projections for this space yet.")
         return
@@ -379,3 +357,7 @@ def render():
                         st.write(proj["validation_result"])
         elif proj is None or proj["space_id"] != space_id:
             st.session_state.pop("selected_projection", None)
+
+
+if __name__ == "__main__":
+    render()
