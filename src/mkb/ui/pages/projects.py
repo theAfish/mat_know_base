@@ -180,7 +180,7 @@ def _render_project_detail(project_id: str):
     st.divider()
 
     # ── Detail tabs ───────────────────────────────────────────────
-    feedback_count = len(api.list_feedback(project_id=project_id))
+    feedback_items = api.list_feedback(project_id=project_id)
 
     tab_assets, tab_frame, tab_projections, tab_graph, tab_feedback = st.tabs(
         [
@@ -188,7 +188,7 @@ def _render_project_detail(project_id: str):
             "Knowledge Frame",
             "Projections",
             "Knowledge Graph",
-            f"Feedback ({feedback_count})",
+            f"Feedback ({len(feedback_items)})",
         ]
     )
 
@@ -205,7 +205,7 @@ def _render_project_detail(project_id: str):
         _render_graph_tab(project_id)
 
     with tab_feedback:
-        _render_feedback_tab(project_id)
+        _render_feedback_tab(project_id, feedback_items)
 
 
 # ── Detail tab renderers ──────────────────────────────────────────
@@ -368,9 +368,10 @@ def _render_graph_tab(project_id: str):
             st.caption(f"{src}  **{rel}**  {tgt}  (L{ev})")
 
 
-def _render_feedback_tab(project_id: str):
+def _render_feedback_tab(project_id: str, items: list[dict] | None = None):
     """Show all feedback items for this project with inline resolution."""
-    items = api.list_feedback(project_id=project_id)
+    if items is None:
+        items = api.list_feedback(project_id=project_id)
 
     if not items:
         st.info("No feedback items for this project yet.")
