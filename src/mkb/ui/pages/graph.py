@@ -2,14 +2,14 @@
 
 import streamlit as st
 
-from mkb import api
 from mkb.ui.components.graph_viz import render_global_knowledge_graph
+from mkb.ui.data_cache import get_knowledge_graph_cached
 
 
 def render():
     st.header("Dataset Graph")
 
-    graph_payload = api.get_knowledge_graph()
+    graph_payload = get_knowledge_graph_cached()
     graph = graph_payload.get("graph") if isinstance(graph_payload, dict) else None
     projection_count = graph_payload.get("projection_count", 0) if isinstance(graph_payload, dict) else 0
 

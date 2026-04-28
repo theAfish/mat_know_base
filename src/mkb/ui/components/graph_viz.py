@@ -7,9 +7,10 @@ Uses pyvis for rendering: labels are hidden by default and appear only on
 hover (as tooltips), and Barnes-Hut physics keeps large graphs responsive.
 """
 
-import base64
+import json
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     from pyvis.network import Network
@@ -25,84 +26,91 @@ EDGE_COLORS = {
     4: "#f97316",  # orange — predicted
 }
 
-# Barnes-Hut physics options — fast for large graphs
-_PHYSICS_OPTIONS = """
-{
-  "physics": {
-    "enabled": true,
-    "solver": "barnesHut",
-    "barnesHut": {
-      "gravitationalConstant": -8000,
-      "centralGravity": 0.3,
-      "springLength": 120,
-      "springConstant": 0.04,
-      "damping": 0.09,
-      "avoidOverlap": 0.1
-    },
-    "stabilization": {
-      "enabled": true,
-      "iterations": 200,
-      "updateInterval": 25
+def _vis_options(enable_physics: bool) -> str:
+    options = {
+        "layout": {"improvedLayout": False},
+        "physics": {
+            "enabled": enable_physics,
+            "solver": "barnesHut",
+            "barnesHut": {
+                "gravitationalConstant": -6000,
+                "centralGravity": 0.3,
+                "springLength": 110,
+                "springConstant": 0.05,
+                "damping": 0.12,
+                "avoidOverlap": 0.1,
+            },
+            "stabilization": {
+                "enabled": enable_physics,
+                "iterations": 80,
+                "updateInterval": 25,
+            },
+        },
+        "nodes": {
+            "font": {"size": 0},
+            "borderWidth": 1,
+            "shadow": False,
+        },
+        "edges": {
+            "font": {"size": 0},
+            "smooth": False,
+            "arrows": {"to": {"enabled": True, "scaleFactor": 0.5}},
+        },
+        "interaction": {
+            "hover": True,
+            "tooltipDelay": 80,
+            "hideEdgesOnDrag": True,
+            "hideNodesOnDrag": False,
+        },
     }
-  },
-  "nodes": {
-    "font": { "size": 0 },
-    "borderWidth": 1,
-    "shadow": false
-  },
-  "edges": {
-    "font": { "size": 0 },
-    "smooth": { "type": "dynamic" },
-    "arrows": { "to": { "enabled": true, "scaleFactor": 0.5 } }
-  },
-  "interaction": {
-    "hover": true,
-    "tooltipDelay": 100,
-    "hideEdgesOnDrag": true,
-    "hideNodesOnDrag": false
-  }
-}
-"""
+    return json.dumps(options)
 
 
-def _make_net(height: int = 500, directed: bool = True) -> "Network":
-    net = Network(
-        height=f"{height}px",
-        width="100%",
-        directed=directed,
-        bgcolor="#0e1117",
-        font_color="#e2e8f0",
-    )
-    net.set_options(_PHYSICS_OPTIONS)
+def _make_net(
+    height: int = 500,
+    directed: bool = True,
+    enable_physics: bool = True,
+) -> "Network":
+    try:
+        net = Network(
+            height=f"{height}px",
+            width="100%",
+            directed=directed,
+            bgcolor="#0e1117",
+            font_color="#e2e8f0",
+            cdn_resources="remote",
+        )
+    except TypeError:
+        net = Network(
+            height=f"{height}px",
+            width="100%",
+            directed=directed,
+            bgcolor="#0e1117",
+            font_color="#e2e8f0",
+        )
+
+    net.set_options(_vis_options(enable_physics=enable_physics))
     return net
 
 
-def _render_net(net: "Network") -> None:
-    """Render a pyvis Network inside Streamlit via an iframe data URL."""
-    html = net.generate_html()
-    encoded_html = base64.b64encode(html.encode("utf-8")).decode("ascii")
-    iframe_src = f"data:text/html;base64,{encoded_html}"
-    height = net.height if isinstance(net.height, int) else int(net.height.rstrip("px"))
-    st.iframe(iframe_src, height=height)
+def _serialize_graph(graph: dict) -> str:
+    """Create a stable, cacheable representation of graph payload."""
+    data = {
+        "concepts": graph.get("concepts") or [],
+        "relations": graph.get("relations") or [],
+    }
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def render_global_knowledge_graph(graph: dict):
-    """Render a merged concept graph returned by api.get_knowledge_graph()."""
-    if not HAS_PYVIS:
-        st.warning("pyvis not installed. Install it with: pip install pyvis")
-        return
+@st.cache_data(ttl=300, max_entries=16, show_spinner=False)
+def _build_global_graph_html(graph_json: str, height: int) -> str:
+    """Build pyvis HTML once per graph payload to avoid expensive rerenders."""
+    payload = json.loads(graph_json)
+    concepts = payload.get("concepts") or []
+    relations = payload.get("relations") or []
+    enable_physics = len(concepts) <= 500 and len(relations) <= 1200
 
-    if not isinstance(graph, dict):
-        st.info("No graph data available.")
-        return
-
-    concepts = graph.get("concepts") or []
-    relations = graph.get("relations") or []
-    if not concepts:
-        st.info("No concept nodes available yet. Run `mkb kg-extract` first.")
-        return
-
-    net = _make_net(height=720)
+    net = _make_net(height=height, enable_physics=enable_physics)
     node_ids: set[str] = set()
 
     for concept in concepts:
@@ -139,11 +147,33 @@ def render_global_knowledge_graph(graph: dict):
             ev = 3
         net.add_edge(source, target, title=rel, color=EDGE_COLORS.get(ev, "#888"))
 
+    return net.generate_html()
+
+
+def render_global_knowledge_graph(graph: dict):
+    """Render a merged concept graph returned by api.get_knowledge_graph()."""
+    if not HAS_PYVIS:
+        st.warning("pyvis not installed. Install it with: pip install pyvis")
+        return
+
+    if not isinstance(graph, dict):
+        st.info("No graph data available.")
+        return
+
+    concepts = graph.get("concepts") or []
+    relations = graph.get("relations") or []
+    if not concepts:
+        st.info("No concept nodes available yet. Run `mkb kg-extract` first.")
+        return
+
+    graph_json = _serialize_graph(graph)
+    html = _build_global_graph_html(graph_json=graph_json, height=720)
+
     st.caption(
         "Merged global concept graph. **Hover** nodes/edges to see labels. "
         "Edge colors: causal (🟢) | direct (🔵) | correlative (🟡) | predicted (🟠)"
     )
-    _render_net(net)
+    components.html(html, height=720, scrolling=False)
 
 
 # Section-based node colors

@@ -1,0 +1,22 @@
+"""UI data-access caching helpers.
+
+These wrappers reduce repeated DB reads and graph aggregation during
+Streamlit reruns and page switches.
+"""
+
+from __future__ import annotations
+
+import streamlit as st
+
+from mkb import api
+
+
+@st.cache_data(ttl=60, max_entries=128, show_spinner=False)
+def get_knowledge_graph_cached(project_id: str | None = None) -> dict:
+    """Fetch merged knowledge graph payload with short-lived cache."""
+    return api.get_knowledge_graph(project_id=project_id)
+
+
+def clear_graph_cache() -> None:
+    """Clear cached graph payloads after graph-changing operations."""
+    get_knowledge_graph_cached.clear()

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import streamlit as st
 from mkb import api
+from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached
 
 
 _UPLOAD_ROOT = Path("data/uploads")
@@ -101,7 +102,7 @@ def _render_project_list():
         cols[2].write(str(p["asset_count"]))
         if cols[3].button("View", key=f"view_{p['project_id']}"):
             st.session_state["selected_frame_project"] = p["project_id"]
-            st.session_state["page"] = "Knowledge Frames"
+            st.session_state["pending_page"] = "Knowledge Frames"
             st.rerun()
 
 
@@ -172,6 +173,7 @@ def _render_project_detail(project_id: str):
         if st.button("Extract Graph", key=f"kg_{project_id}", help="Extract knowledge graph elements"):
             with st.spinner("Extracting knowledge graph…"):
                 result = api.extract_knowledge_graph(project_id=project_id)
+            clear_graph_cache()
             st.toast("Knowledge graph extraction complete")
             st.rerun()
 
@@ -329,7 +331,7 @@ def _render_projections_tab(project_id: str):
 
 
 def _render_graph_tab(project_id: str):
-    kg = api.get_knowledge_graph(project_id=project_id)
+    kg = get_knowledge_graph_cached(project_id=project_id)
     graph = kg.get("graph", {})
     concepts = graph.get("concepts") or []
     relations = graph.get("relations") or []

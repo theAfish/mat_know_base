@@ -18,9 +18,13 @@ st.set_page_config(
 
 # Sidebar navigation
 st.sidebar.title("MKB")
-current_page = st.session_state.setdefault("page", PAGES[0])
-if st.session_state.get("page_nav") != current_page:
-    st.session_state["page_nav"] = current_page
+default_page = st.session_state.setdefault("page", PAGES[0])
+if "page_nav" not in st.session_state:
+    st.session_state["page_nav"] = default_page
+
+pending_page = st.session_state.pop("pending_page", None)
+if pending_page in PAGES:
+    st.session_state["page_nav"] = pending_page
 
 page = st.sidebar.radio(
     "Navigate",
