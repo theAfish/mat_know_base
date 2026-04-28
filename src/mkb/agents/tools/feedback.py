@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import Feedback, FeedbackStatus
+from mkb.db.models import Feedback, FeedbackStatus, KnowledgeFrame
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,26 @@ def resolve_feedback_item(
         fb.resolved_by = "kb_agent"
         fb.resolved_at = datetime.now(timezone.utc)
         session.commit()
+
+        # Write the resolved item into the frame's agent_annotations so future
+        # runs know this feedback was already handled and skip re-flagging it.
+        resolved_annotation = {
+            "feedback_id": str(fb.feedback_id),
+            "category": fb.category,
+            "field_path": fb.field_path,
+            "question": fb.question,
+            "resolution_notes": resolution_notes,
+            "status": resolved_status.value,
+            "resolved_at": fb.resolved_at.isoformat(),
+        }
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=fb.target_frame_id).first()
+        if frame:
+            annotations = dict(frame.agent_annotations or {})
+            resolved_list = list(annotations.get("resolved_feedback", []))
+            resolved_list.append(resolved_annotation)
+            annotations["resolved_feedback"] = resolved_list
+            frame.agent_annotations = annotations
+            session.commit()
 
         return {"feedback_id": str(fb.feedback_id), "status": fb.status.value}
 

@@ -230,10 +230,42 @@ def cmd_kg_show(args):
 
 
 def cmd_feedback(args):
-    from mkb.api import list_feedback
+    from mkb.api import list_feedback, list_projects, get_feedback_summary
+
+    if args.summary:
+        projects = list_projects(limit=200)
+        for p in projects:
+            summary = get_feedback_summary(p["project_id"])
+            if summary["total"] == 0:
+                continue
+            pid = str(p["project_id"])
+            label = p["label"] or p["source_path"] or pid[:12]
+            if len(label) > 40:
+                label = label[:37] + "..."
+            by_status = " ".join(f"{s}={c}" for s, c in summary["by_status"].items())
+            by_category = " ".join(f"{c}={n}" for c, n in summary["by_category"].items())
+            print(f"  {pid}  {label:<43}  ({summary['total']} items)  status: {by_status}  cat: {by_category}")
+        return
+
     items = list_feedback(project_id=args.project_id, status=args.status)
+
+    project_labels = {}
+    if not args.project_id:
+        projects = list_projects(limit=200)
+        project_labels = {
+            p["project_id"]: p["label"] or p["source_path"] or p["project_id"][:12]
+            for p in projects
+        }
+
     for fb in items:
-        print(f"  {fb['feedback_id']}  {fb['status']:<12}  [{fb['category']}]  {fb['question'][:60]}")
+        proj_info = ""
+        if not args.project_id:
+            pid = fb["target_project_id"]
+            label = project_labels.get(pid, pid[:12])
+            if len(label) > 40:
+                label = label[:37] + "..."
+            proj_info = f"  project={pid} ({label})"
+        print(f"  {fb['feedback_id']}  {fb['status']:<12}  [{fb['category']}]  {fb['question'][:60]}{proj_info}")
     print(f"\n{len(items)} feedback item(s).")
 
 
@@ -433,6 +465,7 @@ def main():
     p = sub.add_parser("feedback", help="List feedback items")
     p.add_argument("--project-id", "-p", default=None)
     p.add_argument("--status", default=None, help="Filter by status (OPEN, RESOLVED, DISMISSED, etc.)")
+    p.add_argument("--summary", "-s", action="store_true", help="Show per-project feedback summary")
 
     p = sub.add_parser("review-feedback", help="Run feedback review on a project")
     p.add_argument("--project-id", "-p", required=True)

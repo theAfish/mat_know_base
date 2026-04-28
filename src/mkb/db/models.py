@@ -210,6 +210,9 @@ class KnowledgeFrame(Base):
         DateTime(timezone=True), nullable=True
     )
     source_metadata: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    # Persistent agent memory: clarification Q&A history and resolved feedback items.
+    # Structure: {"clarifications": [...], "resolved_feedback": [...]}
+    agent_annotations: Mapped[dict | None] = mapped_column(JSONB, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -1,66 +1,69 @@
 """Knowledge Frames page — browse and inspect extracted knowledge."""
 
 import streamlit as st
+
 from mkb import api
-from mkb.ui.components.frame_viewer import render_frame_content
-from mkb.ui.components.graph_viz import render_global_knowledge_graph
+from mkb.ui.pages.projects import _render_project_detail
 
 
 def render():
     st.header("Knowledge Frames")
 
-    frames = api.list_frames()
+    projects = api.list_projects(limit=100)
+    frames = {frame["project_id"]: frame for frame in api.list_frames()}
+    rows = []
 
-    if not frames:
+    for project in projects:
+        frame = frames.get(project["project_id"])
+        if not frame:
+            continue
+        rows.append({
+            "project_id": project["project_id"],
+            "label": project["label"] or project["source_path"] or project["project_id"][:12],
+            "asset_count": project["asset_count"],
+            "status": frame["status"],
+            "version": frame.get("extraction_version", 0),
+            "extracted_at": (frame.get("extracted_at") or "")[:10] or "-",
+        })
+
+    if not rows:
         st.info("No knowledge frames found. Run extraction first.")
         return
 
-    # Frame selector
-    frame_options = {
-        f"{f['project_id'][:8]}... — {f['status']} (v{f.get('extraction_version', 0)})": f["project_id"]
-        for f in frames
-    }
+    available_project_ids = {row["project_id"] for row in rows}
+    selected_project_id = st.session_state.get("selected_frame_project")
+    if selected_project_id not in available_project_ids:
+        selected_project_id = rows[0]["project_id"]
+        st.session_state["selected_frame_project"] = selected_project_id
 
-    selected_label = st.selectbox("Select a frame", list(frame_options.keys()))
-    if not selected_label:
-        return
+    header_cols = st.columns([1.4, 4, 1, 1, 1.2, 1])
+    header_cols[0].caption("Status")
+    header_cols[1].caption("Label / Path")
+    header_cols[2].caption("Files")
+    header_cols[3].caption("Version")
+    header_cols[4].caption("Extracted")
+    header_cols[5].caption("")
 
-    project_id = frame_options[selected_label]
+    for row in rows:
+        cols = st.columns([1.4, 4, 1, 1, 1.2, 1])
+        cols[0].write(row["status"])
+        cols[1].write(row["label"])
+        cols[2].write(str(row["asset_count"]))
+        cols[3].write(f"v{row['version']}")
+        cols[4].write(row["extracted_at"])
+        if cols[5].button("View", key=f"frame_view_{row['project_id']}"):
+            st.session_state["selected_frame_project"] = row["project_id"]
+            st.rerun()
+
+    st.divider()
+
+    project_id = st.session_state["selected_frame_project"]
     frame = api.get_frame(project_id)
     if not frame:
         st.error("Frame not found.")
         return
 
-    # Frame metadata
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Status", frame["status"])
-    col2.metric("Version", frame.get("extraction_version", 0))
-    col3.metric("Extracted", frame.get("extracted_at", "N/A")[:10] if frame.get("extracted_at") else "N/A")
-
-    if frame.get("extraction_summary"):
-        st.write(f"**Summary:** {frame['extraction_summary']}")
-
-    # Content viewer tabs
-    content = frame.get("content", {})
-    if not content:
-        st.warning("Frame has no content.")
-        return
-
-    tab_names = ["Structured View", "Graph View", "Raw JSON"]
-    tabs = st.tabs(tab_names)
-
-    with tabs[0]:
-        render_frame_content(content)
-
-    with tabs[1]:
-        graph_payload = api.get_knowledge_graph()
-        graph = graph_payload.get("graph") if isinstance(graph_payload, dict) else None
-        projection_count = graph_payload.get("projection_count", 0) if isinstance(graph_payload, dict) else 0
-        st.caption(f"Graph projections merged: {projection_count}")
-        render_global_knowledge_graph(graph or {})
-
-    with tabs[2]:
-        st.json(content)
+    _render_project_detail(project_id)
 
 
 if __name__ == "__main__":

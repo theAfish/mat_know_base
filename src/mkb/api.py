@@ -256,6 +256,7 @@ def get_frame(project_id: str | uuid.UUID) -> dict | None:
             "extraction_version": frame.extraction_version,
             "extracted_at": frame.extracted_at.isoformat() if frame.extracted_at else None,
             "source_metadata": frame.source_metadata,
+            "agent_annotations": frame.agent_annotations or {},
             "created_at": frame.created_at.isoformat() if frame.created_at else None,
             "updated_at": frame.updated_at.isoformat() if frame.updated_at else None,
         }
@@ -926,6 +927,16 @@ def review_projections_all(
 
 
 # ── Feedback ─────────────────────────────────────────────────────
+
+
+def get_feedback_summary(
+    project_id: str | uuid.UUID,
+) -> dict:
+    """Get counts of feedback by category and status for a project."""
+    from mkb.feedback.manager import get_feedback_summary as _summary
+
+    pid = uuid.UUID(str(project_id))
+    return _summary(pid)
 
 
 def resolve_feedback(

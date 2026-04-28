@@ -152,6 +152,7 @@ def get_existing_frame(project_id: str) -> dict:
             "times_checked": frame.times_checked,
             "extraction_version": frame.extraction_version,
             "extracted_at": frame.extracted_at.isoformat() if frame.extracted_at else None,
+            "agent_annotations": frame.agent_annotations or {},
         }
 
 
