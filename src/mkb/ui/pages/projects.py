@@ -123,7 +123,7 @@ def _render_project_detail(project_id: str):
         st.subheader(label)
     with close_col:
         if st.button("✕ Close", key="close_detail"):
-            del st.session_state["selected_project"]
+            st.session_state.pop("selected_frame_project", None)
             st.rerun()
 
     # ── Pipeline actions ──────────────────────────────────────────
