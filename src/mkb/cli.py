@@ -79,6 +79,42 @@ def cmd_assets(args):
     print(f"\n{len(assets)} asset(s).")
 
 
+def cmd_search(args):
+    from mkb.api import search_library
+
+    result = search_library(
+        query=args.query,
+        limit=args.limit,
+        project_id=args.project_id,
+    )
+
+    projects = result["projects"]
+    assets = result["assets"]
+
+    if not projects and not assets:
+        print("No matches found.")
+        return
+
+    if projects:
+        print("Projects")
+        for project in projects:
+            label = project["label"] or project["source_path"] or project["project_id"]
+            print(f"  {project['project_id']}  {label}")
+
+    if assets:
+        if projects:
+            print()
+        print("Assets")
+        for asset in assets:
+            project_id = asset["project_id"] or "-"
+            print(
+                f"  {asset['asset_id']}  {asset['status']:<10}  "
+                f"project={project_id}  {asset['filename']}"
+            )
+
+    print(f"\n{result['total']} total match(es).")
+
+
 def cmd_frames(args):
     from mkb.api import list_frames
     frames = list_frames()
@@ -399,6 +435,12 @@ def main():
     p.add_argument("--project-id", "-p", default=None)
     p.add_argument("--limit", "-n", type=int, default=100)
 
+    # search
+    p = sub.add_parser("search", help="Search projects and assets by keyword")
+    p.add_argument("query", help="Free-text keyword query")
+    p.add_argument("--project-id", "-p", default=None, help="Limit asset/project matches to a single project")
+    p.add_argument("--limit", "-n", type=int, default=25)
+
     # frames
     sub.add_parser("frames", help="List knowledge frames")
 
@@ -519,6 +561,7 @@ def main():
         "extract": cmd_extract,
         "projects": cmd_projects,
         "assets": cmd_assets,
+        "search": cmd_search,
         "frames": cmd_frames,
         "frame": cmd_frame,
         "processed": cmd_processed,

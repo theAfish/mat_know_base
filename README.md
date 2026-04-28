@@ -181,6 +181,11 @@ print(len(kg["graph"]["concepts"]), len(kg["graph"]["relations"]))
 
 # Streamlit UI
 # mkb ui
+
+# Search papers and data
+results = api.search_library("enamel mineralization")
+print(results["projects"])
+print(results["assets"])
 ```
 
 ## CLI
@@ -208,6 +213,8 @@ mkb extraction-history <project_id>      # view pass history
 # Listing
 mkb projects
 mkb assets --project-id <uuid>
+mkb search "enamel mineralization"
+mkb search "csv supplement" --project-id <uuid>
 mkb frames
 mkb frame <project_id>
 
@@ -242,6 +249,21 @@ mkb kg-show --project-id <uuid>                  # merged graph filtered to one 
 # UI
 mkb ui --port 8501
 ```
+
+## Search
+
+Keyword search is available in all three interfaces:
+
+- **UI**: The **Research Projects → Browse** view includes a search box for papers and ingested data assets.
+- **Python API**: `api.search_library(query, limit=25, project_id=None)` returns matching projects and assets.
+- **CLI**: `mkb search "keywords"` prints matching projects and assets, with optional `--project-id` scoping.
+
+Search behavior:
+
+- Queries are split into whitespace-separated keyword tokens.
+- All tokens must match somewhere in a result.
+- Project matches use project label and source path.
+- Asset matches use filename, MIME type, and selected asset metadata fields.
 
 ## Knowledge Graph Quickstart
 

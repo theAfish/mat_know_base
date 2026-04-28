@@ -10,7 +10,6 @@ hover (as tooltips), and Barnes-Hut physics keeps large graphs responsive.
 import json
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 try:
     from pyvis.network import Network
@@ -173,7 +172,7 @@ def render_global_knowledge_graph(graph: dict):
         "Merged global concept graph. **Hover** nodes/edges to see labels. "
         "Edge colors: causal (🟢) | direct (🔵) | correlative (🟡) | predicted (🟠)"
     )
-    components.html(html, height=720, scrolling=False)
+    st.iframe(html, height=720, width="stretch")
 
 
 # Section-based node colors

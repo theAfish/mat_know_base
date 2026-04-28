@@ -4,7 +4,7 @@ from pathlib import Path
 
 import streamlit as st
 from mkb import api
-from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached
+from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached, search_library_cached
 
 
 _UPLOAD_ROOT = Path("data/uploads")
@@ -82,6 +82,18 @@ def _render_project_list():
         if st.button("Refresh"):
             st.rerun()
 
+    search_query = st.text_input(
+        "Search papers and data",
+        value=st.session_state.get("projects_search_query", ""),
+        placeholder="Try enamel, mineralization, csv, odontogenic...",
+    )
+    st.session_state["projects_search_query"] = search_query
+
+    if search_query.strip():
+        results = search_library_cached(query=search_query, limit=50)
+        _render_search_results(results)
+        return
+
     projects = api.list_projects(limit=100)
 
     if not projects:
@@ -104,6 +116,40 @@ def _render_project_list():
             st.session_state["selected_frame_project"] = p["project_id"]
             st.session_state["pending_page"] = "Knowledge Frames"
             st.rerun()
+
+
+def _render_search_results(results: dict):
+    projects = results.get("projects") or []
+    assets = results.get("assets") or []
+
+    st.caption(
+        f"{results.get('total', 0)} match(es) for '{results.get('query', '')}'"
+    )
+
+    if not projects and not assets:
+        st.info("No matching papers or data assets found.")
+        return
+
+    if projects:
+        st.write("**Projects**")
+        for project in projects:
+            cols = st.columns([5, 1])
+            cols[0].write(project["label"] or project["source_path"] or project["project_id"])
+            if cols[1].button("View", key=f"search_project_{project['project_id']}"):
+                st.session_state["selected_frame_project"] = project["project_id"]
+                st.session_state["pending_page"] = "Knowledge Frames"
+                st.rerun()
+
+    if assets:
+        st.write("**Assets**")
+        for asset in assets:
+            cols = st.columns([4, 2, 1])
+            cols[0].caption(asset["filename"])
+            cols[1].caption(asset["mime_type"] or "—")
+            if asset.get("project_id") and cols[2].button("Open", key=f"search_asset_{asset['asset_id']}"):
+                st.session_state["selected_frame_project"] = asset["project_id"]
+                st.session_state["pending_page"] = "Knowledge Frames"
+                st.rerun()
 
 
 # ── Project detail ────────────────────────────────────────────────

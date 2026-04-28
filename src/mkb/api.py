@@ -11,6 +11,7 @@ import hashlib
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal, init_db
@@ -116,6 +117,19 @@ def _choose_asset_for_manual_output(assets: list, primary_name: str | None = Non
             return asset
 
     return assets[0]
+
+
+def _normalize_search_query(query: str) -> list[str]:
+    """Split a free-text query into non-empty keyword tokens."""
+    return [token.strip() for token in query.split() if token.strip()]
+
+
+def _matches_search_tokens(*values: Any, tokens: list[str]) -> bool:
+    """Return True when every token is present in at least one candidate value."""
+    haystacks = [str(value).lower() for value in values if value]
+    if not tokens:
+        return True
+    return all(any(token in haystack for haystack in haystacks) for token in tokens)
 
 
 # ── Lifecycle ────────────────────────────────────────────────────
@@ -561,6 +575,121 @@ def list_assets(project_id: str | uuid.UUID | None = None, limit: int = 100) -> 
             }
             for a in assets
         ]
+
+
+def search_library(
+    query: str,
+    limit: int = 25,
+    project_id: str | uuid.UUID | None = None,
+) -> dict:
+    """Search projects and assets by keyword.
+
+    Every keyword token must match somewhere in the target record. Projects are
+    searched by label and source path. Assets are searched by filename, MIME
+    type, and selected metadata fields.
+    """
+    from sqlalchemy import and_, or_
+
+    from mkb.db.models import Asset, ProjectAsset, ResearchProject
+
+    init_db()
+    tokens = [token.lower() for token in _normalize_search_query(query)]
+    if not tokens:
+        return {
+            "query": query,
+            "tokens": [],
+            "project_id": str(project_id) if project_id is not None else None,
+            "projects": [],
+            "assets": [],
+            "total": 0,
+        }
+
+    pid = uuid.UUID(str(project_id)) if project_id is not None else None
+
+    with SyncSessionLocal() as session:
+        project_filters = [
+            or_(
+                ResearchProject.label.ilike(f"%{token}%"),
+                ResearchProject.source_path.ilike(f"%{token}%"),
+            )
+            for token in tokens
+        ]
+        project_query = session.query(ResearchProject)
+        if pid is not None:
+            project_query = project_query.filter(ResearchProject.project_id == pid)
+        project_rows = (
+            project_query
+            .filter(and_(*project_filters))
+            .order_by(ResearchProject.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        asset_filters = [
+            or_(
+                Asset.filename.ilike(f"%{token}%"),
+                Asset.mime_type.ilike(f"%{token}%"),
+            )
+            for token in tokens
+        ]
+        asset_query = session.query(Asset, ProjectAsset.project_id).outerjoin(
+            ProjectAsset,
+            ProjectAsset.asset_id == Asset.asset_id,
+        )
+        if pid is not None:
+            asset_query = asset_query.filter(ProjectAsset.project_id == pid)
+        asset_rows = (
+            asset_query
+            .filter(and_(*asset_filters))
+            .order_by(Asset.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        projects = [
+            {
+                "project_id": str(row.project_id),
+                "label": row.label,
+                "source_path": row.source_path,
+                "file_count": row.file_count,
+                "kind": "project",
+            }
+            for row in project_rows
+        ]
+
+        assets = []
+        for asset, asset_project_id in asset_rows:
+            metadata = asset.metadata_ or {}
+            if not _matches_search_tokens(
+                asset.filename,
+                asset.mime_type,
+                metadata.get("title"),
+                metadata.get("description"),
+                metadata.get("original_path"),
+                tokens=tokens,
+            ):
+                continue
+
+            assets.append(
+                {
+                    "asset_id": str(asset.asset_id),
+                    "project_id": str(asset_project_id) if asset_project_id else None,
+                    "filename": asset.filename,
+                    "mime_type": asset.mime_type,
+                    "size_bytes": asset.size_bytes,
+                    "status": asset.status.value,
+                    "kind": "asset",
+                }
+            )
+
+        return {
+            "query": query,
+            "tokens": tokens,
+            "project_id": str(pid) if pid is not None else None,
+            "projects": projects,
+            "assets": assets[:limit],
+            "total": len(projects) + len(assets[:limit]),
+        }
 
 
 # ── Spaces ───────────────────────────────────────────────────────
