@@ -40,8 +40,14 @@ async def _run_knowledge_graph_async(
     model: str | None = None,
     verbose: bool = False,
     clear_existing: bool = True,
+    progress_callback=None,
 ) -> dict:
     """Run knowledge graph extraction for one completed frame."""
+
+    def _emit(message: str, **extra) -> None:
+        if progress_callback:
+            progress_callback({"message": message, **extra})
+
     global_space = ensure_global_kg_space()
 
     with SyncSessionLocal() as db:
@@ -65,6 +71,7 @@ async def _run_knowledge_graph_async(
         db.commit()
         projection_id = projection.projection_id
         project_id = frame.project_id
+        _emit("Knowledge graph extraction started", stage="setup")
 
     agent = build_knowledge_graph_agent(model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
@@ -78,7 +85,12 @@ async def _run_knowledge_graph_async(
         "Store details as references, not extra nodes."
     )
 
-    result = await runner.run(session_id=session_id, message=message, verbose=verbose)
+    result = await runner.run(
+        session_id=session_id,
+        message=message,
+        verbose=verbose,
+        progress_callback=progress_callback,
+    )
     if not result.success:
         with SyncSessionLocal() as db:
             proj = db.query(Projection).filter_by(projection_id=projection_id).first()
@@ -112,9 +124,16 @@ async def run_knowledge_graph(
     model: str | None = None,
     verbose: bool = False,
     clear_existing: bool = True,
+    progress_callback=None,
 ) -> dict:
     """Run knowledge graph extraction for a single frame."""
-    return await _run_knowledge_graph_async(frame_id, model, verbose, clear_existing)
+    return await _run_knowledge_graph_async(
+        frame_id,
+        model,
+        verbose,
+        clear_existing,
+        progress_callback=progress_callback,
+    )
 
 
 @sync_agent_run

@@ -194,7 +194,7 @@ def sync_project(project_id: str | uuid.UUID) -> dict:
 # ── Processing ───────────────────────────────────────────────────
 
 
-def process(project_id: str | uuid.UUID | None = None) -> dict:
+def process(project_id: str | uuid.UUID | None = None, progress_callback=None) -> dict:
     """Process assets. If project_id is given, process only that project's assets.
     Otherwise process all pending assets.
 
@@ -212,13 +212,15 @@ def process(project_id: str | uuid.UUID | None = None) -> dict:
         results = []
         for aid in asset_ids:
             try:
-                r = process_asset(aid)
+                if progress_callback:
+                    progress_callback({"message": f"Starting asset {len(results) + 1}/{len(asset_ids)}", "asset_id": str(aid)})
+                r = process_asset(aid, progress_callback=progress_callback)
                 results.append(r)
             except Exception as exc:
                 results.append({"asset_id": str(aid), "error": str(exc)})
         return {"project_id": str(pid), "assets_processed": len(results), "results": results}
 
-    return process_all_pending()
+    return process_all_pending(progress_callback=progress_callback)
 
 
 # ── Extraction ───────────────────────────────────────────────────
@@ -229,6 +231,7 @@ def extract(
     model: str | None = None,
     verbose: bool = False,
     max_passes: int = 1,
+    progress_callback=None,
 ) -> dict:
     """Run knowledge extraction. If project_id given, extract one project.
     Otherwise extract all pending projects.
@@ -243,7 +246,13 @@ def extract(
 
     if project_id is not None:
         pid = uuid.UUID(str(project_id))
-        return run_extraction(pid, model=model, verbose=verbose, max_passes=max_passes)
+        return run_extraction(
+            pid,
+            model=model,
+            verbose=verbose,
+            max_passes=max_passes,
+            progress_callback=progress_callback,
+        )
     return run_extraction_all(model=model, verbose=verbose, max_passes=max_passes)
 
 
@@ -739,6 +748,7 @@ def project(
     project_id: str | uuid.UUID | None = None,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection on one or more frames using a space definition.
 
@@ -753,7 +763,7 @@ def project(
 
     if frame_id:
         fid = uuid.UUID(str(frame_id))
-        return run_projection(sid, fid, model=model, verbose=verbose)
+        return run_projection(sid, fid, model=model, verbose=verbose, progress_callback=progress_callback)
 
     if project_id:
         pid = uuid.UUID(str(project_id))
@@ -762,7 +772,7 @@ def project(
             if not frame:
                 return {"error": f"No frame for project {project_id}"}
             fid = frame.frame_id
-        return run_projection(sid, fid, model=model, verbose=verbose)
+        return run_projection(sid, fid, model=model, verbose=verbose, progress_callback=progress_callback)
 
     return {"error": "Must specify frame_id or project_id"}
 
@@ -916,6 +926,7 @@ def extract_knowledge_graph(
     verbose: bool = False,
     clear_existing: bool = True,
     clear_legacy_frame_sections: bool = True,
+    progress_callback=None,
 ) -> dict:
     """Run concept-graph extraction using one global cross-domain space.
 
@@ -937,7 +948,13 @@ def extract_knowledge_graph(
 
     if frame_id is not None:
         fid = uuid.UUID(str(frame_id))
-        result = run_knowledge_graph(fid, model=model, verbose=verbose, clear_existing=clear_existing)
+        result = run_knowledge_graph(
+            fid,
+            model=model,
+            verbose=verbose,
+            clear_existing=clear_existing,
+            progress_callback=progress_callback,
+        )
     elif project_id is not None:
         pid = uuid.UUID(str(project_id))
         with SyncSessionLocal() as session:
@@ -945,7 +962,13 @@ def extract_knowledge_graph(
             if not frame:
                 return {"error": f"No frame for project {project_id}"}
             fid = frame.frame_id
-        result = run_knowledge_graph(fid, model=model, verbose=verbose, clear_existing=clear_existing)
+        result = run_knowledge_graph(
+            fid,
+            model=model,
+            verbose=verbose,
+            clear_existing=clear_existing,
+            progress_callback=progress_callback,
+        )
     else:
         result = run_knowledge_graph_all(model=model, verbose=verbose, clear_existing=clear_existing)
 

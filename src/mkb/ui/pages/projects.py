@@ -9,6 +9,7 @@ import streamlit.components.v1 as st_components
 from mkb import api
 from mkb.knowledge_graph import GLOBAL_KG_SPACE_NAME
 from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached, search_library_cached
+from mkb.ui.background_jobs import get_project_jobs, get_running_job, render_project_job_status, start_job
 from mkb.ui.upload_server import ensure_upload_server, get_upload_url, session_dir
 
 # Custom drop-zone component: captures webkitRelativePath so folder structure
@@ -31,6 +32,13 @@ _STATUS_ICONS = {
     "PENDING": "⚪",
     "FAILED": "🔴",
     "NO_FRAME": "⚫",
+}
+
+_JOB_BUTTON_LABELS = {
+    "process": "Process",
+    "extract": "Extract",
+    "project": "Project",
+    "knowledge_graph": "Extract Graph",
 }
 
 
@@ -80,6 +88,28 @@ def _render_upload():
         info = st.session_state.pop("_upload_success")
         st.toast(info["text"], icon="✅")
 
+    recent_uploads = get_project_jobs("__upload__")
+    completed_upload = next(
+        (
+            job for job in recent_uploads
+            if job["status"] == "COMPLETED"
+            and not job.get("metadata", {}).get("result_acknowledged")
+            and isinstance(job.get("result"), dict)
+            and job["result"].get("message")
+        ),
+        None,
+    )
+    if completed_upload:
+        st.session_state["_upload_success"] = {"text": completed_upload["result"]["message"]}
+        completed_upload.setdefault("metadata", {})["result_acknowledged"] = True
+        st.rerun()
+
+    upload_job = get_running_job("__upload__", "upload")
+    if upload_job:
+        st.info("Upload ingest is running in the background. You can switch pages while files are being ingested.")
+        for event in reversed((upload_job.get("events") or [])[-6:]):
+            st.caption(f"• {event['message']}")
+
     # Rotate the component key after each successful ingest so the component
     # remounts fresh (clears the last submitted value).
     key = f"folder_drop_zone_{st.session_state.get('_upload_gen', 0)}"
@@ -88,19 +118,34 @@ def _render_upload():
     if not payload:
         return
 
-    # payload = [{name, type, upload_id, files: [{relativePath, name, size}]}, …]
-    # Files are already on disk under data/uploads/_temp/{upload_id}/.
+    start_job(
+        kind="upload",
+        label="Upload Ingest",
+        project_id="__upload__",
+        target=_run_upload_ingest,
+        args=(payload,),
+    )
+    st.session_state["_upload_gen"] = st.session_state.get("_upload_gen", 0) + 1
+    st.rerun()
+
+
+def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
     total_ingested = 0
     total_dupes = 0
     created: list[str] = []
+    upload_id = payload[0].get("upload_id", "")
+    temp_root = session_dir(upload_id)
 
-    with st.spinner("Moving files and ingesting into the knowledge base…"):
-        upload_id = payload[0].get("upload_id", "")
-        temp_root = session_dir(upload_id)
+    def _emit(message: str) -> None:
+        if progress_callback:
+            progress_callback({"message": message})
 
-        for proj in payload:
+    try:
+        _emit(f"Preparing {len(payload)} project(s) for ingest")
+        for idx, proj in enumerate(payload, start=1):
             project_name = _normalize_project_name(proj["name"], fallback="project")
             upload_dir = _create_unique_project_dir(project_name)
+            _emit(f"Moving files for {upload_dir.name} ({idx}/{len(payload)})")
 
             for file_info in proj["files"]:
                 rel = Path(file_info["relativePath"]) if file_info.get("relativePath") else Path(file_info["name"])
@@ -111,25 +156,26 @@ def _render_upload():
                 if src.is_file():
                     shutil.move(str(src), str(dest))
 
+            _emit(f"Ingesting {upload_dir.name}")
             result = api.ingest(upload_dir)
             total_ingested += result.get("ingested", 0)
             total_dupes += result.get("duplicates", 0)
             created.append(upload_dir.name)
+    finally:
+        if temp_root.is_dir():
+            shutil.rmtree(temp_root, ignore_errors=True)
 
-    # Clean up the temp upload directory
-    if temp_root.is_dir():
-        shutil.rmtree(temp_root, ignore_errors=True)
-
-    # Persist the success message across the forced rerun and bump the key
-    # so the component remounts empty.
-    st.session_state["_upload_success"] = {
-        "text": (
-            f"Created {len(created)} project(s) · "
-            f"{total_ingested} file(s) ingested, {total_dupes} duplicate(s) skipped."
-        ),
+    message = (
+        f"Created {len(created)} project(s) · "
+        f"{total_ingested} file(s) ingested, {total_dupes} duplicate(s) skipped."
+    )
+    return {
+        "status": "completed",
+        "message": message,
+        "created_projects": created,
+        "ingested": total_ingested,
+        "duplicates": total_dupes,
     }
-    st.session_state["_upload_gen"] = st.session_state.get("_upload_gen", 0) + 1
-    st.rerun()
 
 
 def _normalize_project_name(name: str, fallback: str) -> str:
@@ -202,7 +248,10 @@ def _render_project_list():
     for p in projects:
         icon = _STATUS_ICONS.get(p["frame_status"], "⚪")
         cols = st.columns([1, 4, 1, 1])
-        cols[0].write(f"{icon} {p['frame_status']}")
+        running_job = get_running_job(p["project_id"])
+        status_text = running_job["label"] if running_job else p["frame_status"]
+        status_icon = "🟡" if running_job else icon
+        cols[0].write(f"{status_icon} {status_text}")
         cols[1].write(p["label"] or p["source_path"] or str(p["project_id"])[:12])
         cols[2].write(str(p["asset_count"]))
         if cols[3].button("View", key=f"view_{p['project_id']}"):
@@ -271,25 +320,52 @@ def _render_project_detail(project_id: str):
 
     # ── Pipeline actions ──────────────────────────────────────────
     st.write("**Pipeline**")
+    render_project_job_status(project_id)
 
     spaces = [space for space in api.list_spaces() if _is_user_visible_space(space)]
     space_name_to_id = {s["name"]: s["space_id"] for s in spaces}
 
     action_cols = st.columns([1, 1, 2, 1, 1])
+    process_job = get_running_job(project_id, "process")
+    extract_job = get_running_job(project_id, "extract")
+    projection_job = get_running_job(project_id, "project")
+    kg_job = get_running_job(project_id, "knowledge_graph")
 
     with action_cols[0]:
-        if st.button("Process", key=f"proc_{project_id}", help="Convert raw files to LLM-readable formats"):
-            with st.spinner("Processing assets…"):
-                result = api.process(project_id=project_id)
-            st.toast(f"Processed {result.get('assets_processed', 0)} asset(s)")
+        if st.button(
+            "Process",
+            key=f"proc_{project_id}",
+            help="Convert raw files to LLM-readable formats",
+            disabled=process_job is not None,
+        ):
+            start_job(
+                kind="process",
+                label="Process Assets",
+                project_id=project_id,
+                target=api.process,
+                kwargs={"project_id": project_id},
+            )
             st.rerun()
+        if process_job:
+            st.caption(process_job.get("current_message") or "Running")
 
     with action_cols[1]:
-        if st.button("Extract", key=f"extr_{project_id}", help="Run LLM knowledge extraction"):
-            with st.spinner("Extracting knowledge frame (this may take a while)…"):
-                result = api.extract(project_id=project_id)
-            st.toast(f"Extraction: {result.get('status', 'done')}")
+        if st.button(
+            "Extract",
+            key=f"extr_{project_id}",
+            help="Run LLM knowledge extraction",
+            disabled=extract_job is not None,
+        ):
+            start_job(
+                kind="extract",
+                label="Extract Knowledge Frame",
+                project_id=project_id,
+                target=api.extract,
+                kwargs={"project_id": project_id},
+            )
             st.rerun()
+        if extract_job:
+            st.caption(extract_job.get("current_message") or "Running")
 
     with action_cols[2]:
         if spaces:
@@ -305,20 +381,41 @@ def _render_project_detail(project_id: str):
 
     with action_cols[3]:
         if spaces and selected_space_name:
-            if st.button("Project", key=f"proj_{project_id}", help="Run domain-specific projection"):
+            if st.button(
+                "Project",
+                key=f"proj_{project_id}",
+                help="Run domain-specific projection",
+                disabled=projection_job is not None,
+            ):
                 sid = space_name_to_id[selected_space_name]
-                with st.spinner("Running projection…"):
-                    result = api.project(space_id=sid, project_id=project_id)
-                st.toast(f"Projection: {result.get('status', 'done')}")
+                start_job(
+                    kind="project",
+                    label="Run Projection",
+                    project_id=project_id,
+                    target=api.project,
+                    kwargs={"space_id": sid, "project_id": project_id},
+                )
                 st.rerun()
+        if projection_job:
+            st.caption(projection_job.get("current_message") or "Running")
 
     with action_cols[4]:
-        if st.button("Extract Graph", key=f"kg_{project_id}", help="Extract knowledge graph elements"):
-            with st.spinner("Extracting knowledge graph…"):
-                result = api.extract_knowledge_graph(project_id=project_id)
-            clear_graph_cache()
-            st.toast("Knowledge graph extraction complete")
+        if st.button(
+            "Extract Graph",
+            key=f"kg_{project_id}",
+            help="Extract knowledge graph elements",
+            disabled=kg_job is not None,
+        ):
+            start_job(
+                kind="knowledge_graph",
+                label="Extract Knowledge Graph",
+                project_id=project_id,
+                target=_run_knowledge_graph_job,
+                kwargs={"project_id": project_id},
+            )
             st.rerun()
+        if kg_job:
+            st.caption(kg_job.get("current_message") or "Running")
 
     st.divider()
 
@@ -375,6 +472,12 @@ def _render_assets_tab(project_id: str):
             cols[0].caption(pa["filename"] or "—")
             cols[1].caption(pa["processing_type"])
             cols[2].caption(f".{pa['output_format']}")
+
+
+def _run_knowledge_graph_job(project_id: str, progress_callback=None) -> dict:
+    result = api.extract_knowledge_graph(project_id=project_id, progress_callback=progress_callback)
+    clear_graph_cache()
+    return result
 
 
 def _render_frame_tab(project_id: str):

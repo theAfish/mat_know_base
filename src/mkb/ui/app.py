@@ -6,6 +6,8 @@ Main entry point for the web interface.
 
 import streamlit as st
 
+from mkb.ui.background_jobs import auto_refresh_if_running, poll_jobs, render_sidebar_monitor
+
 
 PAGES = ["Projects", "Knowledge Frames", "Dataset Graph", "Projections", "Feedback"]
 
@@ -34,6 +36,9 @@ page = st.sidebar.radio(
 )
 st.session_state["page"] = page
 
+poll_jobs()
+render_sidebar_monitor()
+
 if page == "Projects":
     from mkb.ui.pages.projects import render
     render()
@@ -49,3 +54,5 @@ elif page == "Projections":
 elif page == "Feedback":
     from mkb.ui.pages.feedback import render
     render()
+
+auto_refresh_if_running()

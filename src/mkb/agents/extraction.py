@@ -63,14 +63,20 @@ async def _run_extraction_async(
     model: str | None = None,
     verbose: bool = False,
     max_passes: int = 1,
+    progress_callback=None,
 ) -> dict:
     """Core async extraction loop for one project."""
+
+    def _emit(message: str, **extra) -> None:
+        if progress_callback:
+            progress_callback({"message": message, **extra})
 
     agent = build_extraction_agent(model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"extract_{project_id}"
     await runner.create_session(session_id)
+    _emit("Preparing extraction run", stage="setup")
 
     # Mark frame as in-progress
     with SyncSessionLocal() as db:
@@ -91,6 +97,7 @@ async def _run_extraction_async(
         else:
             frame.status = FrameStatus.IN_PROGRESS
         db.commit()
+    _emit(f"Frame marked in progress for {project_label}", stage="setup")
 
     # Pass 1: Initial extraction
     message = (
@@ -105,9 +112,11 @@ async def _run_extraction_async(
         session_id=session_id,
         message=message,
         verbose=verbose,
+        progress_callback=progress_callback,
     )
 
     if not result.success:
+        _emit("Extraction failed", stage="failed", status="FAILED")
         _mark_frame_failed(project_id, result.error)
         return {
             "status": "error",
@@ -116,6 +125,7 @@ async def _run_extraction_async(
         }
 
     # Save initial extraction pass
+    _emit("Initial extraction pass completed", stage="initial_pass")
     _save_extraction_pass(project_id, pass_number=1, pass_type="initial")
 
     # Passes 2..N: Review passes
@@ -124,10 +134,12 @@ async def _run_extraction_async(
 
         for pass_num in range(2, max_passes + 1):
             logger.info("Running review pass %d/%d for project %s", pass_num, max_passes, project_id)
+            _emit(f"Running review pass {pass_num}/{max_passes}", stage="review_pass")
             review_result = await run_review_pass(project_id, model=model, verbose=verbose)
 
             if review_result.get("no_changes"):
                 logger.info("Review pass %d: no significant changes needed, stopping early", pass_num)
+                _emit("Review pass found no further changes", stage="review_pass")
                 break
 
     # Check result
@@ -183,9 +195,18 @@ def run_extraction(
     model: str | None = None,
     verbose: bool = False,
     max_passes: int = 1,
+    progress_callback=None,
 ) -> dict:
     """Synchronous wrapper — run extraction on one project."""
-    return asyncio.run(_run_extraction_async(project_id, model, verbose, max_passes))
+    return asyncio.run(
+        _run_extraction_async(
+            project_id,
+            model,
+            verbose,
+            max_passes,
+            progress_callback=progress_callback,
+        )
+    )
 
 
 def run_extraction_all(

@@ -391,7 +391,22 @@ def cmd_ui(args):
         "src/mkb/ui/app.py",
         "--server.port", str(args.port),
     ]
-    subprocess.run(cmd)
+    
+    process = None
+    try:
+        process = subprocess.Popen(cmd)
+        process.wait()
+    except KeyboardInterrupt:
+        # Gracefully terminate the subprocess on Ctrl+C
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                # Give it 5 seconds to terminate gracefully
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't terminate gracefully
+                process.kill()
+                process.wait()
 
 
 def cmd_processed(args):

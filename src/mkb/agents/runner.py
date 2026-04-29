@@ -54,6 +54,7 @@ class AgentRunner:
         message: str,
         user_id: str = "mkb_system",
         verbose: bool = False,
+        progress_callback=None,
     ) -> RunResult:
         """Send a message and collect all events. Returns RunResult."""
         initial_message = genai_types.Content(
@@ -69,6 +70,28 @@ class AgentRunner:
                 session_id=session_id,
                 new_message=initial_message,
             ):
+                if progress_callback and event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.function_call:
+                            name = part.function_call.name or "tool"
+                            progress_callback(
+                                {
+                                    "tool": name,
+                                    "label": name,
+                                    "message": f"Agent called {name}",
+                                    "stage": "tool_call",
+                                }
+                            )
+                        elif part.text:
+                            text = part.text.strip()
+                            if text:
+                                progress_callback(
+                                    {
+                                        "label": "agent",
+                                        "message": text[:240],
+                                        "stage": "agent_text",
+                                    }
+                                )
                 if verbose and event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.text:
