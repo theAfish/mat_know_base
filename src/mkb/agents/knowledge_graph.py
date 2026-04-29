@@ -95,9 +95,34 @@ async def _run_knowledge_graph_async(
         with SyncSessionLocal() as db:
             proj = db.query(Projection).filter_by(projection_id=projection_id).first()
             if proj:
-                proj.status = ProjectionStatus.FAILED
-                proj.agent_notes = result.error
+                # Only mark FAILED if save_knowledge_graph hasn't already set COMPLETED.
+                # A transient API error (e.g. Qwen 400 "input length") can fire after the
+                # agent has already saved and completed its projection; we must not
+                # downgrade a successful save back to FAILED.
+                if proj.status != ProjectionStatus.COMPLETED:
+                    proj.status = ProjectionStatus.FAILED
+                error_note = f"[Runner error: {result.error}]"
+                proj.agent_notes = (proj.agent_notes or "") + "\n" + error_note if proj.agent_notes else error_note
                 db.commit()
+        # If data was saved successfully despite the runner error, treat as success
+        with SyncSessionLocal() as db:
+            proj = db.query(Projection).filter_by(projection_id=projection_id).first()
+            if proj and proj.status == ProjectionStatus.COMPLETED:
+                concept_count = len((proj.data or {}).get("concepts", []))
+                logger.warning(
+                    "Runner failed with error but projection %s was already saved "
+                    "(%d concepts) — keeping COMPLETED status. Error: %s",
+                    projection_id, concept_count, result.error,
+                )
+                return {
+                    "status": "completed",
+                    "projection_id": str(projection_id),
+                    "space_id": str(global_space.space_id),
+                    "frame_id": str(frame_id),
+                    "project_id": str(project_id),
+                    "agent_summary": result.final_text,
+                    "warning": f"Runner error occurred after save: {result.error}",
+                }
         return {
             "status": "error",
             "projection_id": str(projection_id),

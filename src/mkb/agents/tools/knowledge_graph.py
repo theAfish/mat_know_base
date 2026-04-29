@@ -351,6 +351,15 @@ def save_knowledge_graph(
 
     normalized, validation = normalize_knowledge_graph_payload(data)
 
+    if not normalized["concepts"]:
+        return {
+            "error": (
+                "Cannot save an empty graph — no concepts were found in the provided data. "
+                "Populate the 'concepts' list with at least one concept before calling save_knowledge_graph. "
+                "Use get_frame_content to load the frame and extract concepts from it."
+            )
+        }
+
     now = datetime.now(timezone.utc)
     with SyncSessionLocal() as session:
         projection = session.query(Projection).filter_by(projection_id=pid).first()

@@ -7,7 +7,6 @@ Uses the AgentRunner for execution and flexible prompts for extraction.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import uuid
@@ -16,6 +15,7 @@ from datetime import datetime, timezone
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
+from mkb.agents._utils import run_async_sync
 from mkb.agents.prompts.kb_extraction import EXTRACTION_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools import ALL_TOOLS
@@ -198,7 +198,7 @@ def run_extraction(
     progress_callback=None,
 ) -> dict:
     """Synchronous wrapper — run extraction on one project."""
-    return asyncio.run(
+    return run_async_sync(
         _run_extraction_async(
             project_id,
             model,

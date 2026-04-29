@@ -7,7 +7,6 @@ Activated by the user (not automatically by projection agents).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import uuid
@@ -15,6 +14,7 @@ import uuid
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
+from mkb.agents._utils import run_async_sync
 from mkb.agents.prompts.feedback_review import FEEDBACK_REVIEW_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
@@ -113,4 +113,4 @@ def run_feedback_review(
     verbose: bool = False,
 ) -> dict:
     """Synchronous wrapper — run feedback review on one project."""
-    return asyncio.run(_run_feedback_review_async(project_id, model, verbose))
+    return run_async_sync(_run_feedback_review_async(project_id, model, verbose))

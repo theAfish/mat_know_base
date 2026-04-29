@@ -474,6 +474,71 @@ src/mkb/
 | `feedbacks` | Feedback items between agents |
 | `graph_element_reviews` | Per-element review counts (`times_examined`, `times_modified`) for graph nodes and edges |
 
+## Data Sharing
+
+Because the database and files are developed locally (papers, processed outputs, PostgreSQL, MinIO) and cannot be committed to git, two helper scripts let you snapshot and restore the entire local state.
+
+### Pack (create a snapshot)
+
+```bash
+# Auto-named: mkb_data_YYYYMMDD_HHMMSS.tar.gz
+make pack
+
+# Custom filename
+make pack out=my_dataset_v1.tar.gz
+
+# Or run directly
+bash scripts/pack_data.sh my_snapshot.tar.gz
+```
+
+What gets bundled:
+- **PostgreSQL** — full `pg_dump` of the `mkb` database (schema + data)
+- **MinIO buckets** — `raw`, `processed`, `archive`, `temp`
+- **Local dirs** — `data/papers/`, `data/processed/`, `data/uploads/`, `data/inbox/`
+- **manifest.json** — records timestamp, database name, and bucket list
+
+Requirements: Docker (already needed), `tar`, `python3`.
+
+### Unpack (restore from a snapshot)
+
+```bash
+# Full restore (interactive confirmation before dropping the DB)
+make unpack file=mkb_data_20260429_120000.tar.gz
+
+# Or run directly
+bash scripts/unpack_data.sh mkb_data_20260429_120000.tar.gz
+```
+
+Partial restore flags:
+
+| Flag | Effect |
+|------|--------|
+| `--pg-only` | Restore PostgreSQL only |
+| `--minio-only` | Restore MinIO buckets only |
+| `--local-only` | Restore local data dirs only |
+| `--no-pg` | Skip PostgreSQL restore |
+| `--no-minio` | Skip MinIO buckets |
+| `--no-local` | Skip local data dirs |
+
+After unpacking, run `alembic upgrade head` if the schema migration level differs between the snapshot and your current codebase.
+
+### Typical workflow for onboarding a new developer
+
+```bash
+# 1. Clone repo and install
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,processing]"
+
+# 2. Start services
+make up
+
+# 3. Restore a shared snapshot
+make unpack file=mkb_data_20260429_120000.tar.gz
+
+# 4. Apply any pending migrations
+alembic upgrade head
+```
+
 ## Services
 
 | Service | URL | Credentials |
