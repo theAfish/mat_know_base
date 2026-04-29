@@ -179,6 +179,12 @@ api.extract_knowledge_graph(project_id="...")
 kg = api.get_knowledge_graph()
 print(len(kg["graph"]["concepts"]), len(kg["graph"]["relations"]))
 
+# Knowledge graph review (deduplication + quality cleanup)
+api.review_knowledge_graph()                            # auto mode (random global or local)
+api.review_knowledge_graph(mode="global", verbose=True) # full graph: standardize + dedup
+api.review_knowledge_graph(mode="local", seed_count=15) # neighborhood review (least-reviewed first)
+counts = api.get_graph_review_counts()                  # per-element review counters
+
 # Streamlit UI
 # mkb ui
 
@@ -292,6 +298,50 @@ mkb kg-show --project-id <project_uuid>
 Notes:
 - `kg-extract` clears existing KG projections for target frame(s) by default. Use `--no-clear-existing` to keep prior projection history.
 - Legacy graph-like sections inside frame content are removed by default during cleanup/extraction. Use `--keep-legacy-frame-graphs` to skip that behavior.
+
+## Knowledge Graph Review
+
+After building the graph, a dedicated **Graph Review Agent** deduplicates concepts, standardizes relation naming, and prunes low-quality entries. It runs in two modes:
+
+| Mode | What it does |
+|------|-------------|
+| **global** | Analyzes the full graph: groups similar relation names and standardizes them; finds and merges synonymous concept nodes across all projections |
+| **local** | Selects the least-reviewed concepts as starting points, explores their neighborhood, verifies ambiguous entries against source knowledge frames, and fixes local issues |
+
+Each run tracks how many times each node/edge was examined and modified in the `graph_element_reviews` table — always incremented by the orchestration script, never by the agent itself.
+
+### Python API
+
+```python
+# Global mode: relation standardization + concept deduplication
+api.review_knowledge_graph(mode="global", verbose=True)
+
+# Local mode: deep-dive on least-reviewed concepts
+api.review_knowledge_graph(mode="local", seed_count=15, verbose=True)
+
+# Auto: randomly picks global or local each time (default)
+api.review_knowledge_graph()
+
+# Inspect per-element review counts
+counts = api.get_graph_review_counts()
+# counts["concepts"]["hydroxyapatite"] → {"times_examined": 3, "times_modified": 1, ...}
+# counts["relations"]["amelotin||promotes||hydroxyapatite nucleation"] → {...}
+```
+
+### Review tools available to the agent
+
+| Tool | Mode | Description |
+|------|------|-------------|
+| `get_concept_details` | both | Full concept record + all incoming/outgoing relations |
+| `get_concept_neighbors` | both | Concept + 1-hop neighbors + relations |
+| `get_relation_type_distribution` | both | Count of each distinct relation label |
+| `search_graph_elements` | both | Keyword search across concept labels, aliases, relation names |
+| `find_similar_concepts` | both | Token-overlap similarity search for near-duplicate concepts |
+| `merge_concepts` | both | Merge N concepts into one canonical node across all projections |
+| `standardize_relation_name` | both | Rename relation type(s) to a canonical form everywhere |
+| `delete_concept` | both | Delete an isolated concept (rejects if relations still exist) |
+| `delete_relation` | both | Delete a specific directed relation |
+| `get_frame_content` | local | Read a source knowledge frame for concept verification |
 
 ### Knowledge Graph Output Shape
 
@@ -422,6 +472,7 @@ src/mkb/
 | `spaces` | Domain-specific extraction configurations |
 | `projections` | Results of projecting frames through spaces |
 | `feedbacks` | Feedback items between agents |
+| `graph_element_reviews` | Per-element review counts (`times_examined`, `times_modified`) for graph nodes and edges |
 
 ## Services
 

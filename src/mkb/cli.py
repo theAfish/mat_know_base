@@ -262,6 +262,36 @@ def cmd_kg_show(args):
     _json_dump(result)
 
 
+def cmd_kg_review(args):
+    from mkb.api import review_knowledge_graph
+
+    result = review_knowledge_graph(
+        mode=args.mode,
+        model=args.model,
+        verbose=args.verbose,
+        seed_count=args.seed_count,
+    )
+    _json_dump(result)
+
+
+def cmd_kg_review_counts(args):
+    from mkb.api import get_graph_review_counts
+
+    result = get_graph_review_counts()
+    concepts = result.get("concepts", {})
+    relations = result.get("relations", {})
+    print(f"Concepts reviewed: {len(concepts)}")
+    for key, counts in sorted(concepts.items(), key=lambda x: -x[1].get("times_examined", 0))[:20]:
+        print(f"  {counts.get('times_examined', 0):3d}x examined  {counts.get('times_modified', 0):3d}x modified  {key}")
+    if len(concepts) > 20:
+        print(f"  ... ({len(concepts) - 20} more)")
+    print(f"\nRelations reviewed: {len(relations)}")
+    for key, counts in sorted(relations.items(), key=lambda x: -x[1].get("times_examined", 0))[:20]:
+        print(f"  {counts.get('times_examined', 0):3d}x examined  {counts.get('times_modified', 0):3d}x modified  {key}")
+    if len(relations) > 20:
+        print(f"  ... ({len(relations) - 20} more)")
+
+
 # ── Feedback commands ────────────────────────────────────────────
 
 
@@ -503,6 +533,16 @@ def main():
     p = sub.add_parser("kg-show", help="Show merged global concept graph")
     p.add_argument("--project-id", "-p", default=None)
 
+    p = sub.add_parser("kg-review", help="Run graph review agent (deduplication + quality cleanup)")
+    p.add_argument("--mode", default="auto", choices=["auto", "global", "local"],
+                   help="Review mode: auto (default), global (relation standardization + concept dedup), local (neighborhood exploration)")
+    p.add_argument("--model", "-m", default=None, help="LLM model override")
+    p.add_argument("--verbose", "-v", action="store_true")
+    p.add_argument("--seed-count", type=int, default=10, metavar="N",
+                   help="Number of starting concepts for local mode (default: 10)")
+
+    sub.add_parser("kg-review-counts", help="Show per-element review counts from graph review runs")
+
     # ── Feedback subcommands ──
     p = sub.add_parser("feedback", help="List feedback items")
     p.add_argument("--project-id", "-p", default=None)
@@ -573,6 +613,8 @@ def main():
         "kg-extract": cmd_kg_extract,
         "kg-clear": cmd_kg_clear,
         "kg-show": cmd_kg_show,
+        "kg-review": cmd_kg_review,
+        "kg-review-counts": cmd_kg_review_counts,
         "feedback": cmd_feedback,
         "review-feedback": cmd_review_feedback,
         "resolve-feedback": cmd_resolve_feedback,

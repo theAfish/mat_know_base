@@ -1,11 +1,26 @@
 """Projects page — upload, browse, and manage research projects."""
 
+import shutil
 from pathlib import Path
+import re
 
 import streamlit as st
+import streamlit.components.v1 as st_components
 from mkb import api
 from mkb.knowledge_graph import GLOBAL_KG_SPACE_NAME
 from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached, search_library_cached
+from mkb.ui.upload_server import ensure_upload_server, get_upload_url, session_dir
+
+# Custom drop-zone component: captures webkitRelativePath so folder structure
+# is preserved when the user drops mixed files + folders in one gesture.
+# Files are uploaded via a lightweight HTTP endpoint (bypasses Streamlit's
+# setComponentValue payload-size limit); only metadata is sent through the
+# component protocol.
+_COMPONENT_DIR = Path(__file__).parent.parent / "components" / "folder_drop_zone"
+_folder_drop_zone = st_components.declare_component(
+    "folder_drop_zone",
+    path=str(_COMPONENT_DIR),
+)
 
 
 _UPLOAD_ROOT = Path("data/uploads")
@@ -40,43 +55,115 @@ def render():
 
 
 def _render_upload():
+    """Single drag-and-drop area for mixed files and folders.
+
+    Uses a custom Streamlit component backed by the browser's
+    DataTransferItem.webkitGetAsEntry() API so that:
+      • a dropped folder  → one project, sub-folder structure preserved
+      • a dropped file    → one project named from the file stem
+      • M files + N folders dropped together → M+N projects, default-named,
+        each editable before the final ingest click.
+
+    File data is uploaded via a companion HTTP endpoint (raw binary POST)
+    so that large folder payloads never hit Streamlit's setComponentValue
+    size limit.  The component only sends lightweight metadata through the
+    Streamlit protocol.
+    """
     st.subheader("Add Research Files")
-    st.caption(
-        "Drop one or more files to create a new project folder. "
-        "PDFs, DOCX, CSV, XLSX, JSON, TXT, and images are all supported."
-    )
+    st.caption("PDFs, DOCX, CSV, XLSX, JSON, TXT, and images are all supported.")
 
-    uploaded_files = st.file_uploader(
-        "Drag & drop files here",
-        accept_multiple_files=True,
-        label_visibility="collapsed",
-    )
+    # Ensure the upload server is running (idempotent — only starts once).
+    ensure_upload_server()
 
-    if uploaded_files:
-        # Derive folder/project name from the first file's stem
-        project_name = Path(uploaded_files[0].name).stem
-        st.caption(
-            f"{len(uploaded_files)} file(s) selected — project: **{project_name}**  "
-            f"({', '.join(f.name for f in uploaded_files)})"
-        )
+    # Show a persistent success banner from the previous ingest, if any.
+    if "_upload_success" in st.session_state:
+        info = st.session_state.pop("_upload_success")
+        st.toast(info["text"], icon="✅")
 
-        if st.button("Ingest files", type="primary"):
-            upload_dir = _UPLOAD_ROOT / project_name
-            upload_dir.mkdir(parents=True, exist_ok=True)
+    # Rotate the component key after each successful ingest so the component
+    # remounts fresh (clears the last submitted value).
+    key = f"folder_drop_zone_{st.session_state.get('_upload_gen', 0)}"
+    payload = _folder_drop_zone(key=key, default=None, upload_url=get_upload_url())
 
-            for f in uploaded_files:
-                dest = upload_dir / f.name
-                dest.write_bytes(f.read())
+    if not payload:
+        return
 
-            with st.spinner("Ingesting into the knowledge base…"):
-                # label=None → ingest_directory uses directory.name (= project_name)
-                result = api.ingest(upload_dir)
+    # payload = [{name, type, upload_id, files: [{relativePath, name, size}]}, …]
+    # Files are already on disk under data/uploads/_temp/{upload_id}/.
+    total_ingested = 0
+    total_dupes = 0
+    created: list[str] = []
 
-            ingested = result.get("ingested", 0)
-            dupes = result.get("duplicates", 0)
-            st.success(f"Ingested {ingested} file(s) — {dupes} duplicate(s) skipped.")
+    with st.spinner("Moving files and ingesting into the knowledge base…"):
+        upload_id = payload[0].get("upload_id", "")
+        temp_root = session_dir(upload_id)
 
-            st.rerun()
+        for proj in payload:
+            project_name = _normalize_project_name(proj["name"], fallback="project")
+            upload_dir = _create_unique_project_dir(project_name)
+
+            for file_info in proj["files"]:
+                rel = Path(file_info["relativePath"]) if file_info.get("relativePath") else Path(file_info["name"])
+                src = temp_root / rel
+                dest = upload_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest = _next_available_path(dest)
+                if src.is_file():
+                    shutil.move(str(src), str(dest))
+
+            result = api.ingest(upload_dir)
+            total_ingested += result.get("ingested", 0)
+            total_dupes += result.get("duplicates", 0)
+            created.append(upload_dir.name)
+
+    # Clean up the temp upload directory
+    if temp_root.is_dir():
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+    # Persist the success message across the forced rerun and bump the key
+    # so the component remounts empty.
+    st.session_state["_upload_success"] = {
+        "text": (
+            f"Created {len(created)} project(s) · "
+            f"{total_ingested} file(s) ingested, {total_dupes} duplicate(s) skipped."
+        ),
+    }
+    st.session_state["_upload_gen"] = st.session_state.get("_upload_gen", 0) + 1
+    st.rerun()
+
+
+def _normalize_project_name(name: str, fallback: str) -> str:
+    candidate = (name or "").strip()
+    if not candidate:
+        candidate = fallback
+    candidate = re.sub(r"[^A-Za-z0-9._ -]+", "_", candidate)
+    candidate = candidate.strip(" ._")
+    return candidate or "project"
+
+
+def _create_unique_project_dir(project_name: str) -> Path:
+    _UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    base_name = _normalize_project_name(project_name, fallback="project")
+    candidate = _UPLOAD_ROOT / base_name
+    suffix = 2
+    while candidate.exists():
+        candidate = _UPLOAD_ROOT / f"{base_name}_{suffix}"
+        suffix += 1
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
+
+
+def _next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    idx = 2
+    while True:
+        candidate = path.with_name(f"{stem}_{idx}{suffix}")
+        if not candidate.exists():
+            return candidate
+        idx += 1
 
 
 # ── Project list ──────────────────────────────────────────────────

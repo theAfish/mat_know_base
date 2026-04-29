@@ -23,19 +23,17 @@ def render():
 
     for project in projects:
         frame = frames.get(project["project_id"])
-        if not frame:
-            continue
         rows.append({
             "project_id": project["project_id"],
             "label": project["label"] or project["source_path"] or project["project_id"][:12],
             "asset_count": project["asset_count"],
-            "status": frame["status"],
-            "version": frame.get("extraction_version", 0),
-            "extracted_at": (frame.get("extracted_at") or "")[:10] or "-",
+            "status": frame["status"] if frame else "NO_FRAME",
+            "version": frame.get("extraction_version", 0) if frame else 0,
+            "extracted_at": (frame.get("extracted_at") or "")[:10] or "-" if frame else "-",
         })
 
     if not rows:
-        st.info("No knowledge frames found. Run extraction first.")
+        st.info("No projects yet — upload files in the Projects tab.")
         return
 
     available_project_ids = {row["project_id"] for row in rows}
@@ -74,8 +72,7 @@ def _render_frame_detail_page(project_id: str):
 
     frame = api.get_frame(project_id)
     if not frame:
-        st.error("Frame not found.")
-        return
+        st.info("No knowledge frame yet — process the files and run extraction to generate one.")
 
     _render_project_detail(project_id)
 

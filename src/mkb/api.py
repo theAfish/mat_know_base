@@ -1054,8 +1054,67 @@ def review_projections_all(
     return run_projection_review_all(sid, model=model, verbose=verbose)
 
 
+def review_knowledge_graph(
+    mode: str = "auto",
+    model: str | None = None,
+    verbose: bool = False,
+    seed_count: int = 10,
+) -> dict:
+    """Run the graph review agent to deduplicate and clean the knowledge graph.
 
-# ── Feedback ─────────────────────────────────────────────────────
+    Two modes:
+    - "global": analyzes relation name distributions, standardizes naming, merges
+      duplicate or synonymous concept nodes across the entire graph.
+    - "local": selects the least-reviewed concepts as starting points, explores
+      their neighborhoods, verifies against source frames, and fixes local issues.
+    - "auto" (default): randomly picks global or local each time.
+
+    After each run, the times_examined and times_modified counters on each visited
+    graph element are incremented in the graph_element_reviews table.
+
+    Args:
+        mode: "global", "local", or "auto".
+        model: LLM model override.
+        verbose: Enable verbose logging.
+        seed_count: Number of starting concepts for local mode.
+    """
+    from mkb.agents.graph_review import run_graph_review
+
+    init_db()
+    return run_graph_review(mode=mode, model=model, verbose=verbose, seed_count=seed_count)
+
+
+def get_graph_review_counts(space_id: str | uuid.UUID | None = None) -> dict:
+    """Return review counts (times_examined, times_modified) per graph element.
+
+    Returns a dict with two sub-dicts keyed by normalized element key:
+    - ``concepts``: mapping of normalized concept label → {times_examined, times_modified}
+    - ``relations``: mapping of "src||rel||tgt" → {times_examined, times_modified}
+    """
+    from mkb.db.models import GraphElementReview
+    from mkb.knowledge_graph import ensure_global_kg_space_id
+
+    init_db()
+    sid = uuid.UUID(str(space_id)) if space_id else ensure_global_kg_space_id()
+
+    concepts: dict[str, dict] = {}
+    relations: dict[str, dict] = {}
+
+    with SyncSessionLocal() as session:
+        rows = session.query(GraphElementReview).filter_by(space_id=sid).all()
+        for row in rows:
+            entry = {
+                "times_examined": row.times_examined,
+                "times_modified": row.times_modified,
+                "last_examined_at": row.last_examined_at.isoformat() if row.last_examined_at else None,
+                "last_modified_at": row.last_modified_at.isoformat() if row.last_modified_at else None,
+            }
+            if row.element_type == "concept":
+                concepts[row.element_key] = entry
+            elif row.element_type == "relation":
+                relations[row.element_key] = entry
+
+    return {"space_id": str(sid), "concepts": concepts, "relations": relations}
 
 
 def get_feedback_summary(

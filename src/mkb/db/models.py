@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, Index, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -379,5 +379,42 @@ class Feedback(Base):
         Index("ix_feedback_target_frame", "target_frame_id"),
         Index("ix_feedback_target_project", "target_project_id"),
         Index("ix_feedback_status", "status"),
+    )
+
+
+# ── Graph Element Reviews ─────────────────────────────────────────
+
+
+class GraphElementReview(Base):
+    __tablename__ = "graph_element_reviews"
+
+    review_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # "concept" or "relation"
+    element_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Normalized concept label, or "src_norm||rel_norm||tgt_norm" for relations
+    element_key: Mapped[str] = mapped_column(Text, nullable=False)
+    times_examined: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    times_modified: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_examined_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_modified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("space_id", "element_type", "element_key", name="uq_graph_element_review"),
+        Index("ix_graph_element_review_space", "space_id", "element_type"),
     )
 
