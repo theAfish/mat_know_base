@@ -9,7 +9,7 @@ import streamlit as st
 from mkb.ui.background_jobs import auto_refresh_if_running, poll_jobs, render_sidebar_monitor
 
 
-PAGES = ["Projects", "Knowledge Frames", "Dataset Graph", "Projections", "Feedback"]
+PAGES = ["Assistant", "Projects", "Knowledge Frames", "Dataset Graph", "Projections", "Feedback"]
 
 st.set_page_config(
     page_title="Materials Knowledge Base",
@@ -39,7 +39,10 @@ st.session_state["page"] = page
 poll_jobs()
 render_sidebar_monitor()
 
-if page == "Projects":
+if page == "Assistant":
+    from mkb.ui.pages.assistant import render
+    render()
+elif page == "Projects":
     from mkb.ui.pages.projects import render
     render()
 elif page == "Knowledge Frames":

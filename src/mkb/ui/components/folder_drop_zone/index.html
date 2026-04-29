@@ -174,6 +174,7 @@ window.addEventListener("message", (e) => {
   const t = e.data.theme;
   if (t) document.documentElement[t.base === "dark" ? "setAttribute" : "removeAttribute"]("data-dark", "");
   UPLOAD_URL = (e.data.args && e.data.args.upload_url) || "";
+  syncH();
 });
 
 /* ── File system utilities ─────────────────────────────────────────────────── */
@@ -220,6 +221,22 @@ function readFlatFiles(fileList) {
 /* ── Project state ─────────────────────────────────────────────────────────── */
 let projects = [], uid = 0;
 
+function nextProjectId() {
+  return uid++;
+}
+
+function projectUploadPrefix(projectId) {
+  return `project_${projectId}`;
+}
+
+function withUploadPaths(projectId, files) {
+  const prefix = projectUploadPrefix(projectId);
+  return files.map(file => ({
+    ...file,
+    uploadPath: `${prefix}/${file.relativePath}`,
+  }));
+}
+
 function stem(fn) { const i = fn.lastIndexOf("."); return (i > 0 ? fn.slice(0, i) : fn) || fn; }
 function fmtSize(b) {
   if (b < 1024)     return b + " B";
@@ -257,6 +274,7 @@ dz.addEventListener("drop", async (e) => {
       msg(`Reading item ${i + 1} / ${items.length}…`);
       const entry = items[i].webkitGetAsEntry();
       if (!entry) continue;
+      const projectId = nextProjectId();
       let files;
       if (entry.isDirectory) {
         // Expand the top-level directory so its own name is NOT part of any
@@ -269,21 +287,22 @@ dz.addEventListener("drop", async (e) => {
         files = await readEntry(entry, "");
       }
       projects.push({
-        id: uid++,
+        id: projectId,
         name: entry.isDirectory ? entry.name : stem(entry.name),
         type: entry.isDirectory ? "folder" : "file",
-        files,
+        files: withUploadPaths(projectId, files),
       });
     }
   } else {
     /* Flat fallback: each file is its own project */
     const fileList = e.dataTransfer.files;
     for (const file of fileList) {
+      const projectId = nextProjectId();
       projects.push({
-        id: uid++,
+        id: projectId,
         name: stem(file.name),
         type: "file",
-        files: [{ relativePath: file.name, name: file.name, size: file.size, file }],
+        files: withUploadPaths(projectId, [{ relativePath: file.name, name: file.name, size: file.size, file }]),
       });
     }
   }
@@ -347,6 +366,14 @@ function syncH() {
   requestAnimationFrame(() => ST.height(document.documentElement.scrollHeight + 10));
 }
 
+if (typeof ResizeObserver === "function") {
+  const observer = new ResizeObserver(() => syncH());
+  observer.observe(document.body);
+}
+
+window.addEventListener("resize", syncH);
+window.addEventListener("pageshow", syncH);
+
 /* ── Submit ────────────────────────────────────────────────────────────────── */
 document.getElementById("go-btn").addEventListener("click", async () => {
   const btn = document.getElementById("go-btn");
@@ -379,7 +406,7 @@ document.getElementById("go-btn").addEventListener("click", async () => {
           headers: {
             "Content-Type": "application/octet-stream",
             "X-Upload-Id": uploadId,
-            "X-Relative-Path": f.relativePath,
+            "X-Relative-Path": f.uploadPath || f.relativePath,
             "X-File-Name": f.name,
           },
           body: buf,
@@ -404,7 +431,12 @@ document.getElementById("go-btn").addEventListener("click", async () => {
       name: (p.name || "").trim() || "project",
       type: p.type,
       upload_id: uploadId,
-      files: p.files.map(f => ({ relativePath: f.relativePath, name: f.name, size: f.size })),
+      files: p.files.map(f => ({
+        relativePath: f.relativePath,
+        uploadPath: f.uploadPath,
+        name: f.name,
+        size: f.size,
+      })),
     }));
     ST.value(payload);
     btn.textContent = "✓ Submitted — Streamlit is processing…";

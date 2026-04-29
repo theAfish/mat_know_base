@@ -149,7 +149,8 @@ def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
 
             for file_info in proj["files"]:
                 rel = Path(file_info["relativePath"]) if file_info.get("relativePath") else Path(file_info["name"])
-                src = temp_root / rel
+                upload_rel = Path(file_info.get("uploadPath") or rel)
+                src = temp_root / upload_rel
                 dest = upload_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest = _next_available_path(dest)
