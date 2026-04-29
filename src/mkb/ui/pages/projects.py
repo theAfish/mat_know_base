@@ -4,6 +4,7 @@ from pathlib import Path
 
 import streamlit as st
 from mkb import api
+from mkb.knowledge_graph import GLOBAL_KG_SPACE_NAME
 from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached, search_library_cached
 
 
@@ -16,6 +17,11 @@ _STATUS_ICONS = {
     "FAILED": "🔴",
     "NO_FRAME": "⚫",
 }
+
+
+def _is_user_visible_space(space: dict) -> bool:
+    """Return True for spaces that should appear in user-facing UI controls."""
+    return space.get("name") != GLOBAL_KG_SPACE_NAME
 
 
 def render():
@@ -179,7 +185,7 @@ def _render_project_detail(project_id: str):
     # ── Pipeline actions ──────────────────────────────────────────
     st.write("**Pipeline**")
 
-    spaces = api.list_spaces()
+    spaces = [space for space in api.list_spaces() if _is_user_visible_space(space)]
     space_name_to_id = {s["name"]: s["space_id"] for s in spaces}
 
     action_cols = st.columns([1, 1, 2, 1, 1])
@@ -341,12 +347,17 @@ def _render_frame_tab(project_id: str):
 
 
 def _render_projections_tab(project_id: str):
+    all_spaces = api.list_spaces()
+    visible_spaces = [space for space in all_spaces if _is_user_visible_space(space)]
+    visible_space_ids = {space["space_id"] for space in visible_spaces}
+
     projections = api.list_projections(project_id=project_id, include_data=True)
+    projections = [proj for proj in projections if proj.get("space_id") in visible_space_ids]
     if not projections:
         st.info("No projections yet. Select a space and run **Project**.")
         return
 
-    spaces_map = {s["space_id"]: s["name"] for s in api.list_spaces()}
+    spaces_map = {s["space_id"]: s["name"] for s in visible_spaces}
 
     for proj in projections:
         space_name = spaces_map.get(proj["space_id"], proj["space_id"][:8])

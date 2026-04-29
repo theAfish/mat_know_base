@@ -8,7 +8,13 @@ import pandas as pd
 import streamlit as st
 
 from mkb import api
+from mkb.knowledge_graph import GLOBAL_KG_SPACE_NAME
 from mkb.spaces.schema_utils import stringify_value as _stringify_value
+
+
+def _is_user_visible_space(space: dict) -> bool:
+    """Return True for spaces that should appear in user-facing UI controls."""
+    return space.get("name") != GLOBAL_KG_SPACE_NAME
 
 
 def _mapping_to_rows(mapping: dict) -> list[dict[str, str]]:
@@ -255,7 +261,7 @@ def render():
     st.header("Projections")
 
     # Space selector
-    spaces = api.list_spaces()
+    spaces = [space for space in api.list_spaces() if _is_user_visible_space(space)]
     if not spaces:
         st.info("No spaces defined yet. Create a space first using the CLI.")
         st.code("mkb space create --name catalysis --domain 'heterogeneous catalysis' ...")
