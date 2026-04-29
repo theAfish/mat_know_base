@@ -166,6 +166,8 @@ const ST = {
 };
 function post(msg) { window.parent.postMessage({ isStreamlitMessage: true, ...msg }, "*"); }
 
+let lastSentHeight = 0;
+
 /* Upload server URL — received from Streamlit args on each render. */
 let UPLOAD_URL = "";
 
@@ -270,10 +272,13 @@ dz.addEventListener("drop", async (e) => {
 
   if (hasAPI) {
     /* Use the File System Access API to preserve folder structure */
-    for (let i = 0; i < items.length; i++) {
-      msg(`Reading item ${i + 1} / ${items.length}…`);
-      const entry = items[i].webkitGetAsEntry();
-      if (!entry) continue;
+    const entries = items
+      .map(item => item.webkitGetAsEntry())
+      .filter(entry => !!entry);
+
+    for (let i = 0; i < entries.length; i++) {
+      msg(`Reading item ${i + 1} / ${entries.length}…`);
+      const entry = entries[i];
       const projectId = nextProjectId();
       let files;
       if (entry.isDirectory) {
@@ -363,7 +368,22 @@ function syncFooter() {
 function msg(text) { document.getElementById("msg").textContent = text; }
 
 function syncH() {
-  requestAnimationFrame(() => ST.height(document.documentElement.scrollHeight + 10));
+  requestAnimationFrame(() => {
+    const body = document.body;
+    const root = document.documentElement;
+    const height = Math.ceil(
+      Math.max(
+        body.scrollHeight,
+        body.offsetHeight,
+        root.scrollHeight,
+        root.offsetHeight,
+      ),
+    );
+    if (height !== lastSentHeight) {
+      lastSentHeight = height;
+      ST.height(height);
+    }
+  });
 }
 
 if (typeof ResizeObserver === "function") {
