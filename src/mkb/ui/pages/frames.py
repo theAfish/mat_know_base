@@ -6,8 +6,16 @@ from mkb import api
 from mkb.ui.pages.projects import _render_project_detail
 
 
+FRAME_DETAIL_KEY = "frame_detail_project"
+
+
 def render():
     st.header("Knowledge Frames")
+
+    detail_project_id = st.session_state.get(FRAME_DETAIL_KEY)
+    if detail_project_id:
+        _render_frame_detail_page(detail_project_id)
+        return
 
     projects = api.list_projects(limit=100)
     frames = {frame["project_id"]: frame for frame in api.list_frames()}
@@ -53,11 +61,17 @@ def render():
         cols[4].write(row["extracted_at"])
         if cols[5].button("View", key=f"frame_view_{row['project_id']}"):
             st.session_state["selected_frame_project"] = row["project_id"]
+            st.session_state[FRAME_DETAIL_KEY] = row["project_id"]
             st.rerun()
 
-    st.divider()
 
-    project_id = st.session_state["selected_frame_project"]
+def _render_frame_detail_page(project_id: str):
+    back_col, _ = st.columns([1, 5])
+    with back_col:
+        if st.button("← Back", key="frame_detail_back"):
+            st.session_state.pop(FRAME_DETAIL_KEY, None)
+            st.rerun()
+
     frame = api.get_frame(project_id)
     if not frame:
         st.error("Frame not found.")

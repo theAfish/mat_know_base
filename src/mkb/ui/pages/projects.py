@@ -114,6 +114,7 @@ def _render_project_list():
         cols[2].write(str(p["asset_count"]))
         if cols[3].button("View", key=f"view_{p['project_id']}"):
             st.session_state["selected_frame_project"] = p["project_id"]
+            st.session_state["frame_detail_project"] = p["project_id"]
             st.session_state["pending_page"] = "Knowledge Frames"
             st.rerun()
 
@@ -137,6 +138,7 @@ def _render_search_results(results: dict):
             cols[0].write(project["label"] or project["source_path"] or project["project_id"])
             if cols[1].button("View", key=f"search_project_{project['project_id']}"):
                 st.session_state["selected_frame_project"] = project["project_id"]
+                st.session_state["frame_detail_project"] = project["project_id"]
                 st.session_state["pending_page"] = "Knowledge Frames"
                 st.rerun()
 
@@ -148,6 +150,7 @@ def _render_search_results(results: dict):
             cols[1].caption(asset["mime_type"] or "—")
             if asset.get("project_id") and cols[2].button("Open", key=f"search_asset_{asset['asset_id']}"):
                 st.session_state["selected_frame_project"] = asset["project_id"]
+                st.session_state["frame_detail_project"] = asset["project_id"]
                 st.session_state["pending_page"] = "Knowledge Frames"
                 st.rerun()
 
@@ -170,6 +173,7 @@ def _render_project_detail(project_id: str):
     with close_col:
         if st.button("✕ Close", key="close_detail"):
             st.session_state.pop("selected_frame_project", None)
+            st.session_state.pop("frame_detail_project", None)
             st.rerun()
 
     # ── Pipeline actions ──────────────────────────────────────────
