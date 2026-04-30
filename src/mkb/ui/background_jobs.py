@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -235,6 +234,15 @@ def render_project_job_status(project_id: str) -> None:
 
 
 def auto_refresh_if_running(interval_seconds: float = 0.6) -> None:
-    if has_running_jobs():
-        time.sleep(interval_seconds)
-        st.rerun()
+    """Register a non-blocking fragment timer that triggers a full rerun while jobs run.
+
+    Uses ``st.fragment(run_every=...)`` so that the browser-side timer fires the
+    refresh without blocking the Streamlit script thread.  This lets page
+    navigation happen immediately instead of waiting for the sleep to expire.
+    """
+    @st.fragment(run_every=interval_seconds)
+    def _auto_refresh() -> None:
+        if has_running_jobs():
+            st.rerun()
+
+    _auto_refresh()
