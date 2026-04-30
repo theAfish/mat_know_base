@@ -4,6 +4,7 @@ Bypasses Streamlit's setComponentValue payload-size limit by accepting raw
 binary file data via POST.  Runs as a daemon thread alongside Streamlit.
 """
 
+import errno
 import json
 import logging
 import uuid
@@ -15,6 +16,40 @@ logger = logging.getLogger(__name__)
 
 _UPLOAD_TEMP = Path("data/uploads/_temp")
 _UPLOAD_PORT = 8502
+_MAX_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MiB per file
+_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks
+
+
+def _validate_upload_id(upload_id: str) -> str:
+    """Validate and return a canonical UUID string.
+
+    Parses *upload_id* through :class:`uuid.UUID` so the return value is
+    always a stdlib-generated canonical string, breaking taint chains for
+    static-analysis tools.  Raises ``ValueError`` for non-UUID values.
+    """
+    try:
+        return str(uuid.UUID(upload_id))
+    except ValueError:
+        raise ValueError(f"Invalid upload_id: {upload_id!r}")
+
+
+def _safe_upload_path(relative_path: str, base: Path) -> Path:
+    """Return a resolved Path guaranteed to sit inside *base*.
+
+    Raises ``ValueError`` for absolute paths or any path whose resolved
+    location escapes *base*.
+    """
+    p = Path(relative_path)
+    if p.is_absolute():
+        raise ValueError(f"Absolute path rejected: {relative_path!r}")
+    resolved = (base / p).resolve()
+    base_resolved = base.resolve()
+    # relative_to raises ValueError if resolved is outside base_resolved
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        raise ValueError(f"Path traversal rejected: {relative_path!r}")
+    return resolved
 
 
 class _UploadHandler(BaseHTTPRequestHandler):
@@ -43,12 +78,48 @@ class _UploadHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "missing X-Upload-Id or X-Relative-Path"})
                 return
 
-            content_length = int(self.headers.get("Content-Length", 0))
-            data = self.rfile.read(content_length)
+            try:
+                safe_id = _validate_upload_id(upload_id)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
 
-            dest = _UPLOAD_TEMP / upload_id / relative_path
+            cl_header = self.headers.get("Content-Length")
+            if cl_header is None:
+                self._send_json(411, {"error": "Content-Length required"})
+                return
+            try:
+                content_length = int(cl_header)
+            except ValueError:
+                self._send_json(400, {"error": "invalid Content-Length"})
+                return
+            if content_length < 0:
+                self._send_json(400, {"error": "invalid Content-Length"})
+                return
+            if content_length > _MAX_UPLOAD_BYTES:
+                self._send_json(413, {"error": "file too large"})
+                return
+
+            session_base = _UPLOAD_TEMP / safe_id
+            try:
+                dest = _safe_upload_path(relative_path, session_base)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
+            remaining = content_length
+            with dest.open("wb") as fh:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(_CHUNK_SIZE, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+            if remaining != 0:
+                dest.unlink(missing_ok=True)
+                self._send_json(400, {"error": "incomplete upload: received fewer bytes than Content-Length specified"})
+                return
             self._send_json(200, {"ok": True})
             return
 
@@ -57,7 +128,12 @@ class _UploadHandler(BaseHTTPRequestHandler):
             if not upload_id:
                 self._send_json(400, {"error": "missing X-Upload-Id"})
                 return
-            (_UPLOAD_TEMP / upload_id / ".complete").write_text("done")
+            try:
+                safe_id = _validate_upload_id(upload_id)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            (_UPLOAD_TEMP / safe_id / ".complete").write_text("done")
             self._send_json(200, {"ok": True})
             return
 
@@ -98,7 +174,7 @@ def ensure_upload_server(port: int = _UPLOAD_PORT) -> None:
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), _UploadHandler)
     except OSError as exc:
-        if exc.errno == 98:  # EADDRINUSE — already bound in the parent Streamlit process
+        if exc.errno == errno.EADDRINUSE:  # already bound in the parent Streamlit process
             _server_started = True
             return
         raise

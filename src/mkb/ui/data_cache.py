@@ -26,6 +26,7 @@ def search_library_cached(query: str, limit: int = 25, project_id: str | None = 
 def clear_graph_cache() -> None:
     """Clear cached graph payloads after graph-changing operations."""
     get_knowledge_graph_cached.clear()
+    get_graph_review_counts_cached.clear()
 
 
 @st.cache_data(ttl=60, max_entries=16, show_spinner=False)

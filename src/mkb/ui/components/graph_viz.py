@@ -24,6 +24,7 @@ import json
 import re
 
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 try:
     from pyvis.network import Network
@@ -187,6 +188,7 @@ def _build_global_graph_html(
     max_node_examined = max((v.get("times_examined", 0) for v in review_concepts.values()), default=0)
     max_node_modified = max((v.get("times_modified", 0) for v in review_concepts.values()), default=0)
     max_edge_examined = max((v.get("times_examined", 0) for v in review_relations.values()), default=0)
+    max_edge_modified = max((v.get("times_modified", 0) for v in review_relations.values()), default=0)
 
     # Pre-compute connectivity (degree) per concept label
     degree: dict[str, int] = {}
@@ -286,9 +288,12 @@ def _build_global_graph_html(
         elif edge_color_mode in ("review_coverage", "modification_heat"):
             rkey = _relation_key_from_triple(source, rel, target)
             rec = review_relations.get(rkey, {})
-            field = "times_examined" if edge_color_mode == "review_coverage" else "times_modified"
-            val = rec.get(field, 0)
-            max_val = max_edge_examined
+            if edge_color_mode == "review_coverage":
+                val = rec.get("times_examined", 0)
+                max_val = max_edge_examined
+            else:
+                val = rec.get("times_modified", 0)
+                max_val = max_edge_modified
             edge_color = _coverage_color(val, max_val)
         else:
             edge_color = "#555"
@@ -372,7 +377,7 @@ def render_global_knowledge_graph(
     caption_parts.append("**Hover** nodes/edges to see labels and metadata.")
     st.caption(" · ".join(caption_parts))
 
-    st.iframe(html, height=720, width="stretch")
+    st_components.html(html, height=720)
 
 
 # Section-based node colors (used by legacy per-frame rendering)
