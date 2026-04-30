@@ -129,6 +129,24 @@ def _render_upload():
     st.rerun()
 
 
+def _safe_relative_path(raw: "str | Path", base: Path) -> Path:
+    """Return a Path guaranteed to sit inside *base*.
+
+    Raises ``ValueError`` for absolute paths or any path whose resolved
+    location escapes *base*.
+    """
+    p = Path(raw)
+    if p.is_absolute():
+        raise ValueError(f"Absolute path rejected: {raw!r}")
+    resolved = (base / p).resolve()
+    base_resolved = base.resolve()
+    try:
+        resolved.relative_to(base_resolved)
+    except ValueError:
+        raise ValueError(f"Path traversal rejected: {raw!r}")
+    return p
+
+
 def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
     total_ingested = 0
     total_dupes = 0
@@ -148,8 +166,14 @@ def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
             _emit(f"Moving files for {upload_dir.name} ({idx}/{len(payload)})")
 
             for file_info in proj["files"]:
-                rel = Path(file_info["relativePath"]) if file_info.get("relativePath") else Path(file_info["name"])
-                upload_rel = Path(file_info.get("uploadPath") or rel)
+                raw_rel = file_info["relativePath"] if file_info.get("relativePath") else file_info["name"]
+                raw_upload = file_info.get("uploadPath") or raw_rel
+                try:
+                    rel = _safe_relative_path(raw_rel, upload_dir)
+                    upload_rel = _safe_relative_path(raw_upload, temp_root)
+                except ValueError as exc:
+                    _emit(f"Skipping file with invalid path: {exc}")
+                    continue
                 src = temp_root / upload_rel
                 dest = upload_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
