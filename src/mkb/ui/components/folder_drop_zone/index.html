@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Project Drop Zone</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Source Sans Pro", -apple-system, sans-serif;
+      font-size: 14px;
+      padding: 2px 0 6px;
+      background: transparent;
+      color: var(--text);
+    }
+
+    :root {
+      --text:        #262730;
+      --hint:        #888;
+      --border:      #d0d0d0;
+      --bg-card:     #f8f8f8;
+      --accent:      #ff4b4b;
+      --accent-bg:   rgba(255,75,75,0.07);
+    }
+
+    [data-dark] {
+      --text:        #fafafa;
+      --hint:        #aaa;
+      --border:      #484848;
+      --bg-card:     #1e1e2e;
+      --accent-bg:   rgba(255,75,75,0.12);
+    }
+
+    /* ── Drop zone ── */
+    #dz {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 26px 16px;
+      text-align: center;
+      transition: border-color .15s, background .15s;
+      user-select: none;
+    }
+    #dz.over {
+      border-color: var(--accent);
+      background: var(--accent-bg);
+    }
+    #dz .icon  { font-size: 26px; line-height: 1.2; }
+    #dz .main  { font-weight: 600; margin: 4px 0 2px; }
+    #dz .sub   { font-size: 12px; color: var(--hint); }
+
+    /* ── Project cards ── */
+    #proj-list { margin-top: 8px; }
+
+    .pc {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 6px;
+      overflow: hidden;
+    }
+
+    .pc-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: var(--bg-card);
+    }
+
+    .pc-icon { flex-shrink: 0; font-size: 15px; }
+
+    .pc-input {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 7px;
+      font-size: 13px;
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+    }
+    .pc-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+
+    .pc-meta  { font-size: 11px; color: var(--hint); white-space: nowrap; flex-shrink: 0; }
+
+    .pc-del {
+      background: none; border: none; cursor: pointer;
+      color: var(--hint); font-size: 14px; padding: 2px 5px;
+      border-radius: 3px; line-height: 1; flex-shrink: 0;
+    }
+    .pc-del:hover { color: var(--accent); background: var(--accent-bg); }
+
+    .pc-files {
+      padding: 3px 10px 5px 28px;
+      font-size: 11px;
+      color: var(--hint);
+      max-height: 72px;
+      overflow-y: auto;
+    }
+    .pc-file { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ── Footer ── */
+    #footer {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    #go-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 7px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #go-btn:disabled { background: #bbb; cursor: default; }
+    #go-btn:not(:disabled):hover { filter: brightness(.9); }
+
+    #msg { font-size: 12px; color: var(--hint); }
+
+    /* ── Warning banner ── */
+    #no-api-warn {
+      display: none;
+      background: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffc107;
+      border-radius: 5px;
+      padding: 8px 12px;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="no-api-warn">
+  ⚠ Your browser does not support the File System Access API
+  (<code>webkitGetAsEntry</code>). Folder structure will not be preserved.
+  Please use Chrome, Edge, or Firefox 86+.
+</div>
+
+<div id="dz">
+  <div class="icon">📂</div>
+  <div class="main">Drop files &amp; folders here</div>
+  <div class="sub">Each file → one project &nbsp;·&nbsp; Each folder → one project</div>
+</div>
+
+<div id="proj-list"></div>
+
+<div id="footer">
+  <button id="go-btn" disabled>Ingest 0 project(s)</button>
+  <span id="msg"></span>
+</div>
+
+<script>
+/* ── Streamlit component protocol ──────────────────────────────────────────── */
+const ST = {
+  ready()       { post({ type: "streamlit:componentReady", apiVersion: 1 }); },
+  height(h)     { post({ type: "streamlit:setFrameHeight", height: h }); },
+  value(v)      { post({ type: "streamlit:setComponentValue", value: v, dataType: "json" }); },
+};
+function post(msg) { window.parent.postMessage({ isStreamlitMessage: true, ...msg }, "*"); }
+
+let lastSentHeight = 0;
+
+/* Upload server URL — received from Streamlit args on each render. */
+let UPLOAD_URL = "";
+
+window.addEventListener("message", (e) => {
+  if (e.data.type !== "streamlit:render") return;
+  const t = e.data.theme;
+  if (t) document.documentElement[t.base === "dark" ? "setAttribute" : "removeAttribute"]("data-dark", "");
+  UPLOAD_URL = (e.data.args && e.data.args.upload_url) || "";
+  syncH();
+});
+
+/* ── File system utilities ─────────────────────────────────────────────────── */
+
+async function drainReader(reader) {
+  const all = [];
+  for (;;) {
+    const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  return all;
+}
+
+/* Read a FileSystemEntry tree, returning [{relativePath, name, size, file}].
+   The `file` property holds the live browser File object (for HTTP upload).
+   prefix is the path prepended to this entry's own name.
+   Always call with prefix="" for direct children of the dropped folder so
+   that the dropped folder's own name is NOT included in any path. */
+async function readEntry(entry, prefix) {
+  if (prefix === undefined) prefix = "";
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    return [{ relativePath: prefix + entry.name, name: entry.name, size: file.size, file }];
+  }
+  // Directory: recurse, always including this dir's name for children
+  const children = await drainReader(entry.createReader());
+  const out = [];
+  for (const child of children) {
+    out.push(...await readEntry(child, prefix + entry.name + "/"));
+  }
+  return out;
+}
+
+/* Fallback when webkitGetAsEntry is unavailable: use DataTransfer.files. */
+function readFlatFiles(fileList) {
+  const out = [];
+  for (const file of fileList) {
+    out.push({ relativePath: file.name, name: file.name, size: file.size, file });
+  }
+  return out;
+}
+
+/* ── Project state ─────────────────────────────────────────────────────────── */
+let projects = [], uid = 0;
+
+function nextProjectId() {
+  return uid++;
+}
+
+function projectUploadPrefix(projectId) {
+  return `project_${projectId}`;
+}
+
+function withUploadPaths(projectId, files) {
+  const prefix = projectUploadPrefix(projectId);
+  return files.map(file => ({
+    ...file,
+    uploadPath: `${prefix}/${file.relativePath}`,
+  }));
+}
+
+function stem(fn) { const i = fn.lastIndexOf("."); return (i > 0 ? fn.slice(0, i) : fn) || fn; }
+function fmtSize(b) {
+  if (b < 1024)     return b + " B";
+  if (b < 1048576)  return (b / 1024).toFixed(1) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+}
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+                  .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+/* ── Drop handling ─────────────────────────────────────────────────────────── */
+const dz = document.getElementById("dz");
+
+dz.addEventListener("dragenter", e => { e.preventDefault(); dz.classList.add("over"); });
+dz.addEventListener("dragover",  e => { e.preventDefault(); });
+dz.addEventListener("dragleave", e => { if (!dz.contains(e.relatedTarget)) dz.classList.remove("over"); });
+
+dz.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  dz.classList.remove("over");
+
+  const items = Array.from(e.dataTransfer.items || []).filter(i => i.kind === "file");
+  if (!items.length) return;
+
+  const hasAPI = typeof items[0].webkitGetAsEntry === "function";
+  if (!hasAPI) document.getElementById("no-api-warn").style.display = "block";
+
+  msg("Reading…");
+  document.getElementById("go-btn").disabled = true;
+
+  if (hasAPI) {
+    /* Use the File System Access API to preserve folder structure */
+    const entries = items
+      .map(item => item.webkitGetAsEntry())
+      .filter(entry => !!entry);
+
+    for (let i = 0; i < entries.length; i++) {
+      msg(`Reading item ${i + 1} / ${entries.length}…`);
+      const entry = entries[i];
+      const projectId = nextProjectId();
+      let files;
+      if (entry.isDirectory) {
+        // Expand the top-level directory so its own name is NOT part of any
+        // relative path (paper.pdf → "paper.pdf", not "FolderName/paper.pdf").
+        const topChildren = await drainReader(entry.createReader());
+        const out = [];
+        for (const child of topChildren) out.push(...await readEntry(child, ""));
+        files = out;
+      } else {
+        files = await readEntry(entry, "");
+      }
+      projects.push({
+        id: projectId,
+        name: entry.isDirectory ? entry.name : stem(entry.name),
+        type: entry.isDirectory ? "folder" : "file",
+        files: withUploadPaths(projectId, files),
+      });
+    }
+  } else {
+    /* Flat fallback: each file is its own project */
+    const fileList = e.dataTransfer.files;
+    for (const file of fileList) {
+      const projectId = nextProjectId();
+      projects.push({
+        id: projectId,
+        name: stem(file.name),
+        type: "file",
+        files: withUploadPaths(projectId, [{ relativePath: file.name, name: file.name, size: file.size, file }]),
+      });
+    }
+  }
+
+  msg("");
+  render();
+  syncH();
+});
+
+/* ── Render ────────────────────────────────────────────────────────────────── */
+function render() {
+  const list = document.getElementById("proj-list");
+  list.innerHTML = "";
+
+  for (const p of projects) {
+    const totalSize = p.files.reduce((a, f) => a + f.size, 0);
+    const icon = p.type === "folder" ? "📁" : "📄";
+
+    const card = document.createElement("div");
+    card.className = "pc";
+    card.innerHTML = `
+      <div class="pc-head">
+        <span class="pc-icon">${icon}</span>
+        <input class="pc-input" type="text" value="${esc(p.name)}" data-id="${p.id}"
+               placeholder="project-folder-name">
+        <span class="pc-meta">${p.files.length} file(s) · ${fmtSize(totalSize)}</span>
+        <button class="pc-del" data-id="${p.id}" title="Remove">✕</button>
+      </div>
+      <div class="pc-files">
+        ${p.files.map(f => `<div class="pc-file">📄 ${esc(f.relativePath)}</div>`).join("")}
+      </div>`;
+    list.appendChild(card);
+  }
+
+  list.querySelectorAll(".pc-input").forEach(inp => inp.addEventListener("input", () => {
+    const p = projects.find(x => x.id === +inp.dataset.id);
+    if (p) p.name = inp.value;
+    syncFooter();
+  }));
+
+  list.querySelectorAll(".pc-del").forEach(btn => btn.addEventListener("click", () => {
+    projects = projects.filter(x => x.id !== +btn.dataset.id);
+    render();
+    syncH();
+  }));
+
+  syncFooter();
+}
+
+function syncFooter() {
+  const footer = document.getElementById("footer");
+  const btn    = document.getElementById("go-btn");
+  footer.style.display = projects.length ? "flex" : "none";
+  btn.disabled         = projects.length === 0;
+  btn.textContent      = `Ingest ${projects.length} project(s)`;
+}
+
+function msg(text) { document.getElementById("msg").textContent = text; }
+
+function syncH() {
+  requestAnimationFrame(() => {
+    const body = document.body;
+    const root = document.documentElement;
+    const height = Math.ceil(
+      Math.max(
+        body.scrollHeight,
+        body.offsetHeight,
+        root.scrollHeight,
+        root.offsetHeight,
+      ),
+    );
+    if (height !== lastSentHeight) {
+      lastSentHeight = height;
+      ST.height(height);
+    }
+  });
+}
+
+if (typeof ResizeObserver === "function") {
+  const observer = new ResizeObserver(() => syncH());
+  observer.observe(document.body);
+}
+
+window.addEventListener("resize", syncH);
+window.addEventListener("pageshow", syncH);
+
+/* ── Submit ────────────────────────────────────────────────────────────────── */
+document.getElementById("go-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("go-btn");
+  btn.disabled = true;
+  btn.textContent = "⏳ Uploading files…";
+  msg("");
+
+  if (!UPLOAD_URL) {
+    btn.disabled = false;
+    btn.textContent = `Ingest ${projects.length} project(s)`;
+    msg("Upload server not available — refresh the page.");
+    return;
+  }
+
+  try {
+    /* 1. Create an upload session on the server */
+    const initRes = await fetch(UPLOAD_URL + "/upload/init", { method: "POST" });
+    const initJson = await initRes.json();
+    const uploadId = initJson.upload_id;
+
+    /* 2. Upload every file as raw binary via POST */
+    const totalFiles = projects.reduce((a, p) => a + p.files.length, 0);
+    let uploaded = 0;
+
+    for (const p of projects) {
+      for (const f of p.files) {
+        const buf = await f.file.arrayBuffer();
+        const upRes = await fetch(UPLOAD_URL + "/upload/file", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Upload-Id": uploadId,
+            "X-Relative-Path": f.uploadPath || f.relativePath,
+            "X-File-Name": f.name,
+          },
+          body: buf,
+        });
+        if (!upRes.ok) {
+          const err = await upRes.json();
+          throw new Error(err.error || `Upload failed for ${f.relativePath}`);
+        }
+        uploaded++;
+        msg(`Uploaded ${uploaded} / ${totalFiles} file(s)…`);
+      }
+    }
+
+    /* 3. Mark session complete */
+    await fetch(UPLOAD_URL + "/upload/complete", {
+      method: "POST",
+      headers: { "X-Upload-Id": uploadId },
+    });
+
+    /* 4. Send lightweight metadata to Streamlit (no file data) */
+    const payload = projects.map(p => ({
+      name: (p.name || "").trim() || "project",
+      type: p.type,
+      upload_id: uploadId,
+      files: p.files.map(f => ({
+        relativePath: f.relativePath,
+        uploadPath: f.uploadPath,
+        name: f.name,
+        size: f.size,
+      })),
+    }));
+    ST.value(payload);
+    btn.textContent = "✓ Submitted — Streamlit is processing…";
+    btn.style.background = "#21c254";
+    msg("");
+  } catch (err) {
+    btn.disabled = false;
+    btn.style.background = "";
+    btn.textContent = `Ingest ${projects.length} project(s)`;
+    msg("Error: " + err.message);
+  }
+});
+
+/* ── Init ──────────────────────────────────────────────────────────────────── */
+ST.ready();
+syncH();
+</script>
+</body>
+</html>

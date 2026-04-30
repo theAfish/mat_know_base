@@ -178,7 +178,7 @@ def _repair_existing_processed_asset(
     processed_asset.raw_asset_hash = asset.sha256
 
 
-def process_asset(asset_id: uuid.UUID) -> dict:
+def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
     """
     Process a raw asset and convert it to structured formats.
     
@@ -191,6 +191,10 @@ def process_asset(asset_id: uuid.UUID) -> dict:
         "reason": str,  # For skipped/failed
     }
     """
+    def _emit(message: str, **extra) -> None:
+        if progress_callback:
+            progress_callback({"message": message, **extra})
+
     with SyncSessionLocal() as session:
         # Fetch the asset
         asset = session.query(Asset).filter_by(asset_id=asset_id).first()
@@ -202,10 +206,17 @@ def process_asset(asset_id: uuid.UUID) -> dict:
             }
         
         logger.info(f"Processing asset {asset_id}: {asset.filename}")
+        _emit(
+            f"Processing {asset.filename}",
+            asset_id=str(asset_id),
+            filename=asset.filename,
+            stage="asset_started",
+        )
         
         # Download raw file from S3
         try:
             raw_data = download_bytes(asset.s3_bucket, asset.s3_key)
+            _emit(f"Downloaded {asset.filename}", asset_id=str(asset_id), filename=asset.filename, stage="downloaded")
         except Exception as e:
             logger.error(f"Failed to download raw asset {asset_id}: {e}")
             log_entry = ProcessingLog(
@@ -226,6 +237,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
 
         processor = _select_processor(asset, raw_data)
         if not processor:
+            _emit(f"Skipped {asset.filename}: no processor", asset_id=str(asset_id), filename=asset.filename, stage="skipped")
             logger.info(f"No processor found for {asset.filename} ({asset.mime_type})")
             log_entry = ProcessingLog(
                 log_id=uuid.uuid4(),
@@ -254,6 +266,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
         
         # Process the file
         try:
+            _emit(f"Converting {asset.filename}", asset_id=str(asset_id), filename=asset.filename, stage="converting")
             result = processor.process(raw_data, asset.filename)
             
             if not result.is_success():
@@ -417,6 +430,13 @@ def process_asset(asset_id: uuid.UUID) -> dict:
                 },
             )
             session.commit()
+            _emit(
+                f"Finished {asset.filename}",
+                asset_id=str(asset_id),
+                filename=asset.filename,
+                stage="completed",
+                status="SUCCESS",
+            )
             
             logger.info(
                 f"Successfully processed {asset.filename} -> "
@@ -458,7 +478,7 @@ def process_asset(asset_id: uuid.UUID) -> dict:
             }
 
 
-def process_all_pending(limit: int | None = None) -> dict:
+def process_all_pending(limit: int | None = None, progress_callback=None) -> dict:
     """
     Process all unprocessed assets.
     
@@ -490,8 +510,17 @@ def process_all_pending(limit: int | None = None) -> dict:
             "results": []
         }
         
-        for asset in pending_list:
-            result = process_asset(asset.asset_id)
+        for idx, asset in enumerate(pending_list, start=1):
+            if progress_callback:
+                progress_callback(
+                    {
+                        "message": f"Asset {idx}/{len(pending_list)}: {asset.filename}",
+                        "asset_id": str(asset.asset_id),
+                        "filename": asset.filename,
+                        "stage": "queue_progress",
+                    }
+                )
+            result = process_asset(asset.asset_id, progress_callback=progress_callback)
             stats["results"].append(result)
             
             if result["status"] == "SUCCESS":

@@ -112,8 +112,16 @@ def list_project_files(project_id: str) -> list[dict]:
         return result
 
 
-def read_processed_markdown(asset_id: str) -> str:
-    """Read the full processed Markdown content for a given asset."""
+_MAX_MARKDOWN_CHARS = 80_000  # leave headroom for conversation history
+
+
+def read_processed_markdown(asset_id: str, start_char: int = 0) -> str:
+    """Read processed Markdown content for a given asset.
+
+    Returns up to 80,000 characters starting at *start_char*.  If the content
+    was truncated a trailing notice is appended with the total length and the
+    next start_char to use for a subsequent call.
+    """
     with SyncSessionLocal() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
@@ -126,7 +134,17 @@ def read_processed_markdown(asset_id: str) -> str:
             data = _read_processed_bytes(pa)
         except Exception as exc:
             return f"Cannot read markdown for asset {asset_id}: {exc}"
-        return data.decode("utf-8", errors="replace")
+
+    text = data.decode("utf-8", errors="replace")
+    total = len(text)
+    chunk = text[start_char : start_char + _MAX_MARKDOWN_CHARS]
+    end = start_char + len(chunk)
+    if end < total:
+        chunk += (
+            f"\n\n[TRUNCATED — showing chars {start_char}–{end} of {total}. "
+            f"Call read_processed_markdown(asset_id, start_char={end}) for the next chunk.]"
+        )
+    return chunk
 
 
 def read_markdown_section(asset_id: str, section_heading: str) -> str:

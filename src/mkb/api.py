@@ -11,6 +11,7 @@ import hashlib
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal, init_db
@@ -118,6 +119,19 @@ def _choose_asset_for_manual_output(assets: list, primary_name: str | None = Non
     return assets[0]
 
 
+def _normalize_search_query(query: str) -> list[str]:
+    """Split a free-text query into non-empty keyword tokens."""
+    return [token.strip() for token in query.split() if token.strip()]
+
+
+def _matches_search_tokens(*values: Any, tokens: list[str]) -> bool:
+    """Return True when every token is present in at least one candidate value."""
+    haystacks = [str(value).lower() for value in values if value]
+    if not tokens:
+        return True
+    return all(any(token in haystack for haystack in haystacks) for token in tokens)
+
+
 # ── Lifecycle ────────────────────────────────────────────────────
 
 
@@ -180,7 +194,7 @@ def sync_project(project_id: str | uuid.UUID) -> dict:
 # ── Processing ───────────────────────────────────────────────────
 
 
-def process(project_id: str | uuid.UUID | None = None) -> dict:
+def process(project_id: str | uuid.UUID | None = None, progress_callback=None) -> dict:
     """Process assets. If project_id is given, process only that project's assets.
     Otherwise process all pending assets.
 
@@ -198,13 +212,15 @@ def process(project_id: str | uuid.UUID | None = None) -> dict:
         results = []
         for aid in asset_ids:
             try:
-                r = process_asset(aid)
+                if progress_callback:
+                    progress_callback({"message": f"Starting asset {len(results) + 1}/{len(asset_ids)}", "asset_id": str(aid)})
+                r = process_asset(aid, progress_callback=progress_callback)
                 results.append(r)
             except Exception as exc:
                 results.append({"asset_id": str(aid), "error": str(exc)})
         return {"project_id": str(pid), "assets_processed": len(results), "results": results}
 
-    return process_all_pending()
+    return process_all_pending(progress_callback=progress_callback)
 
 
 # ── Extraction ───────────────────────────────────────────────────
@@ -215,6 +231,7 @@ def extract(
     model: str | None = None,
     verbose: bool = False,
     max_passes: int = 1,
+    progress_callback=None,
 ) -> dict:
     """Run knowledge extraction. If project_id given, extract one project.
     Otherwise extract all pending projects.
@@ -229,7 +246,13 @@ def extract(
 
     if project_id is not None:
         pid = uuid.UUID(str(project_id))
-        return run_extraction(pid, model=model, verbose=verbose, max_passes=max_passes)
+        return run_extraction(
+            pid,
+            model=model,
+            verbose=verbose,
+            max_passes=max_passes,
+            progress_callback=progress_callback,
+        )
     return run_extraction_all(model=model, verbose=verbose, max_passes=max_passes)
 
 
@@ -563,6 +586,124 @@ def list_assets(project_id: str | uuid.UUID | None = None, limit: int = 100) -> 
         ]
 
 
+def search_library(
+    query: str,
+    limit: int = 25,
+    project_id: str | uuid.UUID | None = None,
+) -> dict:
+    """Search projects and assets by keyword.
+
+    Every keyword token must match somewhere in the target record. Projects are
+    searched by label and source path. Assets are searched by filename, MIME
+    type, and selected metadata fields.
+    """
+    from sqlalchemy import and_, or_
+
+    from mkb.db.models import Asset, ProjectAsset, ResearchProject
+
+    init_db()
+    tokens = [token.lower() for token in _normalize_search_query(query)]
+    if not tokens:
+        return {
+            "query": query,
+            "tokens": [],
+            "project_id": str(project_id) if project_id is not None else None,
+            "projects": [],
+            "assets": [],
+            "total": 0,
+        }
+
+    pid = uuid.UUID(str(project_id)) if project_id is not None else None
+
+    with SyncSessionLocal() as session:
+        project_filters = [
+            or_(
+                ResearchProject.label.ilike(f"%{token}%"),
+                ResearchProject.source_path.ilike(f"%{token}%"),
+            )
+            for token in tokens
+        ]
+        project_query = session.query(ResearchProject)
+        if pid is not None:
+            project_query = project_query.filter(ResearchProject.project_id == pid)
+        project_rows = (
+            project_query
+            .filter(and_(*project_filters))
+            .order_by(ResearchProject.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        asset_filters = [
+            or_(
+                Asset.filename.ilike(f"%{token}%"),
+                Asset.mime_type.ilike(f"%{token}%"),
+                Asset.metadata_["title"].astext.ilike(f"%{token}%"),
+                Asset.metadata_["description"].astext.ilike(f"%{token}%"),
+                Asset.metadata_["original_path"].astext.ilike(f"%{token}%"),
+            )
+            for token in tokens
+        ]
+        asset_query = session.query(Asset, ProjectAsset.project_id).outerjoin(
+            ProjectAsset,
+            ProjectAsset.asset_id == Asset.asset_id,
+        )
+        if pid is not None:
+            asset_query = asset_query.filter(ProjectAsset.project_id == pid)
+        asset_rows = (
+            asset_query
+            .filter(and_(*asset_filters))
+            .order_by(Asset.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        projects = [
+            {
+                "project_id": str(row.project_id),
+                "label": row.label,
+                "source_path": row.source_path,
+                "file_count": row.file_count,
+                "kind": "project",
+            }
+            for row in project_rows
+        ]
+
+        assets = []
+        for asset, asset_project_id in asset_rows:
+            metadata = asset.metadata_ or {}
+            if not _matches_search_tokens(
+                asset.filename,
+                asset.mime_type,
+                metadata.get("title"),
+                metadata.get("description"),
+                metadata.get("original_path"),
+                tokens=tokens,
+            ):
+                continue
+
+            assets.append(
+                {
+                    "asset_id": str(asset.asset_id),
+                    "project_id": str(asset_project_id) if asset_project_id else None,
+                    "filename": asset.filename,
+                    "mime_type": asset.mime_type,
+                    "size_bytes": asset.size_bytes,
+                    "status": asset.status.value,
+                    "kind": "asset",
+                }
+            )
+
+        return {
+            "query": query,
+            "tokens": tokens,
+            "project_id": str(pid) if pid is not None else None,
+            "projects": projects,
+            "assets": assets[:limit],
+            "total": len(projects) + len(assets[:limit]),
+        }
+
+
 # ── Spaces ───────────────────────────────────────────────────────
 
 
@@ -610,6 +751,7 @@ def project(
     project_id: str | uuid.UUID | None = None,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection on one or more frames using a space definition.
 
@@ -624,7 +766,7 @@ def project(
 
     if frame_id:
         fid = uuid.UUID(str(frame_id))
-        return run_projection(sid, fid, model=model, verbose=verbose)
+        return run_projection(sid, fid, model=model, verbose=verbose, progress_callback=progress_callback)
 
     if project_id:
         pid = uuid.UUID(str(project_id))
@@ -633,7 +775,7 @@ def project(
             if not frame:
                 return {"error": f"No frame for project {project_id}"}
             fid = frame.frame_id
-        return run_projection(sid, fid, model=model, verbose=verbose)
+        return run_projection(sid, fid, model=model, verbose=verbose, progress_callback=progress_callback)
 
     return {"error": "Must specify frame_id or project_id"}
 
@@ -787,6 +929,7 @@ def extract_knowledge_graph(
     verbose: bool = False,
     clear_existing: bool = True,
     clear_legacy_frame_sections: bool = True,
+    progress_callback=None,
 ) -> dict:
     """Run concept-graph extraction using one global cross-domain space.
 
@@ -808,7 +951,13 @@ def extract_knowledge_graph(
 
     if frame_id is not None:
         fid = uuid.UUID(str(frame_id))
-        result = run_knowledge_graph(fid, model=model, verbose=verbose, clear_existing=clear_existing)
+        result = run_knowledge_graph(
+            fid,
+            model=model,
+            verbose=verbose,
+            clear_existing=clear_existing,
+            progress_callback=progress_callback,
+        )
     elif project_id is not None:
         pid = uuid.UUID(str(project_id))
         with SyncSessionLocal() as session:
@@ -816,7 +965,13 @@ def extract_knowledge_graph(
             if not frame:
                 return {"error": f"No frame for project {project_id}"}
             fid = frame.frame_id
-        result = run_knowledge_graph(fid, model=model, verbose=verbose, clear_existing=clear_existing)
+        result = run_knowledge_graph(
+            fid,
+            model=model,
+            verbose=verbose,
+            clear_existing=clear_existing,
+            progress_callback=progress_callback,
+        )
     else:
         result = run_knowledge_graph_all(model=model, verbose=verbose, clear_existing=clear_existing)
 
@@ -925,8 +1080,67 @@ def review_projections_all(
     return run_projection_review_all(sid, model=model, verbose=verbose)
 
 
+def review_knowledge_graph(
+    mode: str = "auto",
+    model: str | None = None,
+    verbose: bool = False,
+    seed_count: int = 10,
+) -> dict:
+    """Run the graph review agent to deduplicate and clean the knowledge graph.
 
-# ── Feedback ─────────────────────────────────────────────────────
+    Two modes:
+    - "global": analyzes relation name distributions, standardizes naming, merges
+      duplicate or synonymous concept nodes across the entire graph.
+    - "local": selects the least-reviewed concepts as starting points, explores
+      their neighborhoods, verifies against source frames, and fixes local issues.
+    - "auto" (default): randomly picks global or local each time.
+
+    After each run, the times_examined and times_modified counters on each visited
+    graph element are incremented in the graph_element_reviews table.
+
+    Args:
+        mode: "global", "local", or "auto".
+        model: LLM model override.
+        verbose: Enable verbose logging.
+        seed_count: Number of starting concepts for local mode.
+    """
+    from mkb.agents.graph_review import run_graph_review
+
+    init_db()
+    return run_graph_review(mode=mode, model=model, verbose=verbose, seed_count=seed_count)
+
+
+def get_graph_review_counts(space_id: str | uuid.UUID | None = None) -> dict:
+    """Return review counts (times_examined, times_modified) per graph element.
+
+    Returns a dict with two sub-dicts keyed by normalized element key:
+    - ``concepts``: mapping of normalized concept label → {times_examined, times_modified}
+    - ``relations``: mapping of "src||rel||tgt" → {times_examined, times_modified}
+    """
+    from mkb.db.models import GraphElementReview
+    from mkb.knowledge_graph import ensure_global_kg_space_id
+
+    init_db()
+    sid = uuid.UUID(str(space_id)) if space_id else ensure_global_kg_space_id()
+
+    concepts: dict[str, dict] = {}
+    relations: dict[str, dict] = {}
+
+    with SyncSessionLocal() as session:
+        rows = session.query(GraphElementReview).filter_by(space_id=sid).all()
+        for row in rows:
+            entry = {
+                "times_examined": row.times_examined,
+                "times_modified": row.times_modified,
+                "last_examined_at": row.last_examined_at.isoformat() if row.last_examined_at else None,
+                "last_modified_at": row.last_modified_at.isoformat() if row.last_modified_at else None,
+            }
+            if row.element_type == "concept":
+                concepts[row.element_key] = entry
+            elif row.element_type == "relation":
+                relations[row.element_key] = entry
+
+    return {"space_id": str(sid), "concepts": concepts, "relations": relations}
 
 
 def get_feedback_summary(

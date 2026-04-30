@@ -1,7 +1,12 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from mkb.api import _choose_asset_for_manual_output, _inspect_manual_processed_dir
+from mkb.api import (
+    _choose_asset_for_manual_output,
+    _inspect_manual_processed_dir,
+    _matches_search_tokens,
+    _normalize_search_query,
+)
 from mkb.db.models import ProcessingType
 
 
@@ -30,3 +35,25 @@ def test_choose_asset_for_manual_output_matches_same_stem():
     )
 
     assert chosen.asset_id == "asset-1"
+
+
+def test_normalize_search_query_discards_empty_tokens():
+    assert _normalize_search_query("  enamel   mineralization  paper  ") == [
+        "enamel",
+        "mineralization",
+        "paper",
+    ]
+
+
+def test_matches_search_tokens_requires_all_tokens_across_values():
+    assert _matches_search_tokens(
+        "enamel paper.pdf",
+        "application/json",
+        "hydroxyapatite mineralization dataset",
+        tokens=["enamel", "mineralization"],
+    )
+    assert not _matches_search_tokens(
+        "enamel paper.pdf",
+        "application/json",
+        tokens=["enamel", "csv"],
+    )

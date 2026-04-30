@@ -56,8 +56,13 @@ async def _run_projection_async(
     frame_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection on a single frame using a space definition."""
+
+    def _emit(message: str, **extra) -> None:
+        if progress_callback:
+            progress_callback({"message": message, **extra})
 
     with SyncSessionLocal() as db:
         space = db.query(Space).filter_by(space_id=space_id).first()
@@ -83,6 +88,7 @@ async def _run_projection_async(
 
         projection_id = projection.projection_id
         space_name = space.name
+        _emit(f"Projection started for {space_name}", stage="setup")
 
         # Capture space attributes before session closes
         space_cfg = SpaceConfig(
@@ -110,6 +116,7 @@ async def _run_projection_async(
         session_id=session_id,
         message=message,
         verbose=verbose,
+        progress_callback=progress_callback,
     )
 
     if not result.success:
@@ -145,9 +152,16 @@ async def run_projection(
     frame_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection on one frame."""
-    return await _run_projection_async(space_id, frame_id, model, verbose)
+    return await _run_projection_async(
+        space_id,
+        frame_id,
+        model,
+        verbose,
+        progress_callback=progress_callback,
+    )
 
 
 @sync_agent_run

@@ -11,13 +11,12 @@ source sections and applies minimal, surgical changes via
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 
 from google.adk.agents import Agent
 
-from mkb.agents._utils import create_llm
+from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.frame_clarification import build_clarification_prompt
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.frames import FRAME_TOOLS
@@ -116,22 +115,17 @@ def run_clarification_in_thread(
 ) -> dict:
     """Run the clarification agent synchronously in a dedicated thread.
 
-    Using a thread with ``asyncio.run`` avoids the "event loop already running"
-    error that would occur when calling an async function from within another
-    agent's tool execution (which itself runs inside a running event loop).
+    Uses a shared background event loop to avoid per-call loop churn while
+    remaining safe to call from sync contexts.
     """
-    import concurrent.futures
-
-    coro = run_clarification_async(
-        project_id=project_id,
-        frame_id=frame_id,
-        question=question,
-        context=context,
-        field=field,
-        model=model,
-        verbose=verbose,
+    return run_async_sync(
+        run_clarification_async(
+            project_id=project_id,
+            frame_id=frame_id,
+            question=question,
+            context=context,
+            field=field,
+            model=model,
+            verbose=verbose,
+        )
     )
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(asyncio.run, coro)
-        return future.result(timeout=300)

@@ -6,8 +6,16 @@ from mkb import api
 from mkb.ui.pages.projects import _render_project_detail
 
 
+FRAME_DETAIL_KEY = "frame_detail_project"
+
+
 def render():
     st.header("Knowledge Frames")
+
+    detail_project_id = st.session_state.get(FRAME_DETAIL_KEY)
+    if detail_project_id:
+        _render_frame_detail_page(detail_project_id)
+        return
 
     projects = api.list_projects(limit=100)
     frames = {frame["project_id"]: frame for frame in api.list_frames()}
@@ -15,19 +23,17 @@ def render():
 
     for project in projects:
         frame = frames.get(project["project_id"])
-        if not frame:
-            continue
         rows.append({
             "project_id": project["project_id"],
             "label": project["label"] or project["source_path"] or project["project_id"][:12],
             "asset_count": project["asset_count"],
-            "status": frame["status"],
-            "version": frame.get("extraction_version", 0),
-            "extracted_at": (frame.get("extracted_at") or "")[:10] or "-",
+            "status": frame["status"] if frame else "NO_FRAME",
+            "version": frame.get("extraction_version", 0) if frame else 0,
+            "extracted_at": (frame.get("extracted_at") or "")[:10] or "-" if frame else "-",
         })
 
     if not rows:
-        st.info("No knowledge frames found. Run extraction first.")
+        st.info("No projects yet — upload files in the Projects tab.")
         return
 
     available_project_ids = {row["project_id"] for row in rows}
@@ -53,15 +59,20 @@ def render():
         cols[4].write(row["extracted_at"])
         if cols[5].button("View", key=f"frame_view_{row['project_id']}"):
             st.session_state["selected_frame_project"] = row["project_id"]
+            st.session_state[FRAME_DETAIL_KEY] = row["project_id"]
             st.rerun()
 
-    st.divider()
 
-    project_id = st.session_state["selected_frame_project"]
+def _render_frame_detail_page(project_id: str):
+    back_col, _ = st.columns([1, 5])
+    with back_col:
+        if st.button("← Back", key="frame_detail_back"):
+            st.session_state.pop(FRAME_DETAIL_KEY, None)
+            st.rerun()
+
     frame = api.get_frame(project_id)
     if not frame:
-        st.error("Frame not found.")
-        return
+        st.info("No knowledge frame yet — process the files and run extraction to generate one.")
 
     _render_project_detail(project_id)
 

@@ -79,6 +79,42 @@ def cmd_assets(args):
     print(f"\n{len(assets)} asset(s).")
 
 
+def cmd_search(args):
+    from mkb.api import search_library
+
+    result = search_library(
+        query=args.query,
+        limit=args.limit,
+        project_id=args.project_id,
+    )
+
+    projects = result["projects"]
+    assets = result["assets"]
+
+    if not projects and not assets:
+        print("No matches found.")
+        return
+
+    if projects:
+        print("Projects")
+        for project in projects:
+            label = project["label"] or project["source_path"] or project["project_id"]
+            print(f"  {project['project_id']}  {label}")
+
+    if assets:
+        if projects:
+            print()
+        print("Assets")
+        for asset in assets:
+            project_id = asset["project_id"] or "-"
+            print(
+                f"  {asset['asset_id']}  {asset['status']:<10}  "
+                f"project={project_id}  {asset['filename']}"
+            )
+
+    print(f"\n{result['total']} total match(es).")
+
+
 def cmd_frames(args):
     from mkb.api import list_frames
     frames = list_frames()
@@ -226,6 +262,36 @@ def cmd_kg_show(args):
     _json_dump(result)
 
 
+def cmd_kg_review(args):
+    from mkb.api import review_knowledge_graph
+
+    result = review_knowledge_graph(
+        mode=args.mode,
+        model=args.model,
+        verbose=args.verbose,
+        seed_count=args.seed_count,
+    )
+    _json_dump(result)
+
+
+def cmd_kg_review_counts(args):
+    from mkb.api import get_graph_review_counts
+
+    result = get_graph_review_counts()
+    concepts = result.get("concepts", {})
+    relations = result.get("relations", {})
+    print(f"Concepts reviewed: {len(concepts)}")
+    for key, counts in sorted(concepts.items(), key=lambda x: -x[1].get("times_examined", 0))[:20]:
+        print(f"  {counts.get('times_examined', 0):3d}x examined  {counts.get('times_modified', 0):3d}x modified  {key}")
+    if len(concepts) > 20:
+        print(f"  ... ({len(concepts) - 20} more)")
+    print(f"\nRelations reviewed: {len(relations)}")
+    for key, counts in sorted(relations.items(), key=lambda x: -x[1].get("times_examined", 0))[:20]:
+        print(f"  {counts.get('times_examined', 0):3d}x examined  {counts.get('times_modified', 0):3d}x modified  {key}")
+    if len(relations) > 20:
+        print(f"  ... ({len(relations) - 20} more)")
+
+
 # ── Feedback commands ────────────────────────────────────────────
 
 
@@ -325,7 +391,22 @@ def cmd_ui(args):
         "src/mkb/ui/app.py",
         "--server.port", str(args.port),
     ]
-    subprocess.run(cmd)
+    
+    process = None
+    try:
+        process = subprocess.Popen(cmd)
+        process.wait()
+    except KeyboardInterrupt:
+        # Gracefully terminate the subprocess on Ctrl+C
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                # Give it 5 seconds to terminate gracefully
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't terminate gracefully
+                process.kill()
+                process.wait()
 
 
 def cmd_processed(args):
@@ -399,6 +480,12 @@ def main():
     p.add_argument("--project-id", "-p", default=None)
     p.add_argument("--limit", "-n", type=int, default=100)
 
+    # search
+    p = sub.add_parser("search", help="Search projects and assets by keyword")
+    p.add_argument("query", help="Free-text keyword query")
+    p.add_argument("--project-id", "-p", default=None, help="Limit asset/project matches to a single project")
+    p.add_argument("--limit", "-n", type=int, default=25)
+
     # frames
     sub.add_parser("frames", help="List knowledge frames")
 
@@ -461,6 +548,16 @@ def main():
     p = sub.add_parser("kg-show", help="Show merged global concept graph")
     p.add_argument("--project-id", "-p", default=None)
 
+    p = sub.add_parser("kg-review", help="Run graph review agent (deduplication + quality cleanup)")
+    p.add_argument("--mode", default="auto", choices=["auto", "global", "local"],
+                   help="Review mode: auto (default), global (relation standardization + concept dedup), local (neighborhood exploration)")
+    p.add_argument("--model", "-m", default=None, help="LLM model override")
+    p.add_argument("--verbose", "-v", action="store_true")
+    p.add_argument("--seed-count", type=int, default=10, metavar="N",
+                   help="Number of starting concepts for local mode (default: 10)")
+
+    sub.add_parser("kg-review-counts", help="Show per-element review counts from graph review runs")
+
     # ── Feedback subcommands ──
     p = sub.add_parser("feedback", help="List feedback items")
     p.add_argument("--project-id", "-p", default=None)
@@ -519,6 +616,7 @@ def main():
         "extract": cmd_extract,
         "projects": cmd_projects,
         "assets": cmd_assets,
+        "search": cmd_search,
         "frames": cmd_frames,
         "frame": cmd_frame,
         "processed": cmd_processed,
@@ -530,6 +628,8 @@ def main():
         "kg-extract": cmd_kg_extract,
         "kg-clear": cmd_kg_clear,
         "kg-show": cmd_kg_show,
+        "kg-review": cmd_kg_review,
+        "kg-review-counts": cmd_kg_review_counts,
         "feedback": cmd_feedback,
         "review-feedback": cmd_review_feedback,
         "resolve-feedback": cmd_resolve_feedback,
