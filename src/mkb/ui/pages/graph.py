@@ -2,7 +2,6 @@
 
 import queue
 import threading
-import time
 
 import streamlit as st
 
@@ -113,18 +112,20 @@ _TOOL_ICONS = {
 }
 
 
+@st.fragment(run_every=0.4)
 def _render_review_section() -> None:
     _init_review_state()
+    was_running = bool(st.session_state.review_running)
 
-    with st.expander("Run Graph Review", expanded=st.session_state.review_running):
-        if st.session_state.review_running:
+    with st.expander("Run Graph Review", expanded=was_running):
+        if was_running:
             st.info("Review in progress…")
 
         col1, col2, col3 = st.columns([2, 1, 1])
         mode = col1.selectbox(
             "Mode",
             ["auto", "global", "local"],
-            disabled=st.session_state.review_running,
+            disabled=was_running,
             help=(
                 "**auto**: randomly picks global or local each time. "
                 "**global**: relation standardization + concept deduplication across the full graph. "
@@ -136,7 +137,7 @@ def _render_review_section() -> None:
             min_value=1,
             max_value=50,
             value=10,
-            disabled=st.session_state.review_running,
+            disabled=was_running,
             help="Number of starting concepts for local mode.",
         )
         col3.write("")  # vertical spacer
@@ -144,21 +145,16 @@ def _render_review_section() -> None:
         start_btn = col3.button(
             "Start Review",
             type="primary",
-            disabled=st.session_state.review_running,
+            disabled=was_running,
             use_container_width=True,
         )
 
-        if start_btn and not st.session_state.review_running:
+        if start_btn and not was_running:
             _start_review(mode=mode, seed_count=int(seed_count))
             st.rerun()
 
-        # Poll for new events while running
-        if st.session_state.review_running:
-            _poll_review_queue()
-            time.sleep(0.4)
-            st.rerun()
-        else:
-            _poll_review_queue()  # drain any final events
+        # Poll for new events; the fragment timer handles the 0.4 s interval.
+        _poll_review_queue()
 
         # Progress log
         if st.session_state.review_events:
@@ -188,6 +184,11 @@ def _render_review_section() -> None:
                 if result.get("agent_summary"):
                     with st.expander("Agent summary"):
                         st.write(result["agent_summary"])
+
+    # When the review just finished, trigger a full page rerun so the graph
+    # visualisation (outside this fragment) refreshes with the updated data.
+    if was_running and not st.session_state.review_running:
+        st.rerun()
 
 
 def render():
