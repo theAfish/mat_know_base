@@ -638,6 +638,9 @@ def search_library(
             or_(
                 Asset.filename.ilike(f"%{token}%"),
                 Asset.mime_type.ilike(f"%{token}%"),
+                Asset.metadata_["title"].astext.ilike(f"%{token}%"),
+                Asset.metadata_["description"].astext.ilike(f"%{token}%"),
+                Asset.metadata_["original_path"].astext.ilike(f"%{token}%"),
             )
             for token in tokens
         ]
