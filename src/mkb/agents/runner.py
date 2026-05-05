@@ -122,6 +122,7 @@ class AgentRunner:
         )
 
         result = RunResult()
+        text_parts_seen: list[str] = []
 
         try:
             async for event in self.runner.run_async(
@@ -144,6 +145,7 @@ class AgentRunner:
                         elif part.text:
                             text = part.text.strip()
                             if text:
+                                text_parts_seen.append(text)
                                 progress_callback(
                                     {
                                         "label": "agent",
@@ -166,6 +168,12 @@ class AgentRunner:
                     result.final_text = "\n".join(
                         p.text for p in event.content.parts if p.text
                     )
+
+            # Some providers stream text but do not consistently flag a final
+            # response event. Fall back to the latest streamed text so the UI
+            # can still display an assistant reply.
+            if not result.final_text and text_parts_seen:
+                result.final_text = text_parts_seen[-1]
         except Exception as exc:
             logger.error("Agent run failed: %s", exc)
             result.success = False

@@ -12,6 +12,7 @@ _KEY_RUNNER = "_orch_runner"
 _KEY_SESSION = "_orch_session_id"
 _KEY_HISTORY = "_orch_history"
 _KEY_JOB_ID = "_orch_job_id"
+_KEY_WAITING_FINISH = "_orch_waiting_finish"
 
 
 def _init_session() -> None:
@@ -24,6 +25,7 @@ def _init_session() -> None:
         st.session_state[_KEY_SESSION] = session_id
         st.session_state[_KEY_HISTORY] = []
         st.session_state[_KEY_JOB_ID] = None
+    st.session_state.setdefault(_KEY_WAITING_FINISH, False)
 
 
 def _dispatch_pending_workflows() -> None:
@@ -96,6 +98,15 @@ def _collect_reply() -> None:
     if job["status"] == "COMPLETED":
         result = job.get("result") or {}
         reply = result.get("reply") or ""
+        if not reply:
+            events = job.get("events") or []
+            agent_text_events = [
+                e.get("message", "")
+                for e in events
+                if e.get("stage") == "agent_text" and e.get("message")
+            ]
+            if agent_text_events:
+                reply = agent_text_events[-1]
         if not reply and job.get("error"):
             reply = f"An error occurred: {job['error']}"
         elif not reply:
@@ -143,6 +154,30 @@ def _render_thinking_indicator() -> None:
             st.markdown(f"*{current}*")
 
 
+def _watch_for_completion() -> None:
+    """Trigger rerun when the active assistant job completes."""
+
+    @st.fragment(run_every=1.0)
+    def _watcher() -> None:
+        if not st.session_state.get(_KEY_WAITING_FINISH):
+            return
+
+        job_id = st.session_state.get(_KEY_JOB_ID)
+        if not job_id:
+            st.session_state[_KEY_WAITING_FINISH] = False
+            return
+
+        from mkb.ui.background_jobs import _init_job_state
+
+        _init_job_state()
+        job = st.session_state.background_jobs.get(job_id)
+        if job and job["status"] in {"COMPLETED", "FAILED"}:
+            st.session_state[_KEY_WAITING_FINISH] = False
+            st.rerun()
+
+    _watcher()
+
+
 def render() -> None:
     st.header("Assistant")
     st.caption("Ask me to check your projects, run workflows, or explain the system state.")
@@ -162,11 +197,13 @@ def render() -> None:
             st.session_state[_KEY_SESSION] = session_id
             st.session_state[_KEY_HISTORY] = []
             st.session_state[_KEY_JOB_ID] = None
+            st.session_state[_KEY_WAITING_FINISH] = False
             st.rerun()
 
     # Chat history + thinking indicator
     _render_chat_history()
     _render_thinking_indicator()
+    _watch_for_completion()
 
     # Chat input — disabled while the agent is thinking
     thinking = _is_thinking()
@@ -191,4 +228,5 @@ def render() -> None:
             },
         )
         st.session_state[_KEY_JOB_ID] = job_id
+        st.session_state[_KEY_WAITING_FINISH] = True
         st.rerun()
