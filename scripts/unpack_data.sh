@@ -137,8 +137,11 @@ if $DO_MINIO; then
         docker run --rm \
             --network host \
             -v "$bucket_dir:/minio_mirror:ro" \
+            --user "$(id -u):$(id -g)" \
+            -e MC_CONFIG_DIR=/tmp/.mc \
+            --entrypoint /bin/sh \
             minio/mc:latest \
-            /bin/sh -c "
+            -c "
                 mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
                 mc mb --ignore-existing mkb/$bucket >/dev/null 2>&1 && \
                 mc mirror --overwrite /minio_mirror/ mkb/$bucket 2>&1 || true
