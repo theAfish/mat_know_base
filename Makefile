@@ -48,6 +48,10 @@ unpack:  ## Restore from snapshot: make unpack file=mkb_data_YYYYMMDD.tar.gz
 	@[ -n "$(file)" ] || (echo "Usage: make unpack file=<archive.tar.gz>"; exit 1)
 	bash scripts/unpack_data.sh $(file)
 
+# ── Server ──────────────────────────────────────────────────────
+server:
+	python -m mkb.cli api --host 127.0.0.1 --port 8503
+
 # ── Tests ───────────────────────────────────────────────────────
 test:
 	pytest tests/ -v

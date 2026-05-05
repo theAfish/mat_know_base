@@ -409,6 +409,17 @@ def cmd_ui(args):
                 process.wait()
 
 
+def cmd_api(args):
+    import uvicorn
+
+    uvicorn.run(
+        "mkb.web.api_server:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+
+
 def cmd_processed(args):
     from mkb.api import list_processed_assets
     processed = list_processed_assets(project_id=args.project_id, limit=args.limit)
@@ -587,6 +598,12 @@ def main():
     p = sub.add_parser("ui", help="Launch the Streamlit UI")
     p.add_argument("--port", type=int, default=8501)
 
+    # ── API ──
+    p = sub.add_parser("api", help="Launch the FastAPI backend for the React UI")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8503)
+    p.add_argument("--reload", action="store_true")
+
     # processed
     p = sub.add_parser("processed", help="List processed outputs")
     p.add_argument("--project-id", "-p", default=None)
@@ -635,6 +652,7 @@ def main():
         "resolve-feedback": cmd_resolve_feedback,
         "review-projections": cmd_review_projections,
         "ui": cmd_ui,
+        "api": cmd_api,
     }
 
     if args.command == "space":

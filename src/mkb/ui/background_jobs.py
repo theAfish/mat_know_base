@@ -233,16 +233,17 @@ def render_project_job_status(project_id: str) -> None:
                 st.error(job["error"])
 
 
-def auto_refresh_if_running(interval_seconds: float = 0.6) -> None:
-    """Register a non-blocking fragment timer that triggers a full rerun while jobs run.
+def auto_refresh_if_running(interval_seconds: float = 2.0) -> None:
+    """Periodically poll background-job queues and update the sidebar monitor.
 
-    Uses ``st.fragment(run_every=...)`` so that the browser-side timer fires the
-    refresh without blocking the Streamlit script thread.  This lets page
-    navigation happen immediately instead of waiting for the sleep to expire.
+    Uses ``st.fragment(run_every=...)`` for non-blocking periodic updates.
+    The fragment polls job queues and renders the sidebar monitor on each
+    cycle.  No ``st.rerun()`` is called inside the fragment — the main page
+    content updates naturally on the next user interaction (navigation, clicks).
     """
     @st.fragment(run_every=interval_seconds)
     def _auto_refresh() -> None:
-        if has_running_jobs():
-            st.rerun()
+        poll_jobs()
+        render_sidebar_monitor()
 
     _auto_refresh()

@@ -86,3 +86,39 @@ def test_agent_runner_reports_text_and_tool_progress():
         "Agent called read_project_files",
         "Done",
     ]
+
+
+def test_agent_runner_uses_latest_text_when_no_final_response_flag():
+    progress_events = []
+
+    async def fake_run_async(**_kwargs):
+        yield SimpleNamespace(
+            content=SimpleNamespace(
+                parts=[SimpleNamespace(text="I am your MKB assistant.", function_call=None)]
+            ),
+            is_final_response=lambda: False,
+        )
+        yield SimpleNamespace(
+            content=SimpleNamespace(
+                parts=[SimpleNamespace(text="How can I help next?", function_call=None)]
+            ),
+            is_final_response=lambda: False,
+        )
+
+    runner = object.__new__(AgentRunner)
+    runner.runner = SimpleNamespace(run_async=fake_run_async)
+
+    result = asyncio.run(
+        runner.run(
+            session_id="session-2",
+            message="who are you",
+            progress_callback=progress_events.append,
+        )
+    )
+
+    assert result.success is True
+    assert result.final_text == "How can I help next?"
+    assert [event["message"] for event in progress_events] == [
+        "I am your MKB assistant.",
+        "How can I help next?",
+    ]

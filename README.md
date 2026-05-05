@@ -119,7 +119,7 @@ Recommended usage flow:
 # 1. Create virtual environment and install
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,processing]"
+pip install -e ".[dev]"
 
 # 2. Copy environment config
 cp .env.example .env
@@ -129,7 +129,43 @@ make up
 
 # 4. Create database tables
 mkb setup
+
+# 5. Start backend API (for the React app)
+make server
+
+# 6. In another terminal, start the React frontend
+cd frontend
+npm install
+npm run dev
 ```
+
+Open http://127.0.0.1:5173.
+
+## Easiest Daily Usage (React + API)
+
+After first-time setup, day-to-day startup is just:
+
+```bash
+# terminal 1
+source .venv/bin/activate
+make up
+make server
+
+# terminal 2
+cd frontend
+npm run dev
+```
+
+If the UI appears empty:
+
+```bash
+mkb projects
+mkb frames
+curl http://127.0.0.1:8503/api/projects?limit=5
+```
+
+- If `mkb projects` has rows but the UI is empty, the API is likely not running on port 8503.
+- If both CLI and API are empty, ingest data first (`mkb ingest ...` or upload from the Projects page).
 
 ## Python API (Primary Interface)
 
@@ -184,9 +220,6 @@ api.review_knowledge_graph()                            # auto mode (random glob
 api.review_knowledge_graph(mode="global", verbose=True) # full graph: standardize + dedup
 api.review_knowledge_graph(mode="local", seed_count=15) # neighborhood review (least-reviewed first)
 counts = api.get_graph_review_counts()                  # per-element review counters
-
-# Streamlit UI
-# mkb ui
 
 # Search papers and data
 results = api.search_library("enamel mineralization")
@@ -252,7 +285,10 @@ mkb kg-extract --frame-id <uuid>                 # build KG for one frame
 mkb kg-show                                       # show merged global concept graph
 mkb kg-show --project-id <uuid>                  # merged graph filtered to one project
 
-# UI
+# Start the FastAPI backend (serves the React UI in production)
+make server
+
+# Start legacy Streamlit UI (optional)
 mkb ui --port 8501
 ```
 
@@ -527,7 +563,7 @@ After unpacking, run `alembic upgrade head` if the schema migration level differ
 ```bash
 # 1. Clone repo and install
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,processing]"
+pip install -e ".[dev]"
 
 # 2. Start services
 make up
@@ -539,6 +575,67 @@ make unpack file=mkb_data_20260429_120000.tar.gz
 alembic upgrade head
 ```
 
+## Frontend (React + Vite)
+
+A React 19 + Vite + TypeScript UI lives in `frontend/`. It replaces the legacy Streamlit UI and communicates with the FastAPI backend through a Vite dev-server proxy.
+
+### Prerequisites
+
+- Node.js 20+ and npm 10+
+- Backend running (`make server`)
+
+### Installation
+
+```bash
+cd frontend
+npm install
+```
+
+### Development
+
+```bash
+# In one terminal — start the backend
+make server
+
+# In another terminal — start the Vite dev server
+cd frontend
+npm run dev
+```
+
+Open http://localhost:5173 (or the port shown in the Vite output).
+
+All `/api/*` requests are proxied to `http://127.0.0.1:8503` by Vite, so no CORS configuration is needed during development.
+
+### Production build
+
+```bash
+cd frontend
+npm run build     # output goes to frontend/dist/
+npm run preview   # serve the production build locally
+```
+
+### Pages
+
+This frontend is a single-page app with sidebar navigation (not URL routes).
+
+| Page | Description |
+|------|-------------|
+| Projects | Browse, upload, and manage research packages |
+| Knowledge Frames | View extracted frames; run processing, extraction, projection, and graph pipelines per project |
+| Projections | Aggregated projection table across papers for a selected space |
+| Dataset Graph | Interactive force-directed concept graph (vis-network, Barnes-Hut physics); supports node/edge coloring by evidence level, review coverage, modification heat, and connectivity |
+| Assistant | LLM assistant interface |
+| Feedback | Review and resolve feedback items |
+
+### Tech stack
+
+- **React 19** + **TypeScript**
+- **Vite 8** (build tool + dev proxy)
+- **Tailwind CSS v4** (CSS-first config, no `tailwind.config.js`)
+- **vis-network 10** — knowledge graph visualization (same library as pyvis)
+- **Zustand v4** — UI state management
+- **Axios v1** — HTTP client
+
 ## Services
 
 | Service | URL | Credentials |
@@ -546,4 +643,5 @@ alembic upgrade head
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | MinIO S3 API | http://localhost:9000 | minioadmin / minioadmin |
 | PostgreSQL | localhost:5432 | mkb / mkb_dev |
-| Streamlit UI | http://localhost:8501 | — |
+| FastAPI backend | http://localhost:8503 | — |
+| React UI (dev) | http://localhost:5173 | — |

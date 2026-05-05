@@ -151,7 +151,6 @@ def _render_review_section() -> None:
 
         if start_btn and not was_running:
             _start_review(mode=mode, seed_count=int(seed_count))
-            st.rerun()
 
         # Poll for new events; the fragment timer handles the 0.4 s interval.
         _poll_review_queue()
@@ -185,10 +184,10 @@ def _render_review_section() -> None:
                     with st.expander("Agent summary"):
                         st.write(result["agent_summary"])
 
-    # When the review just finished, trigger a full page rerun so the graph
-    # visualisation (outside this fragment) refreshes with the updated data.
+    # When the review just finished, prompt the user to trigger a full rerun
+    # so the graph visualization (outside this fragment) refreshes.
     if was_running and not st.session_state.review_running:
-        st.rerun()
+        st.success("Review complete — navigate or click to see the updated graph.")
 
 
 def render():
