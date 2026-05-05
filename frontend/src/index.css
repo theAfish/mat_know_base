@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+/* ReactFlow dark theme overrides */
+.react-flow__background {
+  background-color: rgb(15 23 42);
+}
+.react-flow__controls button {
+  background-color: rgb(30 41 59);
+  border-color: rgb(51 65 85);
+  color: rgb(148 163 184);
+}
+.react-flow__controls button:hover {
+  background-color: rgb(51 65 85);
+}
+.react-flow__minimap {
+  background-color: rgb(15 23 42);
+}

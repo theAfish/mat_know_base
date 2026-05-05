@@ -129,6 +129,9 @@ make up
 
 # 4. Create database tables
 mkb setup
+
+# 5. (Optional) Start the React frontend
+cd frontend && npm install && npm run dev
 ```
 
 ## Python API (Primary Interface)
@@ -184,9 +187,6 @@ api.review_knowledge_graph()                            # auto mode (random glob
 api.review_knowledge_graph(mode="global", verbose=True) # full graph: standardize + dedup
 api.review_knowledge_graph(mode="local", seed_count=15) # neighborhood review (least-reviewed first)
 counts = api.get_graph_review_counts()                  # per-element review counters
-
-# Streamlit UI
-# mkb ui
 
 # Search papers and data
 results = api.search_library("enamel mineralization")
@@ -252,8 +252,8 @@ mkb kg-extract --frame-id <uuid>                 # build KG for one frame
 mkb kg-show                                       # show merged global concept graph
 mkb kg-show --project-id <uuid>                  # merged graph filtered to one project
 
-# UI
-mkb ui --port 8501
+# Start the FastAPI backend (serves the React UI in production)
+make server
 ```
 
 ## Search
@@ -539,6 +539,64 @@ make unpack file=mkb_data_20260429_120000.tar.gz
 alembic upgrade head
 ```
 
+## Frontend (React + Vite)
+
+A React 19 + Vite + TypeScript UI lives in `frontend/`. It replaces the legacy Streamlit UI and communicates with the FastAPI backend through a Vite dev-server proxy.
+
+### Prerequisites
+
+- Node.js 20+ and npm 10+
+- Backend running (`make server`)
+
+### Installation
+
+```bash
+cd frontend
+npm install
+```
+
+### Development
+
+```bash
+# In one terminal — start the backend
+make server
+
+# In another terminal — start the Vite dev server
+cd frontend
+npm run dev
+```
+
+Open http://localhost:5173 (or the port shown in the Vite output).
+
+All `/api/*` requests are proxied to `http://127.0.0.1:8503` by Vite, so no CORS configuration is needed during development.
+
+### Production build
+
+```bash
+cd frontend
+npm run build     # output goes to frontend/dist/
+npm run preview   # serve the production build locally
+```
+
+### Pages
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Research Projects | `/` | Browse, upload, and manage research packages |
+| Knowledge Frames | `/frames` | View extracted frames; run processing, extraction, projection, and graph pipelines per project |
+| Projections | `/projections` | Aggregated projection table across all papers for a selected space |
+| Knowledge Graph | `/graph` | Interactive force-directed concept graph (vis-network, Barnes-Hut physics); supports node/edge coloring by evidence level, review coverage, modification heat, and connectivity |
+| Chat | `/chat` | LLM chat interface (experimental) |
+
+### Tech stack
+
+- **React 19** + **TypeScript**
+- **Vite 8** (build tool + dev proxy)
+- **Tailwind CSS v4** (CSS-first config, no `tailwind.config.js`)
+- **vis-network 10** — knowledge graph visualization (same library as pyvis)
+- **Zustand v4** — UI state management
+- **Axios v1** — HTTP client
+
 ## Services
 
 | Service | URL | Credentials |
@@ -546,4 +604,5 @@ alembic upgrade head
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | MinIO S3 API | http://localhost:9000 | minioadmin / minioadmin |
 | PostgreSQL | localhost:5432 | mkb / mkb_dev |
-| Streamlit UI | http://localhost:8501 | — |
+| FastAPI backend | http://localhost:8503 | — |
+| React UI (dev) | http://localhost:5173 | — |
