@@ -72,8 +72,11 @@ for bucket in "${MINIO_BUCKETS[@]}"; do
     docker run --rm \
         --network host \
         -v "$STAGING/minio/$bucket:/minio_mirror" \
+        --user "$(id -u):$(id -g)" \
+        -e MC_CONFIG_DIR=/tmp/.mc \
+        --entrypoint /bin/sh \
         minio/mc:latest \
-        /bin/sh -c "
+        -c "
             mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
             mc mirror --overwrite mkb/$bucket /minio_mirror/ 2>&1 || true
         "
