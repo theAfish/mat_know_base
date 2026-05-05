@@ -119,7 +119,7 @@ Recommended usage flow:
 # 1. Create virtual environment and install
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,processing]"
+pip install -e ".[dev]"
 
 # 2. Copy environment config
 cp .env.example .env
@@ -130,9 +130,42 @@ make up
 # 4. Create database tables
 mkb setup
 
-# 5. (Optional) Start the React frontend
-cd frontend && npm install && npm run dev
+# 5. Start backend API (for the React app)
+make server
+
+# 6. In another terminal, start the React frontend
+cd frontend
+npm install
+npm run dev
 ```
+
+Open http://127.0.0.1:5173.
+
+## Easiest Daily Usage (React + API)
+
+After first-time setup, day-to-day startup is just:
+
+```bash
+# terminal 1
+source .venv/bin/activate
+make up
+make server
+
+# terminal 2
+cd frontend
+npm run dev
+```
+
+If the UI appears empty:
+
+```bash
+mkb projects
+mkb frames
+curl http://127.0.0.1:8503/api/projects?limit=5
+```
+
+- If `mkb projects` has rows but the UI is empty, the API is likely not running on port 8503.
+- If both CLI and API are empty, ingest data first (`mkb ingest ...` or upload from the Projects page).
 
 ## Python API (Primary Interface)
 
@@ -254,6 +287,9 @@ mkb kg-show --project-id <uuid>                  # merged graph filtered to one 
 
 # Start the FastAPI backend (serves the React UI in production)
 make server
+
+# Start legacy Streamlit UI (optional)
+mkb ui --port 8501
 ```
 
 ## Search
@@ -527,7 +563,7 @@ After unpacking, run `alembic upgrade head` if the schema migration level differ
 ```bash
 # 1. Clone repo and install
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,processing]"
+pip install -e ".[dev]"
 
 # 2. Start services
 make up
@@ -580,13 +616,16 @@ npm run preview   # serve the production build locally
 
 ### Pages
 
-| Page | Route | Description |
-|------|-------|-------------|
-| Research Projects | `/` | Browse, upload, and manage research packages |
-| Knowledge Frames | `/frames` | View extracted frames; run processing, extraction, projection, and graph pipelines per project |
-| Projections | `/projections` | Aggregated projection table across all papers for a selected space |
-| Knowledge Graph | `/graph` | Interactive force-directed concept graph (vis-network, Barnes-Hut physics); supports node/edge coloring by evidence level, review coverage, modification heat, and connectivity |
-| Chat | `/chat` | LLM chat interface (experimental) |
+This frontend is a single-page app with sidebar navigation (not URL routes).
+
+| Page | Description |
+|------|-------------|
+| Projects | Browse, upload, and manage research packages |
+| Knowledge Frames | View extracted frames; run processing, extraction, projection, and graph pipelines per project |
+| Projections | Aggregated projection table across papers for a selected space |
+| Dataset Graph | Interactive force-directed concept graph (vis-network, Barnes-Hut physics); supports node/edge coloring by evidence level, review coverage, modification heat, and connectivity |
+| Assistant | LLM assistant interface |
+| Feedback | Review and resolve feedback items |
 
 ### Tech stack
 
