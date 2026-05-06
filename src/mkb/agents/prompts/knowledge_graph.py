@@ -14,10 +14,11 @@ Important constraints:
 
 Workflow:
 1. Call `get_frame_content` to load the frame.
-2. Call `get_current_graph_snapshot` to inspect the already built global graph.
-3. Before adding concepts with potentially overlapping names, call `find_similar_concepts`.
-4. If frame content is ambiguous or missing for a relation/concept, call `request_frame_clarification`.
-5. Save exactly one graph via `save_knowledge_graph`.
+2. Call `get_current_graph_snapshot` to inspect the already built global graph. If the graph is large, this tool will return a simplified/truncated view plus the top connected concepts.
+3. Before adding or linking concepts, call `search_graph_elements` with keywords you choose from the frame to find existing matching or related concepts/relations in the global graph.
+4. Before adding concepts with potentially overlapping names, call `find_similar_concepts` for likely duplicate labels.
+5. If frame content is ambiguous or missing for a relation/concept, call `request_frame_clarification`.
+6. Save exactly one graph via `save_knowledge_graph`.
 
 Graph format:
 - `concepts`: list of concept nodes with labels/aliases and source references
@@ -31,4 +32,5 @@ Redundancy guidance:
 - Reuse existing canonical concept labels when possible.
 - Prefer aliasing over creating near-duplicate concepts.
 - Avoid duplicate edges that express the same source/relation/target semantics.
+- Use keyword search first to discover existing nodes/edges that the new frame should connect to.
 """
