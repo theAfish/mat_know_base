@@ -71,11 +71,23 @@ interface VisGraphProps {
   edgeColorMode: string
 }
 
+type GraphSelection =
+  | { kind: 'node'; concept: GraphConcept }
+  | { kind: 'edge'; relation: GraphRelation }
+
+interface HoverCardState {
+  item: GraphSelection
+  x: number
+  y: number
+}
+
 function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorMode }: VisGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const networkRef = useRef<Network | null>(null)
   const nodesRef = useRef<DataSet<{ id: string; label: string; title: string; color: string; size: number }> | null>(null)
   const edgesRef = useRef<DataSet<{ id: string; from: string; to: string; title: string; color: { color: string; opacity: number } }> | null>(null)
+  const [hoverCard, setHoverCard] = useState<HoverCardState | null>(null)
+  const [selectedItem, setSelectedItem] = useState<GraphSelection | null>(null)
 
   // ── Pre-compute shared quantities ─────────────────────────────────────────
   const degree = useMemo<Record<string, number>>(() => {
@@ -89,6 +101,11 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
   const maxDegree = useMemo(() => Math.max(...Object.values(degree), 1), [degree])
   const rc = useMemo(() => reviewCounts ?? {}, [reviewCounts])
   const maxRc = useMemo(() => Math.max(...Object.values(rc), 0), [rc])
+  const conceptByLabel = useMemo(() => Object.fromEntries(concepts.map(concept => [concept.label, concept])), [concepts])
+  const relationById = useMemo(
+    () => Object.fromEntries(relations.map((relation, index) => [`e${index}`, relation])),
+    [relations],
+  )
 
   const EV_LABELS: Record<number, string> = { 1: 'causal', 2: 'direct', 3: 'correlative', 4: 'predicted' }
 
@@ -152,13 +169,67 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
       },
     )
 
+    const network = networkRef.current
+
+    const getHoverPosition = (x: number, y: number) => {
+      if (!containerRef.current) return { x, y }
+      const rect = containerRef.current.getBoundingClientRect()
+      return {
+        x: Math.min(x + 16, Math.max(rect.width - 280, 16)),
+        y: Math.min(y + 16, Math.max(rect.height - 170, 16)),
+      }
+    }
+
+    const handleHoverNode = (params: { node?: string; pointer: { DOM: { x: number; y: number } } }) => {
+      if (!params.node) return
+      const concept = conceptByLabel[params.node]
+      if (!concept) return
+      const position = getHoverPosition(params.pointer.DOM.x, params.pointer.DOM.y)
+      setHoverCard({ item: { kind: 'node', concept }, ...position })
+    }
+
+    const handleHoverEdge = (params: { edge?: string; pointer: { DOM: { x: number; y: number } } }) => {
+      if (!params.edge) return
+      const relation = relationById[params.edge]
+      if (!relation) return
+      const position = getHoverPosition(params.pointer.DOM.x, params.pointer.DOM.y)
+      setHoverCard({ item: { kind: 'edge', relation }, ...position })
+    }
+
+    const clearHover = () => setHoverCard(current => (current ? null : current))
+
+    const handleClick = (params: { nodes: string[]; edges: string[] }) => {
+      const [nodeId] = params.nodes
+      if (nodeId && conceptByLabel[nodeId]) {
+        setSelectedItem({ kind: 'node', concept: conceptByLabel[nodeId] })
+        return
+      }
+      const [edgeId] = params.edges
+      if (edgeId && relationById[edgeId]) {
+        setSelectedItem({ kind: 'edge', relation: relationById[edgeId] })
+        return
+      }
+      setSelectedItem(null)
+    }
+
+    network.on('hoverNode', handleHoverNode)
+    network.on('hoverEdge', handleHoverEdge)
+    network.on('blurNode', clearHover)
+    network.on('blurEdge', clearHover)
+    network.on('click', handleClick)
+
     return () => {
+      network.off('hoverNode', handleHoverNode)
+      network.off('hoverEdge', handleHoverEdge)
+      network.off('blurNode', clearHover)
+      network.off('blurEdge', clearHover)
+      network.off('click', handleClick)
       networkRef.current?.destroy()
       networkRef.current = null
       nodesRef.current = null
       edgesRef.current = null
     }
-  }, [concepts, relations]) // intentionally exclude color modes — handled by effect 2
+  }, [concepts, relations, conceptByLabel, relationById]) // intentionally exclude color modes — handled by effect 2
 
   // ── Effect 2: update colors in-place without destroying the network ───────
   useEffect(() => {
@@ -166,6 +237,20 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
     nodesRef.current.update(concepts.map(buildNode))
     edgesRef.current.update(relations.map(buildEdge))
   }, [nodeColorMode, edgeColorMode, reviewCounts, buildNode, buildEdge, concepts, relations])
+
+  useEffect(() => {
+    setHoverCard(current => {
+      if (!current) return current
+      if (current.item.kind === 'node' && conceptByLabel[current.item.concept.label]) return current
+      if (current.item.kind === 'edge' && Object.values(relationById).includes(current.item.relation)) return current
+      return null
+    })
+    setSelectedItem(current => {
+      if (!current) return current
+      if (current.kind === 'node') return conceptByLabel[current.concept.label] ? current : null
+      return relations.includes(current.relation) ? current : null
+    })
+  }, [conceptByLabel, relationById, relations])
 
   // ── Effect 3: redraw on container resize ──────────────────────────────────
   useEffect(() => {
@@ -180,11 +265,154 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
     return () => ro.disconnect()
   }, [])
 
+  const renderHoverSummary = () => {
+    if (!hoverCard) return null
+    const { item, x, y } = hoverCard
+    const content = item.kind === 'node'
+      ? [
+          { label: 'Concept', value: item.concept.label },
+          { label: 'Aliases', value: (item.concept.aliases ?? []).join(', ') || 'None' },
+          { label: 'Connections', value: String(degree[item.concept.label] ?? 0) },
+        ]
+      : [
+          { label: 'Relation', value: item.relation.relation },
+          { label: 'Path', value: `${item.relation.source} -> ${item.relation.target}` },
+          { label: 'Evidence', value: EV_LABELS[item.relation.evidence_level ?? 3] ?? String(item.relation.evidence_level ?? 3) },
+        ]
+
+    return (
+      <div
+        className="pointer-events-none absolute z-20 w-64 rounded-lg border border-slate-600 bg-slate-950/95 px-3 py-2 shadow-2xl"
+        style={{ left: x, top: y }}
+      >
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-300">
+          {item.kind === 'node' ? 'Node' : 'Edge'}
+        </p>
+        <div className="mt-2 space-y-1">
+          {content.map(entry => (
+            <div key={entry.label} className="text-xs leading-5 text-slate-200">
+              <span className="text-slate-400">{entry.label}:</span> {entry.value}
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  const renderDetails = () => {
+    if (!selectedItem) return null
+    if (selectedItem.kind === 'node') {
+      const concept = selectedItem.concept
+      return (
+        <div className="absolute bottom-4 right-4 z-20 w-[24rem] rounded-xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-300">Node details</p>
+              <h3 className="mt-1 text-lg font-semibold text-slate-100">{concept.label}</h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedItem(null)}
+              className="text-sm text-slate-400 hover:text-slate-200"
+            >
+              Close
+            </button>
+          </div>
+          <div className="mt-4 space-y-3 text-sm text-slate-200">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Aliases</p>
+              <p>{(concept.aliases ?? []).join(', ') || 'None'}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Connections</p>
+                <p>{degree[concept.label] ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Modified</p>
+                <p>{concept.modification_count ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Projects</p>
+                <p>{concept.source_project_ids?.length ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Frames</p>
+                <p>{concept.source_frame_ids?.length ?? 0}</p>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Source project IDs</p>
+              <p className="break-words">{concept.source_project_ids?.join(', ') || 'None'}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Source frame IDs</p>
+              <p className="break-words">{concept.source_frame_ids?.join(', ') || 'None'}</p>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    const relation = selectedItem.relation
+    return (
+      <div className="absolute bottom-4 right-4 z-20 w-[24rem] rounded-xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-300">Edge details</p>
+            <h3 className="mt-1 text-lg font-semibold text-slate-100">{relation.relation}</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedItem(null)}
+            className="text-sm text-slate-400 hover:text-slate-200"
+          >
+            Close
+          </button>
+        </div>
+        <div className="mt-4 space-y-3 text-sm text-slate-200">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-slate-400">Direction</p>
+            <p>{`${relation.source} -> ${relation.target}`}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Evidence</p>
+              <p>{EV_LABELS[relation.evidence_level ?? 3] ?? String(relation.evidence_level ?? 3)}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Modified</p>
+              <p>{relation.modification_count ?? 0}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Project</p>
+              <p>{relation.source_project_id ?? 'Unknown'}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400">Frame</p>
+              <p>{relation.source_frame_id ?? 'Unknown'}</p>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-slate-400">Knowledge reference</p>
+            <pre className="mt-1 max-h-32 overflow-auto rounded bg-slate-950/70 p-2 text-xs text-slate-300 whitespace-pre-wrap">
+              {relation.knowledge_ref ? JSON.stringify(relation.knowledge_ref, null, 2) : 'None'}
+            </pre>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div
-      ref={containerRef}
-      style={{ width: '100%', height: '100%', minHeight: '400px', background: '#0e1117' }}
-    />
+    <div className="relative h-full w-full" style={{ minHeight: '400px', background: '#0e1117' }}>
+      <div
+        ref={containerRef}
+        style={{ width: '100%', height: '100%' }}
+      />
+      {renderHoverSummary()}
+      {renderDetails()}
+    </div>
   )
 }
 
