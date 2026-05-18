@@ -8,6 +8,7 @@ for clarification, and flag fundamental pipeline issues as feedback.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +26,11 @@ from mkb.db.models import (
 from mkb.spaces.schema_utils import normalize_projection_data
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_FRAME_CONTENT_MAX_CHARS = 30000
+DEFAULT_FRAME_CONTENT_MAX_LIST_ITEMS = 80
+DEFAULT_FRAME_CONTENT_MAX_DICT_ITEMS = 120
+DEFAULT_FRAME_CONTENT_MAX_STRING_CHARS = 1200
 
 _CORE_STUDY_TRUE_MARKERS = {
     "core",
@@ -116,10 +122,82 @@ def _inject_source_project_references(data, source_project_id: str, *, _from_lis
     return data
 
 
-def get_frame_content(frame_id: str) -> dict:
+def _trim_string(text: str, max_chars: int) -> tuple[str, bool]:
+    if max_chars <= 0:
+        return "", bool(text)
+    if len(text) <= max_chars:
+        return text, False
+    if max_chars <= 3:
+        return text[:max_chars], True
+    return text[: max_chars - 3] + "...", True
+
+
+def _compact_json_payload(
+    value,
+    *,
+    max_chars: int,
+    max_list_items: int,
+    max_dict_items: int,
+    max_string_chars: int,
+):
+    """Compact a JSON-like object while preserving broad structure."""
+
+    truncated = False
+
+    def _walk(node):
+        nonlocal truncated
+        if isinstance(node, str):
+            text, did_trim = _trim_string(node, max_string_chars)
+            truncated = truncated or did_trim
+            return text
+        if isinstance(node, list):
+            if len(node) > max_list_items:
+                truncated = True
+            return [_walk(item) for item in node[:max_list_items]]
+        if isinstance(node, dict):
+            items = list(node.items())
+            if len(items) > max_dict_items:
+                truncated = True
+            compacted = {}
+            for key, val in items[:max_dict_items]:
+                compacted[key] = _walk(val)
+            return compacted
+        return node
+
+    compact = _walk(value)
+
+    try:
+        encoded = json.dumps(compact, ensure_ascii=True)
+    except Exception:
+        return compact, True
+
+    if len(encoded) <= max_chars:
+        return compact, truncated
+
+    # Second-pass hard trim if serialized payload is still too large.
+    truncated = True
+    compact2 = _walk(value if isinstance(value, dict) else {"value": value})
+    encoded2 = json.dumps(compact2, ensure_ascii=True)
+    if len(encoded2) <= max_chars:
+        return compact2 if isinstance(value, dict) else compact2.get("value"), truncated
+
+    # Last-resort: return a compact textual preview in shape-preserving envelope.
+    preview, _ = _trim_string(encoded2, max_chars)
+    if isinstance(value, dict):
+        return {"_preview": preview}, True
+    return {"_preview": preview}, True
+
+
+def get_frame_content(
+    frame_id: str,
+    max_chars: int = DEFAULT_FRAME_CONTENT_MAX_CHARS,
+    max_list_items: int = DEFAULT_FRAME_CONTENT_MAX_LIST_ITEMS,
+    max_dict_items: int = DEFAULT_FRAME_CONTENT_MAX_DICT_ITEMS,
+    max_string_chars: int = DEFAULT_FRAME_CONTENT_MAX_STRING_CHARS,
+) -> dict:
     """Read the knowledge frame content for projection.
 
-    Returns the full frame content dict, or an error if not found.
+    Returns a compacted frame content payload bounded for model-safe tool responses.
     """
     fid = parse_uuidish(frame_id)
     if not fid:
@@ -129,13 +207,46 @@ def get_frame_content(frame_id: str) -> dict:
         frame = session.query(KnowledgeFrame).filter_by(frame_id=fid).first()
         if not frame:
             return {"error": f"Frame {frame_id} not found."}
+
+        safe_max_chars = max(2000, min(int(max_chars), 120000))
+        safe_list_items = max(10, min(int(max_list_items), 300))
+        safe_dict_items = max(20, min(int(max_dict_items), 400))
+        safe_string_chars = max(200, min(int(max_string_chars), 5000))
+
+        compact_content, content_truncated = _compact_json_payload(
+            frame.content or {},
+            max_chars=safe_max_chars,
+            max_list_items=safe_list_items,
+            max_dict_items=safe_dict_items,
+            max_string_chars=safe_string_chars,
+        )
+        compact_annotations, ann_truncated = _compact_json_payload(
+            frame.agent_annotations or {},
+            max_chars=max(1000, min(safe_max_chars // 3, 40000)),
+            max_list_items=safe_list_items,
+            max_dict_items=safe_dict_items,
+            max_string_chars=safe_string_chars,
+        )
+
+        extraction_summary, summary_truncated = _trim_string(
+            str(frame.extraction_summary or ""),
+            max(500, min(safe_string_chars * 2, 10000)),
+        )
+
         return {
             "frame_id": str(frame.frame_id),
             "project_id": str(frame.project_id),
             "status": frame.status.value,
-            "content": frame.content or {},
-            "extraction_summary": frame.extraction_summary,
-            "agent_annotations": frame.agent_annotations or {},
+            "content": compact_content,
+            "extraction_summary": extraction_summary,
+            "agent_annotations": compact_annotations,
+            "content_truncated": bool(content_truncated or ann_truncated or summary_truncated),
+            "content_limits": {
+                "max_chars": safe_max_chars,
+                "max_list_items": safe_list_items,
+                "max_dict_items": safe_dict_items,
+                "max_string_chars": safe_string_chars,
+            },
         }
 
 

@@ -2,6 +2,7 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 from mkb.agents.tools.feedback import get_pending_feedback
+from mkb.agents.tools.projection import _compact_json_payload
 from mkb.agents.tools.reading import read_image_metadata
 from mkb.db.models import KnowledgeFrame, Projection
 
@@ -173,3 +174,28 @@ def test_request_frame_clarification_skips_annotation_when_frame_missing():
     assert result == clarification_result
     # commit should NOT have been called (no frame to update)
     write_session.commit.assert_not_called()
+
+
+def test_compact_json_payload_trims_large_strings_lists_and_dicts():
+    payload = {
+        f"key_{i}": {
+            "text": "x" * 5000,
+            "items": list(range(200)),
+        }
+        for i in range(200)
+    }
+
+    compacted, truncated = _compact_json_payload(
+        payload,
+        max_chars=20000,
+        max_list_items=20,
+        max_dict_items=25,
+        max_string_chars=120,
+    )
+
+    assert truncated is True
+    assert isinstance(compacted, dict)
+    assert len(compacted) <= 25
+    first_value = next(iter(compacted.values()))
+    assert len(first_value["items"]) <= 20
+    assert len(first_value["text"]) <= 120

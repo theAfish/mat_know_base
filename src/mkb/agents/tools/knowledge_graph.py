@@ -17,6 +17,13 @@ from mkb.db.models import KnowledgeFrame, Projection, ProjectionStatus
 from mkb.knowledge_graph import ensure_global_kg_space_id
 
 
+MAX_AGENT_GRAPH_CONCEPTS = 80
+MAX_AGENT_GRAPH_RELATIONS = 120
+MAX_AGENT_TOP_CONNECTED_CONCEPTS = 25
+MAX_AGENT_SEARCH_RESULTS = 40
+MAX_AGENT_ALIAS_PREVIEW = 3
+
+
 def _normalize_label(value: str) -> str:
     collapsed = re.sub(r"\s+", " ", str(value or "").strip().lower())
     return collapsed
@@ -69,6 +76,152 @@ def _normalize_reference_list(value) -> list[dict[str, str]]:
         if item:
             normalized.append(item)
     return normalized
+
+
+def _simplify_concept_for_agent(concept: dict) -> dict:
+    item = {"label": str(concept.get("label") or "").strip()}
+    aliases = _coerce_string_list(concept.get("aliases") or [])
+    if aliases:
+        item["aliases"] = aliases[:MAX_AGENT_ALIAS_PREVIEW]
+    return item
+
+
+def _simplify_relation_for_agent(relation: dict) -> dict:
+    item = {
+        "source": str(relation.get("source") or "").strip(),
+        "relation": str(relation.get("relation") or "").strip(),
+        "target": str(relation.get("target") or "").strip(),
+    }
+    if "evidence_level" in relation:
+        item["evidence_level"] = relation["evidence_level"]
+    return item
+
+
+def _degree_counts(graph: dict) -> Counter:
+    degree = Counter()
+    for relation in graph.get("relations", []):
+        source = str(relation.get("source") or "").strip()
+        target = str(relation.get("target") or "").strip()
+        if source:
+            degree[_normalize_label(source)] += 1
+        if target:
+            degree[_normalize_label(target)] += 1
+    return degree
+
+
+def _summarize_graph_for_agent(
+    graph: dict,
+    concept_limit: int = MAX_AGENT_GRAPH_CONCEPTS,
+    relation_limit: int = MAX_AGENT_GRAPH_RELATIONS,
+    top_connected_limit: int = MAX_AGENT_TOP_CONNECTED_CONCEPTS,
+) -> dict:
+    concepts = list(graph.get("concepts", []))
+    relations = list(graph.get("relations", []))
+    degree = _degree_counts(graph)
+
+    top_connected = []
+    for concept in concepts:
+        label = str(concept.get("label") or "").strip()
+        if not label:
+            continue
+        top_connected.append(
+            {
+                "label": label,
+                "degree": degree.get(_normalize_label(label), 0),
+                "aliases": _coerce_string_list(concept.get("aliases") or [])[:MAX_AGENT_ALIAS_PREVIEW],
+            }
+        )
+    top_connected.sort(key=lambda row: (-row["degree"], _normalize_label(row["label"])))
+    top_connected = top_connected[: max(1, min(int(top_connected_limit), 100))]
+
+    summary = {
+        "concept_count": len(concepts),
+        "relation_count": len(relations),
+        "top_connected_concepts": top_connected,
+    }
+
+    concept_limit = max(1, min(int(concept_limit), 500))
+    relation_limit = max(1, min(int(relation_limit), 1000))
+    if len(concepts) <= concept_limit and len(relations) <= relation_limit:
+        return {
+            "response_mode": "full",
+            "truncated": False,
+            "graph": graph,
+            "graph_summary": summary,
+        }
+
+    ranked_concepts = sorted(
+        concepts,
+        key=lambda concept: (
+            -degree.get(_normalize_label(concept.get("label") or ""), 0),
+            _normalize_label(concept.get("label") or ""),
+        ),
+    )
+    ranked_relations = sorted(
+        relations,
+        key=lambda relation: (
+            -max(
+                degree.get(_normalize_label(relation.get("source") or ""), 0),
+                degree.get(_normalize_label(relation.get("target") or ""), 0),
+            ),
+            _normalize_label(relation.get("relation") or ""),
+            _normalize_label(relation.get("source") or ""),
+            _normalize_label(relation.get("target") or ""),
+        ),
+    )
+
+    return {
+        "response_mode": "summary",
+        "truncated": True,
+        "graph": {
+            "concepts": [_simplify_concept_for_agent(concept) for concept in ranked_concepts[:concept_limit]],
+            "relations": [_simplify_relation_for_agent(relation) for relation in ranked_relations[:relation_limit]],
+        },
+        "graph_summary": {
+            **summary,
+            "returned_concepts": min(len(concepts), concept_limit),
+            "returned_relations": min(len(relations), relation_limit),
+        },
+    }
+
+
+def _normalize_search_terms(value) -> list[str]:
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    terms = []
+    seen = set()
+    for item in items:
+        text = _normalize_label(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        terms.append(text)
+    return terms
+
+
+def _keyword_match_score(haystacks: list[str], terms: list[str]) -> tuple[int, list[str]]:
+    matched_terms: list[str] = []
+    score = 0
+    for term in terms:
+        term_tokens = set(term.split())
+        term_score = 0
+        for haystack in haystacks:
+            if not haystack:
+                continue
+            if haystack == term:
+                term_score = max(term_score, 100)
+            elif term in haystack or haystack in term:
+                term_score = max(term_score, 80)
+            elif term_tokens:
+                haystack_tokens = set(haystack.split())
+                overlap = len(term_tokens & haystack_tokens)
+                if overlap:
+                    term_score = max(term_score, int(60 * overlap / max(len(term_tokens), len(haystack_tokens))))
+        if term_score > 0:
+            matched_terms.append(term)
+            score += term_score
+    return score, matched_terms
 
 
 def normalize_knowledge_graph_payload(data: dict | None) -> tuple[dict, dict]:
@@ -259,7 +412,14 @@ def normalize_knowledge_graph_payload(data: dict | None) -> tuple[dict, dict]:
     return payload, validation
 
 
-def get_current_graph_snapshot(space_id: str, exclude_projection_id: str | None = None) -> dict:
+def get_current_graph_snapshot(
+    space_id: str,
+    exclude_projection_id: str | None = None,
+    full_graph: bool = False,
+    concept_limit: int = MAX_AGENT_GRAPH_CONCEPTS,
+    relation_limit: int = MAX_AGENT_GRAPH_RELATIONS,
+    top_connected_limit: int = MAX_AGENT_TOP_CONNECTED_CONCEPTS,
+) -> dict:
     """Get merged graph data for redundancy checks before saving."""
     sid = parse_uuidish(space_id)
     if not sid:
@@ -288,22 +448,38 @@ def get_current_graph_snapshot(space_id: str, exclude_projection_id: str | None 
             aggregate["relations"].extend(payload["relations"])
 
     normalized, validation = normalize_knowledge_graph_payload(aggregate)
-    return {
+    agent_view = _summarize_graph_for_agent(
+        normalized,
+        concept_limit=concept_limit,
+        relation_limit=relation_limit,
+        top_connected_limit=top_connected_limit,
+    )
+
+    result = {
         "space_id": str(sid),
         "projection_count": len(rows),
-        "graph": normalized,
+        "graph": normalized if full_graph else agent_view["graph"],
+        "response_mode": "full" if full_graph else agent_view["response_mode"],
+        "truncated": False if full_graph else agent_view["truncated"],
+        "graph_summary": agent_view["graph_summary"],
         "redundancy_report": {
             "duplicate_relation_count": validation.get("duplicate_relation_count", 0),
             "duplicate_relations": validation.get("duplicate_relations", []),
         },
     }
+    if not full_graph and agent_view["truncated"]:
+        result["guidance"] = (
+            "Snapshot truncated for agent safety. Use search_graph_elements with domain keywords and "
+            "find_similar_concepts for specific labels before saving new concepts or relations."
+        )
+    return result
 
 
 def find_similar_concepts(space_id: str, concept_label: str, limit: int = 10) -> dict:
     """Find concept labels in the current global graph that are likely duplicates."""
     if not concept_label or not str(concept_label).strip():
         return {"error": "concept_label is required."}
-    snapshot = get_current_graph_snapshot(space_id)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
     if snapshot.get("error"):
         return snapshot
 
@@ -335,6 +511,82 @@ def find_similar_concepts(space_id: str, concept_label: str, limit: int = 10) ->
     return {
         "query": query_label,
         "similar_concepts": scored[: max(1, min(limit, 50))],
+    }
+
+
+def search_graph_elements(
+    space_id: str,
+    keyword: str | list[str],
+    element_type: str = "both",
+    limit: int = 20,
+) -> dict:
+    """Search existing graph concepts and relations by keyword to find likely connection targets."""
+    terms = _normalize_search_terms(keyword)
+    if not terms:
+        return {"error": "keyword is required."}
+    if element_type not in {"concept", "relation", "both"}:
+        return {"error": "element_type must be one of: concept, relation, both."}
+
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    if snapshot.get("error"):
+        return snapshot
+
+    effective_limit = max(1, min(int(limit), MAX_AGENT_SEARCH_RESULTS))
+    matched_concepts = []
+    matched_relations = []
+
+    if element_type in ("concept", "both"):
+        for concept in snapshot["graph"]["concepts"]:
+            haystacks = [_normalize_label(concept.get("label") or "")]
+            haystacks.extend(_normalize_label(alias) for alias in concept.get("aliases", []))
+            score, matched_terms = _keyword_match_score(haystacks, terms)
+            if score <= 0:
+                continue
+            matched_concepts.append(
+                {
+                    **_simplify_concept_for_agent(concept),
+                    "score": score,
+                    "matched_terms": matched_terms,
+                }
+            )
+
+    if element_type in ("relation", "both"):
+        for relation in snapshot["graph"]["relations"]:
+            haystacks = [
+                _normalize_label(relation.get("source") or ""),
+                _normalize_label(relation.get("relation") or ""),
+                _normalize_label(relation.get("target") or ""),
+            ]
+            score, matched_terms = _keyword_match_score(haystacks, terms)
+            if score <= 0:
+                continue
+            matched_relations.append(
+                {
+                    **_simplify_relation_for_agent(relation),
+                    "score": score,
+                    "matched_terms": matched_terms,
+                }
+            )
+
+    matched_concepts.sort(key=lambda row: (-row["score"], _normalize_label(row["label"])))
+    matched_relations.sort(
+        key=lambda row: (
+            -row["score"],
+            _normalize_label(row["relation"]),
+            _normalize_label(row["source"]),
+            _normalize_label(row["target"]),
+        )
+    )
+
+    return {
+        "keyword": keyword,
+        "normalized_terms": terms,
+        "concepts": matched_concepts[:effective_limit],
+        "relations": matched_relations[:effective_limit],
+        "concept_count": len(matched_concepts),
+        "relation_count": len(matched_relations),
+        "returned_limit": effective_limit,
+        "truncated": len(matched_concepts) > effective_limit or len(matched_relations) > effective_limit,
     }
 
 
@@ -407,6 +659,7 @@ KNOWLEDGE_GRAPH_TOOLS = [
     get_global_kg_space,
     get_frame_content,
     get_current_graph_snapshot,
+    search_graph_elements,
     find_similar_concepts,
     save_knowledge_graph,
     request_frame_clarification,

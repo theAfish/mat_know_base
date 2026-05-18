@@ -21,6 +21,12 @@ from mkb.db.models import GraphElementReview, Projection, ProjectionStatus
 from mkb.knowledge_graph import ensure_global_kg_space_id
 
 
+MAX_DETAIL_RELATIONS = 120
+MAX_NEIGHBOR_RELATIONS = 160
+MAX_NEIGHBOR_CONCEPTS = 120
+MAX_SEARCH_RESULTS = 80
+
+
 # ── Session-level tracking (orchestration layer, not exposed to agent) ─────────
 
 
@@ -86,7 +92,7 @@ def get_concept_details(space_id: str, concept_label: str) -> dict:
         return {"error": "concept_label is required."}
 
     _fire_progress({"tool": "get_concept_details", "element_type": "concept", "label": concept_label})
-    snapshot = get_current_graph_snapshot(space_id)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
     if snapshot.get("error"):
         return snapshot
 
@@ -100,8 +106,11 @@ def get_concept_details(space_id: str, concept_label: str) -> dict:
     _mark_examined(_concept_key(concept_label))
 
     relations = snapshot["graph"]["relations"]
-    outgoing = [r for r in relations if _normalize_label(r["source"]) == norm]
-    incoming = [r for r in relations if _normalize_label(r["target"]) == norm]
+    outgoing_all = [r for r in relations if _normalize_label(r["source"]) == norm]
+    incoming_all = [r for r in relations if _normalize_label(r["target"]) == norm]
+
+    outgoing = outgoing_all[:MAX_DETAIL_RELATIONS]
+    incoming = incoming_all[:MAX_DETAIL_RELATIONS]
 
     for r in outgoing + incoming:
         _mark_examined(_relation_key(r["source"], r["relation"], r["target"]))
@@ -110,7 +119,10 @@ def get_concept_details(space_id: str, concept_label: str) -> dict:
         "concept": concept,
         "outgoing_relations": outgoing,
         "incoming_relations": incoming,
-        "relation_count": len(outgoing) + len(incoming),
+        "relation_count": len(outgoing_all) + len(incoming_all),
+        "truncated": len(outgoing_all) > len(outgoing) or len(incoming_all) > len(incoming),
+        "returned_outgoing": len(outgoing),
+        "returned_incoming": len(incoming),
     }
 
 
@@ -120,7 +132,7 @@ def get_concept_neighbors(space_id: str, concept_label: str) -> dict:
         return {"error": "concept_label is required."}
 
     _fire_progress({"tool": "get_concept_neighbors", "element_type": "concept", "label": concept_label})
-    snapshot = get_current_graph_snapshot(space_id)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
     if snapshot.get("error"):
         return snapshot
 
@@ -134,8 +146,11 @@ def get_concept_neighbors(space_id: str, concept_label: str) -> dict:
     _mark_examined(_concept_key(concept_label))
 
     relations = snapshot["graph"]["relations"]
-    outgoing = [r for r in relations if _normalize_label(r["source"]) == norm]
-    incoming = [r for r in relations if _normalize_label(r["target"]) == norm]
+    outgoing_all = [r for r in relations if _normalize_label(r["source"]) == norm]
+    incoming_all = [r for r in relations if _normalize_label(r["target"]) == norm]
+
+    outgoing = outgoing_all[:MAX_NEIGHBOR_RELATIONS]
+    incoming = incoming_all[:MAX_NEIGHBOR_RELATIONS]
 
     for r in outgoing + incoming:
         _mark_examined(_relation_key(r["source"], r["relation"], r["target"]))
@@ -153,19 +168,30 @@ def get_concept_neighbors(space_id: str, concept_label: str) -> dict:
             neighbors[neighbor_norm] = concepts_by_norm.get(neighbor_norm, {"label": r["source"]})
         _mark_examined(_concept_key(r["source"]))
 
+    neighbor_list = sorted(neighbors.values(), key=lambda c: _normalize_label(c["label"]))
+    trimmed_neighbors = neighbor_list[:MAX_NEIGHBOR_CONCEPTS]
+
     return {
         "concept": concept,
         "outgoing_relations": outgoing,
         "incoming_relations": incoming,
-        "neighbors": sorted(neighbors.values(), key=lambda c: _normalize_label(c["label"])),
+        "neighbors": trimmed_neighbors,
         "neighbor_count": len(neighbors),
+        "truncated": (
+            len(outgoing_all) > len(outgoing)
+            or len(incoming_all) > len(incoming)
+            or len(neighbor_list) > len(trimmed_neighbors)
+        ),
+        "returned_outgoing": len(outgoing),
+        "returned_incoming": len(incoming),
+        "returned_neighbors": len(trimmed_neighbors),
     }
 
 
 def get_relation_type_distribution(space_id: str, limit: int = 50) -> dict:
     """Get the distribution of relation type/label names across the entire knowledge graph."""
     _fire_progress({"tool": "get_relation_type_distribution", "element_type": "relation", "label": "full graph"})
-    snapshot = get_current_graph_snapshot(space_id)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
     if snapshot.get("error"):
         return snapshot
 
@@ -201,7 +227,7 @@ def search_graph_elements(
         return {"error": "keyword is required."}
 
     _fire_progress({"tool": "search_graph_elements", "element_type": element_type, "label": keyword})
-    snapshot = get_current_graph_snapshot(space_id)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
     if snapshot.get("error"):
         return snapshot
 
@@ -226,12 +252,16 @@ def search_graph_elements(
                 matched_relations.append(r)
                 _mark_examined(_relation_key(r.get("source", ""), r.get("relation", ""), r.get("target", "")))
 
+    effective_limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+
     return {
         "keyword": keyword,
-        "concepts": matched_concepts[:limit],
-        "relations": matched_relations[:limit],
+        "concepts": matched_concepts[:effective_limit],
+        "relations": matched_relations[:effective_limit],
         "concept_count": len(matched_concepts),
         "relation_count": len(matched_relations),
+        "returned_limit": effective_limit,
+        "truncated": len(matched_concepts) > effective_limit or len(matched_relations) > effective_limit,
     }
 
 
@@ -477,7 +507,7 @@ def delete_concept(space_id: str, label: str, reason: str = "") -> dict:
 
     _fire_progress({"tool": "delete_concept", "element_type": "concept", "label": label, "action": "delete"})
     # Check for relations in merged graph
-    snapshot = get_current_graph_snapshot(str(sid))
+    snapshot = get_current_graph_snapshot(str(sid), full_graph=True)
     if snapshot.get("error"):
         return snapshot
 
@@ -665,7 +695,7 @@ def _get_least_examined_concepts(space_id: uuid.UUID, count: int) -> list[str]:
     """Return up to `count` concept labels with the lowest times_examined, with random tie-breaking."""
     import random
 
-    snapshot = get_current_graph_snapshot(str(space_id))
+    snapshot = get_current_graph_snapshot(str(space_id), full_graph=True)
     all_concepts = snapshot.get("graph", {}).get("concepts", [])
     if not all_concepts:
         return []
