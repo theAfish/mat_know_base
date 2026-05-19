@@ -1,0 +1,56 @@
+projection_id: ef7916c2-1364-4bff-a9ae-ad9728e6fa96
+project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+frame_id: a74c5aa0-a07e-4ec0-963b-1270a6fef9dd
+space_id: 0195c0fa-7057-47a0-b53b-aa37c26f5210
+space_version: 4
+status: COMPLETED
+created_at: '2026-05-18T11:53:50.103696+00:00'
+extracted_at: '2026-05-18T12:15:10.098241+00:00'
+validation_result:
+  coerced_fields:
+    qa_pairs[].topic_tags: 2
+    qa_pairs[].topic_tags[]: 2
+    qa_pairs[].evidence_level: 2
+    qa_pairs[].key_parameters: 2
+    qa_pairs[].methods_software: 2
+    qa_pairs[].methods_software[]: 2
+    qa_pairs[].prerequisite_knowledge: 2
+    qa_pairs[].prerequisite_knowledge[]: 2
+data:
+  qa_pairs:
+  - answer: a1
+    question: q1
+    task_type: structure_construction
+    difficulty: medium
+    topic_tags:
+    - vdw
+    evidence_level: 2
+    evidence_quote: eq1
+    key_parameters:
+      value: encut:340
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    expected_output: '2.02'
+    methods_software:
+    - DFT, VASP
+    prerequisite_knowledge:
+    - slab
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: a2
+    question: q2
+    task_type: property_calculation
+    difficulty: medium
+    topic_tags:
+    - formation
+    evidence_level: 2
+    evidence_quote: eq2
+    key_parameters:
+      value: encut:340
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    expected_output: '-7.88'
+    methods_software:
+    - DFT
+    prerequisite_knowledge:
+    - energy
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true

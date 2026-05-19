@@ -20,6 +20,16 @@ from mkb.spaces.schema_utils import normalize_extraction_schema
 logger = logging.getLogger(__name__)
 
 
+VALID_PURPOSES = {"tabular_database", "qa_benchmark", "skill_cards", "freeform"}
+
+
+def _maybe_normalize_schema(extraction_schema: dict, purpose: str) -> dict:
+    """Tabular schemas get normalized; freeform/qa/skill keep their shape."""
+    if purpose == "tabular_database":
+        return normalize_extraction_schema(extraction_schema)
+    return extraction_schema if isinstance(extraction_schema, dict) else {}
+
+
 def create_space(
     name: str,
     domain: str,
@@ -27,6 +37,7 @@ def create_space(
     system_prompt: str,
     field_descriptions: dict,
     description: str | None = None,
+    purpose: str = "tabular_database",
 ) -> dict:
     """Create a new space definition.
 
@@ -37,22 +48,27 @@ def create_space(
         system_prompt: Domain-specific instructions for the projection agent.
         field_descriptions: Per-field extraction guidance.
         description: Optional human-readable description.
+        purpose: Kind of projection (tabular_database | qa_benchmark | skill_cards | freeform).
 
     Returns:
         Dict with space_id and name.
     """
+    if purpose not in VALID_PURPOSES:
+        return {"error": f"Invalid purpose '{purpose}'. Must be one of {sorted(VALID_PURPOSES)}."}
+
     with SyncSessionLocal() as session:
         existing = session.query(Space).filter_by(name=name).first()
         if existing:
             return {"error": f"Space '{name}' already exists.", "space_id": str(existing.space_id)}
 
-        normalized_schema = normalize_extraction_schema(extraction_schema)
+        normalized_schema = _maybe_normalize_schema(extraction_schema, purpose)
 
         space = Space(
             space_id=uuid.uuid4(),
             name=name,
             description=description,
             domain=domain,
+            purpose=purpose,
             extraction_schema=normalized_schema,
             system_prompt=system_prompt,
             field_descriptions=field_descriptions,
@@ -60,7 +76,7 @@ def create_space(
         )
         session.add(space)
         session.commit()
-        return {"space_id": str(space.space_id), "name": space.name}
+        return {"space_id": str(space.space_id), "name": space.name, "purpose": purpose}
 
 
 def get_space(space_id_or_name: str) -> dict | None:
@@ -92,15 +108,27 @@ def update_space(
     """Update a space definition. Bumps version automatically.
 
     Accepted keys: description, extraction_schema, system_prompt,
-    field_descriptions, domain.
+    field_descriptions, domain, purpose.
     """
     sid = uuid.UUID(str(space_id))
-    allowed_fields = {"description", "extraction_schema", "system_prompt", "field_descriptions", "domain"}
+    allowed_fields = {
+        "description",
+        "extraction_schema",
+        "system_prompt",
+        "field_descriptions",
+        "domain",
+        "purpose",
+        "name",
+    }
 
     with SyncSessionLocal() as session:
         space = session.query(Space).filter_by(space_id=sid).first()
         if not space:
             return {"error": f"Space {space_id} not found."}
+
+        new_purpose = changes.get("purpose", space.purpose)
+        if "purpose" in changes and new_purpose not in VALID_PURPOSES:
+            return {"error": f"Invalid purpose '{new_purpose}'."}
 
         for key, value in changes.items():
             if key not in allowed_fields:
@@ -108,12 +136,25 @@ def update_space(
                 continue
 
             if key == "extraction_schema":
-                value = normalize_extraction_schema(value)
+                value = _maybe_normalize_schema(value, new_purpose)
             setattr(space, key, value)
 
         space.version = space.version + 1
         session.commit()
-        return {"space_id": str(space.space_id), "version": space.version}
+        return {"space_id": str(space.space_id), "version": space.version, "purpose": space.purpose}
+
+
+def delete_space(space_id: str | uuid.UUID) -> dict:
+    """Delete a space. Returns {ok: True} or {error: ...}."""
+    sid = uuid.UUID(str(space_id))
+    with SyncSessionLocal() as session:
+        space = session.query(Space).filter_by(space_id=sid).first()
+        if not space:
+            return {"error": f"Space {space_id} not found."}
+        name = space.name
+        session.delete(space)
+        session.commit()
+        return {"ok": True, "deleted": name}
 
 
 def load_space_from_file(filepath: str | Path) -> dict:
@@ -138,16 +179,22 @@ def load_space_from_file(filepath: str | Path) -> dict:
         system_prompt=data["system_prompt"],
         field_descriptions=data["field_descriptions"],
         description=data.get("description"),
+        purpose=data.get("purpose", "tabular_database"),
     )
 
 
 def _space_to_dict(space: Space) -> dict:
+    purpose = getattr(space, "purpose", "tabular_database") or "tabular_database"
+    schema = space.extraction_schema or {}
+    if purpose == "tabular_database":
+        schema = normalize_extraction_schema(schema)
     return {
         "space_id": str(space.space_id),
         "name": space.name,
         "description": space.description,
         "domain": space.domain,
-        "extraction_schema": normalize_extraction_schema(space.extraction_schema),
+        "purpose": purpose,
+        "extraction_schema": schema,
         "system_prompt": space.system_prompt,
         "field_descriptions": space.field_descriptions,
         "version": space.version,

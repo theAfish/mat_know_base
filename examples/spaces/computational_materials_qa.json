@@ -1,0 +1,69 @@
+{
+  "name": "computational_materials_qa",
+  "domain": "computational materials science",
+  "purpose": "qa_benchmark",
+  "description": "Agent-task benchmark in the mat_agent_bench (https://github.com/ruoyuwang1995nya/mat_agent_bench) format. Each projected item is a self-contained task: a verbatim human prompt, the data files the agent must consume, machine-verifiable reference answers, and a per-criterion scoring checklist. Items are isolated from one another so they can be exported one-YAML-per-task into a question_bank/<capability>/ directory.",
+  "extraction_schema": {
+    "questions": {
+      "type": "list",
+      "description": "Self-contained agent benchmark tasks. Each item must be runnable in isolation — never cross-reference other items in this list. One projected `questions[i]` corresponds to exactly one task YAML in mat_agent_bench's question_bank.",
+      "item_schema": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "Stable task id following mat_agent_bench convention `<CAP>_<short_domain>_<NNN>_<YYYYMMDD>`. CAP is the 2-3 letter capability prefix (IG=input_generation, SR=structure_retrieval, SC=structure_construction, WF=workflow_orchestration, BP=batch_processing, DD=data_diagnosis, EC=execution_contract, SA=scientific_analysis, SF=safety_refusal). Example: `IG_abacus_004_20260508`. Must be unique across the whole bank."
+        },
+        "capability": {
+          "type": "string",
+          "required": true,
+          "description": "One of: input_generation, structure_retrieval, structure_construction, workflow_orchestration, batch_processing, data_diagnosis, execution_contract, scientific_analysis, safety_refusal."
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "Tool / engine domain the task targets. Use `agnostic` if the task is engine-neutral. Otherwise: abacus, vasp, lammps, qe, ase, pymatgen, dpgen, dflow, etc."
+        },
+        "intent": {
+          "type": "string",
+          "required": true,
+          "description": "One- or two-sentence English summary of what the agent must accomplish. Concrete enough that a reviewer can judge whether the prompt matches the goal."
+        },
+        "human_prompt_seed": {
+          "type": "string",
+          "required": true,
+          "description": "Verbatim prompt that will be handed to the agent at runtime. Multiline allowed. May be in the source paper's language (English / Chinese). Should reference any provided data files by filename and state the exact deliverables and where to write them."
+        },
+        "tags": {
+          "type": "list",
+          "item_type": "string",
+          "required": false,
+          "description": "Free-form classification tags (e.g. eng_abacus, struct_surface, dipole_correction, plane_wave). Used by `mat-bench list --tags`."
+        },
+        "data_files": {
+          "type": "list",
+          "required": false,
+          "description": "Input files the agent will be given. Each item: {key: string, path: string (filename relative to the task folder), oss_url: string (often empty until uploaded), description: string}. Leave the list empty if the task needs no inputs."
+        },
+        "reference_answers": {
+          "type": "list",
+          "required": true,
+          "description": "Machine-verifiable expected outputs. Each item is {key: string, value: any}. The `key` must match a `scoring_checklist[i].id` so the grader can wire them together. Common `value` shapes: {filename, tokens, flags} for text_file_contains_all; {filename, pattern, flags} for text_file_regex; {filename, checks:[{key,min,max,expected,tolerance,allowed_values,allow_missing_key}]} for text_file_numeric_range; a bare filename string for artifact_exists; {filename:...} for grounding_source; {max: int} for turn_budget / duration_budget / token_budget_total."
+        },
+        "scoring_checklist": {
+          "type": "list",
+          "required": true,
+          "description": "Binary pass/fail criteria with weights. Each item: {id: string (matches a reference_answers.key for verifier types that need it), criterion: string (human-readable rubric, prefix with [Must]/[Suggested]/[Variable]), axis: one of correctness|grounding|efficiency, verify: one of text_file_contains_all|text_file_regex|text_file_numeric_range|artifact_exists|llm_binary_judge|turn_budget|no_retries|duration_budget|token_budget, weight: number (omit for efficiency-axis items that are pass/fail gates)}."
+        },
+        "source_evidence": {
+          "type": "string",
+          "required": true,
+          "description": "Short quote or section reference from the knowledge frame that grounds this task (which paper section / table / figure motivated the prompt). Used for traceability; not exported into the YAML."
+        }
+      }
+    }
+  },
+  "system_prompt": "You are projecting research-paper knowledge frames into agent-task benchmark items in the mat_agent_bench format (https://github.com/ruoyuwang1995nya/mat_agent_bench). Each item in `questions` must be a self-contained task that an autonomous coding agent could run end-to-end without seeing any sibling task.\n\nHard rules for isolation:\n1. NEVER reference another `questions[i]` (no 'as in question X', no shared state).\n2. Every file the agent needs must appear in this item's own `data_files`. If two tasks happen to consume the same physical file, copy the entry — do not share by reference.\n3. Reference answers must be verifiable from ONLY this task's deliverables. A grader looking at one YAML in isolation must be able to score it.\n4. `id` must be globally unique. Generate one using the convention `<CAP>_<short_domain>_<NNN>_<YYYYMMDD>` where CAP is the capability prefix (IG/SR/SC/WF/BP/DD/EC/SA/SF), short_domain is a slug like `abacus` or `vasp`, NNN is a 3-digit counter scoped to (capability, domain), and the date is today.\n\nWhat to extract:\n- Walk the knowledge frame and identify concrete, reproducible computational workflows the paper describes (input deck generation, structure construction, post-processing, etc.). Skip narrative-only passages.\n- For each candidate workflow, formulate ONE focused task that exercises a single capability. Prefer narrow, testable prompts (e.g. 'generate an ABACUS SCF INPUT with dipole correction for the provided slab') over broad ones ('reproduce the whole paper').\n- Map the workflow to the closest `capability` value. If unsure between two, choose the more specific one and add the other as a tag.\n- Write `human_prompt_seed` as if you were the end-user assigning the task. Be explicit about deliverable filenames and the working directory. Multilingual prompts are allowed; match the source paper's language when natural.\n- Populate `data_files` with everything the agent will need at runtime. Use stable filenames (snake_case). Leave `oss_url` as an empty string — uploads happen at bank-registration time.\n- Build `reference_answers` so each entry is independently checkable. Prefer cheap verifiers (text_file_contains_all, text_file_regex, artifact_exists, numeric ranges) over llm_binary_judge. Always include at least one `artifact_exists` entry per deliverable file.\n- Build `scoring_checklist` to mirror `reference_answers`: every non-budget reference key gets a checklist entry whose `id` matches. Prefix the `criterion` text with `[Must]` (strict requirement), `[Suggested]` (benchmark-tuned numeric range), or `[Variable]` (acceptable-but-optional knob). Always add the four efficiency items at the end: `turn_budget`, `no_retries`, `duration_budget`, `token_budget_total` (with matching budget entries in reference_answers).\n- Include a `grounding_source` reference_answer pointing at the seed data file plus an `llm_binary_judge` checklist item that verifies the answer is grounded in the source paper.\n- Record the paper-side justification in `source_evidence` (one short quote or `section: ...` pointer) so reviewers can trust the task.\n\nNumeric-range guidance for `text_file_numeric_range`:\n- Use `min`/`max` for tunable knobs (cutoffs, thresholds) with realistic ranges drawn from the paper or the engine's defaults.\n- Use `expected` + `tolerance: 0` for hard-required integer flags.\n- Set `allow_missing_key: true` on knobs where omission is acceptable.\n\nIf the frame does not contain enough material for a high-quality benchmark item, emit zero items rather than fabricating one — the projection may legitimately return an empty `questions: []` for review-only papers.",
+  "field_descriptions": {
+    "questions": "Extract one self-contained agent task per concrete computational workflow described in the paper. Do not bundle multiple unrelated workflows into a single item, and do not split one workflow across items. Each `questions[i]` must round-trip cleanly to a standalone mat_agent_bench YAML file under `question_bank/<capability>/<id>.yaml`. Keep the list short and high-signal: 1-5 items per paper is typical; emit `[]` if nothing in the frame is benchmark-worthy."
+  }
+}

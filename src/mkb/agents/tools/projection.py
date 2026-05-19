@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.db.engine import SyncSessionLocal
@@ -26,6 +29,10 @@ from mkb.db.models import (
 from mkb.spaces.schema_utils import normalize_projection_data
 
 logger = logging.getLogger(__name__)
+
+_TRACE_DIR = Path(
+    os.getenv("MKB_AGENT_TRACE_DIR", str(Path(tempfile.gettempdir()) / "mkb_agent_logs"))
+)
 
 DEFAULT_FRAME_CONTENT_MAX_CHARS = 30000
 DEFAULT_FRAME_CONTENT_MAX_LIST_ITEMS = 80
@@ -55,6 +62,130 @@ _CORE_STUDY_FALSE_MARKERS = {
     "testing",
     "validation",
 }
+
+
+def _extract_json_from_text(value: str):
+    """Best-effort parse for JSON payloads (raw or fenced)."""
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # LLMs sometimes embed literal control characters (newlines, tabs) inside
+    # JSON string values, which strict mode rejects.  Try again permissively.
+    try:
+        return json.loads(text, strict=False)
+    except Exception:
+        pass
+
+    if "```" in text:
+        start = text.find("```")
+        end = text.rfind("```")
+        if start != -1 and end != -1 and end > start:
+            block = text[start + 3:end].strip()
+            if block.startswith("json"):
+                block = block[4:].strip()
+            try:
+                return json.loads(block)
+            except Exception:
+                return None
+    return None
+
+
+def _safe_json_preview(value, max_chars: int = 1200) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
+
+
+def write_projection_trace(
+    *,
+    event: str,
+    projection_id: str | None = None,
+    frame_id: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Append projection-agent trace events to local JSONL in /tmp.
+
+    One file per projection (`projection_<id>.jsonl`). If projection id is not
+    available, events are grouped under frame (`frame_<id>.jsonl`).
+    """
+    try:
+        _TRACE_DIR.mkdir(parents=True, exist_ok=True)
+        if projection_id:
+            fname = f"projection_{projection_id}.jsonl"
+        elif frame_id:
+            fname = f"frame_{frame_id}.jsonl"
+        else:
+            fname = "projection_unknown.jsonl"
+
+        payload = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": event,
+            "projection_id": projection_id,
+            "frame_id": frame_id,
+            "details": details or {},
+        }
+        with (_TRACE_DIR / fname).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        logger.debug("projection trace write failed: %s", exc)
+
+
+def _single_list_key_from_schema(extraction_schema: dict | None) -> str | None:
+    if not isinstance(extraction_schema, dict) or not extraction_schema:
+        return None
+
+    list_keys = [
+        key
+        for key, node in extraction_schema.items()
+        if isinstance(node, dict) and str(node.get("type", "")).strip().lower() == "list"
+    ]
+    if len(list_keys) == 1:
+        return str(list_keys[0])
+    return None
+
+
+def _coerce_projection_payload(data, extraction_schema: dict | None):
+    """Coerce common malformed payload shapes into a mapping.
+
+    Returns:
+        tuple[payload_dict | None, warning | None]
+    """
+    if isinstance(data, dict):
+        return data, None
+
+    single_list_key = _single_list_key_from_schema(extraction_schema)
+
+    if isinstance(data, str):
+        parsed = _extract_json_from_text(data)
+        if parsed is not None:
+            coerced, warning = _coerce_projection_payload(parsed, extraction_schema)
+            if coerced is not None:
+                return coerced, warning or "Coerced string payload to JSON mapping."
+
+    if isinstance(data, list) and single_list_key:
+        return {single_list_key: data}, (
+            f"Coerced list payload into mapping key '{single_list_key}'."
+        )
+
+    if isinstance(data, dict) and single_list_key and single_list_key not in data:
+        schema_node = extraction_schema.get(single_list_key) if isinstance(extraction_schema, dict) else None
+        item_schema = schema_node.get("item_schema") if isinstance(schema_node, dict) else None
+        if isinstance(item_schema, dict) and set(data.keys()).issubset(set(item_schema.keys())):
+            return {single_list_key: [data]}, (
+                f"Coerced single-item mapping into list key '{single_list_key}'."
+            )
+
+    return None, "Projection payload was not a JSON object and could not be coerced."
 
 
 def _coerce_core_study_flag(value) -> bool | None:
@@ -208,6 +339,21 @@ def get_frame_content(
         if not frame:
             return {"error": f"Frame {frame_id} not found."}
 
+        write_projection_trace(
+            event="get_frame_content",
+            frame_id=str(frame.frame_id),
+            details={
+                "project_id": str(frame.project_id),
+                "status": frame.status.value,
+                "limits": {
+                    "max_chars": max_chars,
+                    "max_list_items": max_list_items,
+                    "max_dict_items": max_dict_items,
+                    "max_string_chars": max_string_chars,
+                },
+            },
+        )
+
         safe_max_chars = max(2000, min(int(max_chars), 120000))
         safe_list_items = max(10, min(int(max_list_items), 300))
         safe_dict_items = max(20, min(int(max_dict_items), 400))
@@ -281,10 +427,62 @@ def save_projection(
         frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
         space = session.query(Space).filter_by(space_id=projection.space_id).first()
 
-        normalized_data, validation_result = normalize_projection_data(
-            data,
-            space.extraction_schema if space else {},
+        schema = space.extraction_schema if space else {}
+        write_projection_trace(
+            event="save_projection_called",
+            projection_id=str(projection.projection_id),
+            frame_id=str(projection.frame_id),
+            details={
+                "data_type": type(data).__name__,
+                "data_preview": _safe_json_preview(data),
+                "validation_notes_preview": (validation_notes or "")[:300],
+                "agent_notes_preview": (agent_notes or "")[:300],
+            },
         )
+
+        coerced_data, coercion_warning = _coerce_projection_payload(data, schema)
+
+        if coerced_data is None:
+            projection.status = ProjectionStatus.FAILED
+            projection.agent_notes = (
+                f"save_projection rejected invalid payload type: {type(data).__name__}"
+            )
+            projection.validation_result = {
+                "warnings": [coercion_warning],
+                "notes": validation_notes,
+            }
+            session.commit()
+            logger.warning(
+                "Projection %s save_projection rejected payload type=%s",
+                projection_id,
+                type(data).__name__,
+            )
+            write_projection_trace(
+                event="save_projection_rejected",
+                projection_id=str(projection.projection_id),
+                frame_id=str(projection.frame_id),
+                details={
+                    "data_type": type(data).__name__,
+                    "error": coercion_warning,
+                },
+            )
+            return {
+                "error": coercion_warning,
+                "projection_id": str(projection.projection_id),
+            }
+
+        normalized_data, validation_result = normalize_projection_data(
+            coerced_data,
+            schema,
+        )
+
+        if coercion_warning:
+            existing_warnings = list(validation_result.get("warnings", []))
+            existing_warnings.append(coercion_warning)
+            validation_result = {
+                **validation_result,
+                "warnings": existing_warnings,
+            }
 
         source_project_id = str(frame.project_id) if frame else None
         if source_project_id:
@@ -302,6 +500,20 @@ def save_projection(
         projection.status = ProjectionStatus.COMPLETED
         projection.extracted_at = now
         session.commit()
+
+        qa_pairs = normalized_data.get("qa_pairs") if isinstance(normalized_data, dict) else None
+        questions = normalized_data.get("questions") if isinstance(normalized_data, dict) else None
+        write_projection_trace(
+            event="save_projection_committed",
+            projection_id=str(projection.projection_id),
+            frame_id=str(projection.frame_id),
+            details={
+                "status": projection.status.value,
+                "qa_pairs_len": len(qa_pairs) if isinstance(qa_pairs, list) else None,
+                "questions_len": len(questions) if isinstance(questions, list) else None,
+                "validation_warnings": (validation_result or {}).get("warnings"),
+            },
+        )
 
         return {"projection_id": str(projection.projection_id), "status": "completed"}
 
@@ -360,6 +572,16 @@ def request_frame_clarification(
         "Projection %s requesting clarification from extraction agent: %s",
         projection_id,
         question[:120],
+    )
+    write_projection_trace(
+        event="request_frame_clarification",
+        projection_id=str(pid),
+        frame_id=str(frame_id),
+        details={
+            "field": field,
+            "question_preview": (question or "")[:300],
+            "context_preview": (context or "")[:300],
+        },
     )
 
     result = run_clarification_in_thread(
@@ -460,12 +682,194 @@ def flag_for_feedback(
 
         session.commit()
 
+        write_projection_trace(
+            event="flag_for_feedback",
+            projection_id=str(pid),
+            frame_id=str(frame.frame_id),
+            details={
+                "feedback_id": str(feedback.feedback_id),
+                "issue": issue,
+                "field": field,
+                "question_preview": (question or "")[:300],
+            },
+        )
+
         return {"feedback_id": str(feedback.feedback_id), "status": "created"}
+
+
+def get_project_markdown(
+    project_id: str,
+    max_chars: int = 80000,
+    max_files: int = 20,
+) -> dict:
+    """Read concatenated Markdown of all processed assets for a project.
+
+    Used when projecting directly from processed papers (skipping the
+    KnowledgeFrame extraction step). Returns a single combined Markdown
+    document built from every ``ProcessedAsset`` whose ``processing_type``
+    is ``MARKDOWN`` and that is linked to the given project.
+
+    Args:
+        project_id: Project (paper bundle) whose processed Markdown to read.
+        max_chars: Hard cap on the combined Markdown size.
+        max_files: Hard cap on number of processed files to include.
+
+    Returns:
+        Dict with combined ``markdown``, list of ``files`` included,
+        and a ``truncated`` flag.
+    """
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return {"error": invalid_identifier_message("project_id", project_id)}
+
+    from mkb.db.models import Asset, ProcessedAsset, ProcessingType, ProjectAsset
+    from mkb.storage.s3 import download_bytes
+
+    safe_max_chars = max(2000, min(int(max_chars), 400000))
+    safe_max_files = max(1, min(int(max_files), 100))
+
+    with SyncSessionLocal() as session:
+        links = session.query(ProjectAsset).filter_by(project_id=pid).all()
+        asset_ids = [link.asset_id for link in links]
+        if not asset_ids:
+            return {
+                "project_id": str(pid),
+                "markdown": "",
+                "files": [],
+                "truncated": False,
+                "error": "No assets linked to this project.",
+            }
+
+        rows = (
+            session.query(ProcessedAsset, Asset)
+            .join(Asset, Asset.asset_id == ProcessedAsset.asset_id)
+            .filter(ProcessedAsset.asset_id.in_(asset_ids))
+            .filter(ProcessedAsset.processing_type == ProcessingType.MARKDOWN)
+            .order_by(ProcessedAsset.created_at.asc())
+            .all()
+        )
+
+    if not rows:
+        return {
+            "project_id": str(pid),
+            "markdown": "",
+            "files": [],
+            "truncated": False,
+            "error": (
+                "No processed-markdown assets for this project. "
+                "Run the processing step first."
+            ),
+        }
+
+    chunks: list[str] = []
+    included: list[dict] = []
+    used = 0
+    truncated = False
+
+    for processed, asset in rows[:safe_max_files]:
+        if used >= safe_max_chars:
+            truncated = True
+            break
+        try:
+            data = download_bytes(processed.s3_bucket, processed.s3_key)
+            text = data.decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning(
+                "get_project_markdown: failed to fetch %s/%s: %s",
+                processed.s3_bucket, processed.s3_key, exc,
+            )
+            continue
+
+        header = f"\n\n<!-- ── FILE: {asset.filename} ── -->\n\n"
+        remaining = safe_max_chars - used - len(header)
+        if remaining <= 0:
+            truncated = True
+            break
+        body = text if len(text) <= remaining else (text[: remaining - 3] + "...")
+        if len(text) > remaining:
+            truncated = True
+        chunks.append(header + body)
+        used += len(header) + len(body)
+        included.append({
+            "filename": asset.filename,
+            "processed_asset_id": str(processed.processed_asset_id),
+            "size_chars": len(text),
+        })
+
+    if len(rows) > safe_max_files:
+        truncated = True
+
+    write_projection_trace(
+        event="get_project_markdown",
+        details={
+            "project_id": str(pid),
+            "files_included": len(included),
+            "total_chars": used,
+            "truncated": truncated,
+        },
+    )
+
+    return {
+        "project_id": str(pid),
+        "markdown": "".join(chunks),
+        "files": included,
+        "file_count": len(included),
+        "total_files": len(rows),
+        "truncated": truncated,
+        "limits": {"max_chars": safe_max_chars, "max_files": safe_max_files},
+    }
+
+
+def mark_projection_not_relevant(
+    projection_id: str,
+    reason: str = "",
+) -> dict:
+    """Mark a projection as NOT_RELEVANT and stop extraction.
+
+    Call this when the source content (knowledge frame or Markdown) clearly
+    does not contain any data relevant to the space's domain.  For example,
+    a biomedical space applied to a paper about Si phase-transition physics
+    should be marked not-relevant rather than returning an empty extraction.
+
+    Do NOT call this just because some schema fields are missing — use
+    ``save_projection`` with null values for absent fields instead.  Only
+    call this when the paper's subject is entirely outside the space domain.
+
+    Args:
+        projection_id: The projection record to mark.
+        reason: Brief explanation of why the paper is not relevant to the domain.
+
+    Returns:
+        Dict with ``projection_id`` and ``status`` = ``"not_relevant"``.
+    """
+    pid = parse_uuidish(projection_id)
+    if not pid:
+        return {"error": invalid_identifier_message("projection_id", projection_id)}
+
+    with SyncSessionLocal() as session:
+        projection = session.query(Projection).filter_by(projection_id=pid).first()
+        if not projection:
+            return {"error": f"Projection {projection_id} not found."}
+
+        projection.status = ProjectionStatus.NOT_RELEVANT
+        projection.agent_notes = reason or "Paper is not relevant to this space's domain."
+        projection.extracted_at = datetime.now(timezone.utc)
+        session.commit()
+
+    write_projection_trace(
+        event="projection_not_relevant",
+        projection_id=str(pid),
+        details={"reason": reason},
+    )
+    logger.info("Projection %s marked NOT_RELEVANT: %s", projection_id, reason)
+    return {"projection_id": str(pid), "status": "not_relevant"}
 
 
 PROJECTION_TOOLS = [
     get_frame_content,
+    get_project_markdown,
     save_projection,
+    mark_projection_not_relevant,
     request_frame_clarification,
     flag_for_feedback,
 ]

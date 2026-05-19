@@ -85,3 +85,4 @@ class SpaceConfig:
     system_prompt: str
     extraction_schema: dict
     field_descriptions: dict
+    purpose: str | None = None

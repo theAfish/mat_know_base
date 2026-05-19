@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { sendChatMessage } from '../api/assistant'
+import { listSpaces } from '../api/spaces'
 import { useChatStore } from '../store/chatStore'
 import { useJobPolling } from '../hooks/useJobPolling'
-import type { Job } from '../types'
+import SpaceDraftCard, { extractDraftsFromText } from '../components/SpaceDraftCard'
+import type { Job, Space } from '../types'
 
 export default function AssistantPage() {
   const {
@@ -11,7 +13,14 @@ export default function AssistantPage() {
   } = useChatStore()
 
   const [input, setInput] = useState('')
+  const [spaces, setSpaces] = useState<Space[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Load existing spaces once so the draft card can detect name collisions.
+  const refreshSpaces = () => {
+    listSpaces().then(setSpaces).catch(() => undefined)
+  }
+  useEffect(() => { refreshSpaces() }, [])
 
   useJobPolling({
     jobId,
@@ -89,22 +98,33 @@ export default function AssistantPage() {
           </p>
         )}
 
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
+        {messages.map((msg, i) => {
+          const drafts = msg.role === 'assistant' ? extractDraftsFromText(msg.content) : []
+          return (
             <div
-              className={`max-w-2xl px-4 py-2.5 rounded-xl text-sm whitespace-pre-wrap leading-relaxed ${
-                msg.role === 'user'
-                  ? 'bg-teal-700 text-white rounded-br-sm'
-                  : 'bg-slate-700 text-slate-100 rounded-bl-sm'
-              }`}
+              key={i}
+              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              {msg.content}
+              <div
+                className={`max-w-2xl px-4 py-2.5 rounded-xl text-sm whitespace-pre-wrap leading-relaxed ${
+                  msg.role === 'user'
+                    ? 'bg-teal-700 text-white rounded-br-sm'
+                    : 'bg-slate-700 text-slate-100 rounded-bl-sm'
+                }`}
+              >
+                {msg.content}
+                {drafts.map((d, j) => (
+                  <SpaceDraftCard
+                    key={j}
+                    draft={d}
+                    existing={spaces.find(s => s.name === d.name) ?? null}
+                    onSaved={refreshSpaces}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
 
         {isThinking && (
           <div className="flex justify-start">

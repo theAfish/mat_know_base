@@ -8,6 +8,7 @@ const NAV_ITEMS: { page: Page; label: string; icon: string }[] = [
   { page: 'frames',      label: 'Knowledge Frames',    icon: '🧩' },
   { page: 'graph',       label: 'Dataset Graph',       icon: '🕸️' },
   { page: 'projections', label: 'Projections',         icon: '📊' },
+  { page: 'spaces',      label: 'Spaces',              icon: '🗂️' },
   { page: 'feedback',    label: 'Feedback',            icon: '💬' },
 ]
 

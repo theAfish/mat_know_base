@@ -231,6 +231,37 @@ def cmd_projection_show(args):
     _json_dump(proj)
 
 
+def cmd_export_qa_bench(args):
+    from mkb.spaces.export_qa_bench import (
+        export_projection_to_yaml,
+        export_space_to_yaml,
+        QABenchExportError,
+    )
+
+    if not args.projection_id and not args.space:
+        print("error: provide --projection-id or --space", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        if args.projection_id:
+            result = export_projection_to_yaml(
+                args.projection_id, args.out, overwrite=args.overwrite
+            )
+        else:
+            result = export_space_to_yaml(args.space, args.out, overwrite=args.overwrite)
+    except QABenchExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    for path in result["files"]:
+        print(f"wrote {path}")
+    for item in result["skipped"]:
+        print(f"skipped {item}")
+    for warn in result["warnings"]:
+        print(f"warning: {warn}", file=sys.stderr)
+    print(f"\n{len(result['files'])} file(s) written, {len(result['skipped'])} skipped.")
+
+
 def cmd_kg_extract(args):
     from mkb.api import extract_knowledge_graph
 
@@ -543,6 +574,15 @@ def main():
     p = sub.add_parser("projection", help="Show projection details")
     p.add_argument("projection_id")
 
+    p = sub.add_parser(
+        "export-qa-bench",
+        help="Export qa_benchmark projection(s) to mat_agent_bench YAML files",
+    )
+    p.add_argument("--projection-id", "-p", default=None, help="Export a single projection")
+    p.add_argument("--space", "-s", default=None, help="Export all projections for this space (id or name)")
+    p.add_argument("--out", "-o", required=True, help="Output root directory (one YAML per question under <out>/<capability>/)")
+    p.add_argument("--overwrite", action="store_true", help="Overwrite existing YAML files")
+
     # ── Knowledge Graph subcommands ──
     p = sub.add_parser("kg-extract", help="Extract concept-only knowledge graphs into the global space")
     p.add_argument("--project-id", "-p", default=None)
@@ -642,6 +682,7 @@ def main():
         "project-run": cmd_project_run,
         "projections": cmd_projections,
         "projection": cmd_projection_show,
+        "export-qa-bench": cmd_export_qa_bench,
         "kg-extract": cmd_kg_extract,
         "kg-clear": cmd_kg_clear,
         "kg-show": cmd_kg_show,

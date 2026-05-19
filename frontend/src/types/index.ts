@@ -68,6 +68,7 @@ export interface Projection {
   extracted_at: string | null
   created_at: string
   space_version: number
+  source_type?: string
   times_reviewed: number
   review_notes: string | null
   reviewed_at: string | null
@@ -79,8 +80,26 @@ export interface Space {
   name: string
   description: string
   domain: string
+  purpose?: string
   extraction_schema: Record<string, unknown>
+  system_prompt?: string
+  field_descriptions?: Record<string, unknown>
+  version?: number
+  created_at?: string | null
+  updated_at?: string | null
 }
+
+export interface SpaceCreatePayload {
+  name: string
+  domain: string
+  extraction_schema: Record<string, unknown>
+  system_prompt: string
+  field_descriptions: Record<string, unknown>
+  description?: string
+  purpose?: string
+}
+
+export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }
 
 export interface FeedbackItem {
   feedback_id: string
@@ -158,9 +177,10 @@ export interface UploadFileEntry {
 
 export interface UploadProject {
   name: string
+  upload_id: string
   files: UploadFileEntry[]
 }
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
-export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback'
+export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces'

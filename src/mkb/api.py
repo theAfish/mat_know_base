@@ -714,6 +714,7 @@ def create_space(
     system_prompt: str,
     field_descriptions: dict,
     description: str | None = None,
+    purpose: str = "tabular_database",
 ) -> dict:
     """Create a new space (domain-specific extraction configuration)."""
     from mkb.spaces.registry import create_space as _create
@@ -725,7 +726,26 @@ def create_space(
         system_prompt=system_prompt,
         field_descriptions=field_descriptions,
         description=description,
+        purpose=purpose,
     )
+
+
+def update_space(space_id: str | uuid.UUID, **changes) -> dict:
+    """Update fields on an existing space. Bumps version automatically.
+
+    Accepted keys: name, description, extraction_schema, system_prompt,
+    field_descriptions, domain, purpose.
+    """
+    from mkb.spaces.registry import update_space as _update
+
+    return _update(space_id, **changes)
+
+
+def delete_space(space_id: str | uuid.UUID) -> dict:
+    """Delete a space by id."""
+    from mkb.spaces.registry import delete_space as _delete
+
+    return _delete(space_id)
 
 
 def list_spaces() -> list[dict]:
@@ -752,30 +772,50 @@ def project(
     model: str | None = None,
     verbose: bool = False,
     progress_callback=None,
+    source_type: str = "frame",
 ) -> dict:
     """Run projection on one or more frames using a space definition.
 
+    Args:
+        source_type: ``"frame"`` (default) to project from the curated knowledge
+            frame, or ``"markdown"`` to project directly from the processed
+            Markdown of the project's papers (no extraction step required).
+
     If frame_id given, project that specific frame.
-    If project_id given, find the frame for that project and project it.
+    If project_id given, find or auto-create the frame for that project.
     """
     from mkb.agents.projection import run_projection
     from mkb.db.models import KnowledgeFrame
 
     init_db()
     sid = uuid.UUID(str(space_id))
+    source_kind = (source_type or "frame").strip().lower()
 
     if frame_id:
         fid = uuid.UUID(str(frame_id))
-        return run_projection(sid, fid, model=model, verbose=verbose, progress_callback=progress_callback)
+        return run_projection(
+            sid, fid, model=model, verbose=verbose,
+            progress_callback=progress_callback, source_type=source_kind,
+        )
 
     if project_id:
         pid = uuid.UUID(str(project_id))
+        if source_kind == "markdown":
+            # Frame may not exist yet; the agent runner will create one.
+            return run_projection(
+                sid, None, model=model, verbose=verbose,
+                progress_callback=progress_callback,
+                source_type=source_kind, project_id=pid,
+            )
         with SyncSessionLocal() as session:
             frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
             if not frame:
                 return {"error": f"No frame for project {project_id}"}
             fid = frame.frame_id
-        return run_projection(sid, fid, model=model, verbose=verbose, progress_callback=progress_callback)
+        return run_projection(
+            sid, fid, model=model, verbose=verbose,
+            progress_callback=progress_callback, source_type=source_kind,
+        )
 
     return {"error": "Must specify frame_id or project_id"}
 
@@ -784,13 +824,14 @@ def project_all(
     space_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    source_type: str = "frame",
 ) -> dict:
-    """Run projection on all completed frames using a space definition."""
+    """Run projection on all completed frames (or all projects) using a space."""
     from mkb.agents.projection import run_projection_all
 
     init_db()
     sid = uuid.UUID(str(space_id))
-    return run_projection_all(sid, model=model, verbose=verbose)
+    return run_projection_all(sid, model=model, verbose=verbose, source_type=source_type)
 
 
 def get_projection(projection_id: str | uuid.UUID) -> dict | None:
@@ -829,11 +870,29 @@ def get_projection(projection_id: str | uuid.UUID) -> dict | None:
             "agent_notes": proj.agent_notes,
             "extracted_at": proj.extracted_at.isoformat() if proj.extracted_at else None,
             "space_version": proj.space_version,
+            "source_type": getattr(proj, "source_type", "frame"),
             "times_reviewed": proj.times_reviewed,
             "review_notes": proj.review_notes,
             "reviewed_at": proj.reviewed_at.isoformat() if proj.reviewed_at else None,
             "created_at": proj.created_at.isoformat() if proj.created_at else None,
         }
+
+
+def delete_projection(projection_id: str | uuid.UUID) -> bool:
+    """Soft-delete a projection by setting deleted_at.  Returns True if found."""
+    from datetime import datetime, timezone
+
+    from mkb.db.models import Projection
+
+    init_db()
+    pid = uuid.UUID(str(projection_id))
+    with SyncSessionLocal() as session:
+        proj = session.query(Projection).filter_by(projection_id=pid).first()
+        if not proj:
+            return False
+        proj.deleted_at = datetime.now(timezone.utc)
+        session.commit()
+        return True
 
 
 def list_projections(
@@ -882,6 +941,7 @@ def list_projections(
                 "extracted_at": projection.extracted_at.isoformat() if projection.extracted_at else None,
                 "created_at": projection.created_at.isoformat() if projection.created_at else None,
                 "space_version": projection.space_version,
+                "source_type": getattr(projection, "source_type", "frame"),
                 "times_reviewed": projection.times_reviewed,
                 "review_notes": projection.review_notes,
                 "reviewed_at": projection.reviewed_at.isoformat() if projection.reviewed_at else None,
@@ -898,8 +958,179 @@ def list_projections(
         return results
 
 
-# ── Knowledge Graphs ────────────────────────────────────────────
+# ── Projection Exports ──────────────────────────────────────────
 
+
+def _serialize_projection_payload(
+    projection_id: uuid.UUID,
+    out_path: Path,
+    format: str,
+) -> Path:
+    """Generic single-projection dump (used for non-qa_benchmark spaces)."""
+    import json as _json
+
+    from mkb.db.models import KnowledgeFrame, Projection, Space
+
+    with SyncSessionLocal() as session:
+        proj = session.query(Projection).filter_by(projection_id=projection_id).first()
+        if not proj:
+            raise ValueError(f"Projection {projection_id} not found")
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=proj.frame_id).first()
+        space = session.query(Space).filter_by(space_id=proj.space_id).first()
+        record = {
+            "projection_id": str(proj.projection_id),
+            "space": {
+                "space_id": str(proj.space_id),
+                "name": space.name if space else None,
+                "purpose": getattr(space, "purpose", None) if space else None,
+                "version": proj.space_version,
+            },
+            "frame_id": str(proj.frame_id) if proj.frame_id else None,
+            "project_id": str(frame.project_id) if frame else None,
+            "status": proj.status.value,
+            "source_type": getattr(proj, "source_type", "frame"),
+            "extracted_at": proj.extracted_at.isoformat() if proj.extracted_at else None,
+            "agent_notes": proj.agent_notes,
+            "data": proj.data or {},
+        }
+
+    fmt = (format or "yaml").strip().lower()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "json":
+        out_path.write_text(_json.dumps(record, indent=2, ensure_ascii=False, default=str))
+    else:
+        import yaml as _yaml
+        out_path.write_text(
+            _yaml.safe_dump(record, sort_keys=False, allow_unicode=True)
+        )
+    return out_path
+
+
+def export_projection(
+    projection_id: str | uuid.UUID,
+    out_dir: str | Path,
+    format: str = "yaml",
+    overwrite: bool = False,
+) -> dict:
+    """Export a single projection to disk.
+
+    For ``qa_benchmark`` spaces, delegates to the mat_agent_bench exporter
+    (one YAML per question under ``<out_dir>/<capability>/<id>.yaml``).
+    For all other purposes, writes a single ``<projection_id>.<ext>`` file
+    containing the projection payload + metadata.
+    """
+    from mkb.db.models import Projection, Space
+    from mkb.spaces.export_qa_bench import (
+        QABenchExportError,
+        export_projection_to_yaml,
+    )
+
+    init_db()
+    pid = uuid.UUID(str(projection_id))
+    out_root = Path(out_dir)
+    fmt = (format or "yaml").strip().lower()
+    if fmt not in {"yaml", "json"}:
+        raise ValueError(f"Unsupported export format: {format}")
+
+    with SyncSessionLocal() as session:
+        proj = session.query(Projection).filter_by(projection_id=pid).first()
+        if not proj:
+            return {"error": f"Projection {projection_id} not found"}
+        space = session.query(Space).filter_by(space_id=proj.space_id).first()
+        purpose = getattr(space, "purpose", None) if space else None
+
+    if purpose == "qa_benchmark" and fmt == "yaml":
+        try:
+            return export_projection_to_yaml(pid, out_root, overwrite=overwrite)
+        except QABenchExportError as e:
+            return {"error": str(e)}
+
+    out_path = out_root / f"{pid}.{fmt}"
+    if out_path.exists() and not overwrite:
+        return {"error": f"{out_path} already exists (pass overwrite=True)"}
+    _serialize_projection_payload(pid, out_path, fmt)
+    return {"files": [str(out_path)], "skipped": [], "warnings": []}
+
+
+def export_space_projections(
+    space_id_or_name: str | uuid.UUID,
+    out_dir: str | Path,
+    format: str = "yaml",
+    overwrite: bool = False,
+    newest_only: bool = True,
+) -> dict:
+    """Export every projection belonging to a space.
+
+    For ``qa_benchmark`` spaces and ``format='yaml'`` this delegates to the
+    aggregated mat_agent_bench exporter. Otherwise one file is written per
+    projection: ``<out_dir>/<projection_id>.<ext>``.
+    """
+    from mkb.db.models import Projection, ProjectionStatus, Space
+    from mkb.spaces.export_qa_bench import (
+        QABenchExportError,
+        export_space_to_yaml,
+    )
+
+    init_db()
+    out_root = Path(out_dir)
+    fmt = (format or "yaml").strip().lower()
+    if fmt not in {"yaml", "json"}:
+        raise ValueError(f"Unsupported export format: {format}")
+
+    with SyncSessionLocal() as session:
+        try:
+            sid = uuid.UUID(str(space_id_or_name))
+            space = session.query(Space).filter_by(space_id=sid).first()
+        except (ValueError, AttributeError):
+            space = session.query(Space).filter_by(name=str(space_id_or_name)).first()
+        if not space:
+            return {"error": f"Space {space_id_or_name} not found"}
+        purpose = getattr(space, "purpose", None)
+        space_id = space.space_id
+
+    if purpose == "qa_benchmark" and fmt == "yaml":
+        try:
+            return export_space_to_yaml(space_id, out_root, overwrite=overwrite)
+        except QABenchExportError as e:
+            return {"error": str(e)}
+
+    # Generic per-projection dump
+    with SyncSessionLocal() as session:
+        q = (
+            session.query(Projection)
+            .filter(Projection.space_id == space_id)
+            .filter(Projection.deleted_at.is_(None))
+            .filter(Projection.status == ProjectionStatus.COMPLETED)
+            .order_by(Projection.created_at.desc())
+        )
+        projections = q.all()
+        if newest_only:
+            seen: set[str] = set()
+            unique = []
+            for p in projections:
+                key = str(p.frame_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(p)
+            projections = unique
+        ids = [p.projection_id for p in projections]
+
+    written: list[str] = []
+    skipped: list[dict] = []
+    out_root.mkdir(parents=True, exist_ok=True)
+    for pid in ids:
+        out_path = out_root / f"{pid}.{fmt}"
+        if out_path.exists() and not overwrite:
+            skipped.append({"id": str(pid), "reason": "exists"})
+            continue
+        _serialize_projection_payload(pid, out_path, fmt)
+        written.append(str(out_path))
+
+    return {"files": written, "skipped": skipped, "warnings": []}
+
+
+# ── Knowledge Graphs ────────────────────────────────────────────
 
 def clear_knowledge_graphs(
     project_id: str | uuid.UUID | None = None,
