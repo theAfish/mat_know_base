@@ -152,6 +152,13 @@ def _normalize_list(value: Any, schema_node: dict, path: str, validation: dict[s
 
     item_schema = schema_node.get("item_schema")
     item_type = _canonical_type(schema_node.get("item_type"))
+    scalar_item_type = None
+    if isinstance(item_schema, dict):
+        schema_item_type = _canonical_type(item_schema.get("type"))
+        if schema_item_type in {"string", "integer", "number", "boolean"} and set(item_schema.keys()).issubset(
+            {"type", "description", "required"}
+        ):
+            scalar_item_type = schema_item_type
     filter_config = schema_node.get("filter")
 
     normalized_items: list[Any] = []
@@ -162,7 +169,15 @@ def _normalize_list(value: Any, schema_node: dict, path: str, validation: dict[s
             continue
 
         item_path = f"{path}[]"
-        if isinstance(item_schema, dict) and item_schema:
+        if scalar_item_type == "string":
+            normalized_items.append(_coerce_string(item, path, validation))
+        elif scalar_item_type == "integer":
+            normalized_items.append(_coerce_integer(item, path, validation))
+        elif scalar_item_type == "number":
+            normalized_items.append(_coerce_number(item, path, validation))
+        elif scalar_item_type == "boolean":
+            normalized_items.append(_coerce_boolean(item, path, validation))
+        elif isinstance(item_schema, dict) and item_schema:
             normalized_items.append(_normalize_object(item, item_schema, item_path, validation))
         elif item_type == "string":
             normalized_items.append(_coerce_string(item, path, validation))
@@ -261,6 +276,8 @@ def _coerce_string(value: Any, path: str, validation: dict[str, Any]) -> str:
         return ", ".join(str(item) for item in value if item is not None)
     if isinstance(value, dict):
         _record_coercion(validation, path)
+        if "value" in value and value.get("value") is not None:
+            return str(value.get("value"))
         return stringify_value(value)
     return str(value)
 

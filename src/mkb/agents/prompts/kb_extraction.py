@@ -43,12 +43,24 @@ Examples of possible keys (use whatever fits the paper best):
 
 ## Rules for ALL keys (except "paper" and "domain"):
 
-1. Each key maps to a **list of dicts** (items)
-2. Every item **MUST** have an `evidence_level` field (1-4)
-3. Every item **SHOULD** have enough descriptive fields to understand the finding without reading the source
-4. Numerical values **MUST** include units and conditions
-5. Use descriptive, specific key names — prefer `"catalyst_performance"` over `"data"`
-6. Be **EXHAUSTIVE**: capture every statement, measurement, and finding from the research (excluding references to other papers)
+1. Each key maps to **either**:
+   - a **list of item dicts** (flat — the default for most data), OR
+   - a **section block** of the form
+     ```json
+     {
+       "heading": "Short human-readable heading",
+       "description": "Optional 1-3 sentence overview of this section",
+       "items": [ ... item dicts ... ],          // optional
+       "subsections": { "<sub_key>": { ...same block shape... }, ... }  // optional, recursive
+     }
+     ```
+   Use a section block whenever the material has a natural hierarchy (e.g. multiple synthesis routes each with sub-steps, several mechanisms each with sub-claims) and a flat list would lose that structure. Pick whichever form best preserves the paper's organisation — do not nest for its own sake.
+2. Every leaf item dict (in `items` lists, whether top-level or inside a `subsections` block) **MUST** have an `evidence_level` field (1-4)
+3. Every item **SHOULD** include a short, human-readable `name` (or `title` / `claim`) and a prose `description` (1-3 sentences) so the frame reads like a wiki article rather than a bag of fragments. Add structured fields (values, units, conditions, formulas, methods, ...) alongside the prose, not in place of it.
+4. Prefer the **section block** form for any top-level key that groups more than ~3 items or has natural sub-topics, and always give such sections a `description` summarising the section in 1-3 sentences. Use `subsections` to capture real hierarchy (e.g. an "Electronic Structure" section with "Band Alignment" and "Density of States" subsections), not as a substitute for items.
+5. Numerical values **MUST** include units and conditions.
+6. Use descriptive, specific key names — prefer `"catalyst_performance"` over `"data"`.
+7. Be **EXHAUSTIVE**: capture every statement, measurement, and finding from the research (excluding references to other papers).
 
 ---
 

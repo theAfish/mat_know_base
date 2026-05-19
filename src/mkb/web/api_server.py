@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import queue
 import shutil
+import tempfile
 import threading
 import uuid
+import io
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from mkb import api
@@ -192,12 +196,18 @@ def _dispatch_pending_workflows() -> None:
         if kind == "extraction":
             jobs.start_job(kind="extract", label=label, project_id=pid, target=api.extract, kwargs=kwargs)
         elif kind == "projection":
+            proj_kwargs = {
+                "space_id": kwargs["space_id"],
+                "project_id": kwargs["project_id"],
+            }
+            if "source_type" in kwargs:
+                proj_kwargs["source_type"] = kwargs["source_type"]
             jobs.start_job(
                 kind="project",
                 label=label,
                 project_id=pid,
                 target=api.project,
-                kwargs={"space_id": kwargs["space_id"], "project_id": kwargs["project_id"]},
+                kwargs=proj_kwargs,
             )
         elif kind == "kg_extraction":
             jobs.start_job(
@@ -227,6 +237,31 @@ def _dispatch_pending_workflows() -> None:
 
 class SpaceRef(BaseModel):
     space_id: str
+
+
+class ProjectionRunRequest(BaseModel):
+    space_id: str
+    source_type: str = "frame"  # "frame" | "markdown"
+
+
+class SpaceCreateRequest(BaseModel):
+    name: str
+    domain: str
+    extraction_schema: dict
+    system_prompt: str
+    field_descriptions: dict
+    description: str | None = None
+    purpose: str = "tabular_database"
+
+
+class SpaceUpdateRequest(BaseModel):
+    name: str | None = None
+    domain: str | None = None
+    description: str | None = None
+    purpose: str | None = None
+    extraction_schema: dict | None = None
+    system_prompt: str | None = None
+    field_descriptions: dict | None = None
 
 
 class ProjectionReviewRequest(BaseModel):
@@ -268,6 +303,7 @@ class UploadFileItem(BaseModel):
 
 class UploadProject(BaseModel):
     name: str
+    upload_id: str
     files: list[UploadFileItem]
 
 
@@ -315,7 +351,7 @@ def _run_upload_ingest(payload: list[UploadProject], progress_callback=None) -> 
     if not payload:
         return {"status": "completed", "message": "No projects provided."}
 
-    upload_id = payload[0].files[0].uploadPath.split("/")[0] if payload and payload[0].files else ""
+    upload_id = str(payload[0].upload_id) if payload else ""
     temp_root = _UPLOAD_TEMP / upload_id if upload_id else _UPLOAD_TEMP
 
     total_ingested = 0
@@ -329,9 +365,9 @@ def _run_upload_ingest(payload: list[UploadProject], progress_callback=None) -> 
             emit(f"Moving files for {upload_dir.name} ({idx}/{len(payload)})")
 
             for file_info in proj.files:
-                src = _safe_child(_UPLOAD_TEMP, file_info.uploadPath)
-                rel = _safe_child(upload_dir, file_info.relativePath)
-                dest = upload_dir / rel.relative_to(upload_dir)
+                src = _safe_child(temp_root, file_info.uploadPath)
+                rel_full = _safe_child(upload_dir, file_info.relativePath)
+                dest = upload_dir / rel_full.relative_to(upload_dir.resolve())
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest = _next_available_path(dest)
                 if src.is_file():
@@ -426,15 +462,23 @@ def extract_project(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/project")
-def project_project(project_id: str, body: SpaceRef):
+def project_project(project_id: str, body: ProjectionRunRequest):
     _parse_uuid(project_id, "project_id")
     _parse_uuid(body.space_id, "space_id")
+    source_type = (body.source_type or "frame").strip().lower()
+    if source_type not in {"frame", "markdown"}:
+        raise HTTPException(status_code=400, detail=f"Invalid source_type: {body.source_type}")
+    label = "Project" if source_type == "frame" else "Project (markdown)"
     job_id = jobs.start_job(
         kind="project",
-        label="Project",
+        label=label,
         project_id=project_id,
         target=api.project,
-        kwargs={"space_id": body.space_id, "project_id": project_id},
+        kwargs={
+            "space_id": body.space_id,
+            "project_id": project_id,
+            "source_type": source_type,
+        },
     )
     return {"job_id": job_id}
 
@@ -488,6 +532,43 @@ def get_space(space_id_or_name: str):
     return space
 
 
+@app.post("/api/spaces")
+def create_space(body: SpaceCreateRequest):
+    result = api.create_space(
+        name=body.name,
+        domain=body.domain,
+        extraction_schema=body.extraction_schema,
+        system_prompt=body.system_prompt,
+        field_descriptions=body.field_descriptions,
+        description=body.description,
+        purpose=body.purpose,
+    )
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.put("/api/spaces/{space_id}")
+def update_space(space_id: str, body: SpaceUpdateRequest):
+    _parse_uuid(space_id, "space_id")
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    result = api.update_space(space_id, **changes)
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.delete("/api/spaces/{space_id}")
+def delete_space(space_id: str):
+    _parse_uuid(space_id, "space_id")
+    result = api.delete_space(space_id)
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
 @app.get("/api/projections")
 def list_projections(
     limit: int = 100,
@@ -511,6 +592,95 @@ def get_projection(projection_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Projection not found")
     return row
+
+
+@app.delete("/api/projections/{projection_id}", status_code=204)
+def delete_projection(projection_id: str):
+    found = api.delete_projection(projection_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Projection not found")
+
+
+@app.get("/api/projections/{projection_id}/export")
+def export_projection_endpoint(projection_id: str, format: str = "yaml"):
+    """Download a single projection as YAML or JSON.
+
+    For qa_benchmark spaces this returns a ZIP containing all per-question
+    YAML files; for other spaces, a single YAML/JSON file with the payload.
+    """
+    _parse_uuid(projection_id, "projection_id")
+    fmt = (format or "yaml").strip().lower()
+    if fmt not in {"yaml", "json"}:
+        raise HTTPException(status_code=400, detail="format must be yaml or json")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "export"
+        result = api.export_projection(projection_id, out_dir, format=fmt, overwrite=True)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        files = [Path(p) for p in result.get("files", [])]
+        if not files:
+            raise HTTPException(status_code=404, detail="Nothing to export")
+
+        if len(files) == 1 and files[0].is_file():
+            data = files[0].read_bytes()
+            media = "application/json" if fmt == "json" else "application/x-yaml"
+            return Response(
+                content=data,
+                media_type=media,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{files[0].name}"',
+                },
+            )
+
+        # Multi-file: zip the export dir
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in out_dir.rglob("*"):
+                if p.is_file():
+                    zf.write(p, p.relative_to(out_dir))
+        buf.seek(0)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="projection_{projection_id}.zip"',
+            },
+        )
+
+
+@app.get("/api/spaces/{space_id_or_name}/export")
+def export_space_endpoint(space_id_or_name: str, format: str = "yaml"):
+    """Download every projection for a space as a ZIP archive."""
+    fmt = (format or "yaml").strip().lower()
+    if fmt not in {"yaml", "json"}:
+        raise HTTPException(status_code=400, detail="format must be yaml or json")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "export"
+        result = api.export_space_projections(
+            space_id_or_name, out_dir, format=fmt, overwrite=True
+        )
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        files = list(out_dir.rglob("*"))
+        if not any(p.is_file() for p in files):
+            raise HTTPException(status_code=404, detail="Nothing to export")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in out_dir.rglob("*"):
+                if p.is_file():
+                    zf.write(p, p.relative_to(out_dir))
+        buf.seek(0)
+        safe_name = str(space_id_or_name).replace("/", "_")
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="space_{safe_name}_projections.zip"',
+            },
+        )
 
 
 @app.post("/api/projections/review")

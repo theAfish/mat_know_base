@@ -153,7 +153,7 @@ function UploadTab() {
           fileEntries.push({ name: file.name, relativePath, uploadPath })
         }
 
-        payload.push({ name: projLabel, files: fileEntries })
+        payload.push({ name: projLabel, upload_id, files: fileEntries })
       }
 
       await uploadComplete(upload_id)

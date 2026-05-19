@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { listProjections } from '../api/projections'
+import { listProjections, deleteProjection } from '../api/projections'
 import { listSpaces, getSpace } from '../api/spaces'
 import { listProjects } from '../api/projects'
 import { getJob } from '../api/jobs'
@@ -170,11 +170,14 @@ function SectionTable({
 function ProjectionRow({
   proj,
   paperLookup,
+  onDeleted,
 }: {
   proj: Projection
   paperLookup: Record<string, string>
+  onDeleted: (id: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
@@ -186,6 +189,23 @@ function ProjectionRow({
         <span className="flex-1 text-sm text-slate-300 truncate">
           {paperLookup[proj.project_id] ?? proj.project_id.slice(0, 12)}
         </span>
+        {proj.source_type && (
+          <span
+            className={
+              'px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide font-medium ' +
+              (proj.source_type === 'markdown'
+                ? 'bg-amber-900/40 text-amber-300 border border-amber-700/40'
+                : 'bg-sky-900/40 text-sky-300 border border-sky-700/40')
+            }
+            title={
+              proj.source_type === 'markdown'
+                ? 'Projected directly from processed Markdown (no frame extraction)'
+                : 'Projected from curated knowledge frame'
+            }
+          >
+            {proj.source_type === 'markdown' ? 'md' : 'frame'}
+          </span>
+        )}
         <span className="text-xs text-slate-500">
           {proj.times_reviewed > 0 ? `Reviewed ${proj.times_reviewed}×` : 'Raw'}
           {' · '}v{proj.space_version}
@@ -222,6 +242,25 @@ function ProjectionRow({
               </div>
             ) : null
           })}
+          <div className="pt-2 flex justify-end">
+            <button
+              onClick={async () => {
+                if (!confirm('Delete this projection? This cannot be undone.')) return
+                setDeleting(true)
+                try {
+                  await deleteProjection(proj.projection_id)
+                  onDeleted(proj.projection_id)
+                } catch {
+                  alert('Failed to delete projection.')
+                  setDeleting(false)
+                }
+              }}
+              disabled={deleting}
+              className="px-3 py-1 text-xs rounded bg-red-900/40 hover:bg-red-800/60 text-red-300 border border-red-700/40 disabled:opacity-40"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -359,6 +398,18 @@ export default function ProjectionsPage() {
             Newest only
           </label>
           <button onClick={loadProjections} className="text-xs text-teal-400 hover:text-teal-300">Refresh</button>
+          <a
+            href={selectedSpaceId ? `/api/spaces/${selectedSpaceId}/export?format=yaml` : '#'}
+            onClick={e => { if (!selectedSpaceId) e.preventDefault() }}
+            className="text-xs text-amber-400 hover:text-amber-300"
+            title="Download all projections for this space as a ZIP of YAML files"
+          >⬇ YAML</a>
+          <a
+            href={selectedSpaceId ? `/api/spaces/${selectedSpaceId}/export?format=json` : '#'}
+            onClick={e => { if (!selectedSpaceId) e.preventDefault() }}
+            className="text-xs text-amber-400 hover:text-amber-300"
+            title="Download all projections for this space as a ZIP of JSON files"
+          >⬇ JSON</a>
           {spaceDetail && (
             <button onClick={() => setShowSpaceDetail(s => !s)} className="text-xs text-slate-400 hover:text-slate-300 ml-auto">
               {showSpaceDetail ? 'Hide space details' : 'Space details'}
@@ -420,7 +471,12 @@ export default function ProjectionsPage() {
             </h3>
             <div className="space-y-1">
               {projections.map(p => (
-                <ProjectionRow key={p.projection_id} proj={p} paperLookup={paperLookup} />
+                <ProjectionRow
+                  key={p.projection_id}
+                  proj={p}
+                  paperLookup={paperLookup}
+                  onDeleted={id => setProjections(prev => prev.filter(x => x.projection_id !== id))}
+                />
               ))}
             </div>
           </div>

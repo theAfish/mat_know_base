@@ -376,6 +376,127 @@ def trigger_projection_review(project_id: str, space_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Space (projection-schema) design tools
+# ---------------------------------------------------------------------------
+
+
+_VALID_PURPOSES = ("tabular_database", "qa_benchmark", "skill_cards", "freeform")
+
+
+def get_space_full(space_id_or_name: str) -> dict:
+    """Get the full definition of a space (schema, prompts, purpose, version).
+
+    Use this before proposing edits so you can show the user what already exists.
+    """
+    from mkb import api
+
+    try:
+        space = api.get_space(space_id_or_name)
+        if not space:
+            return {"error": f"Space '{space_id_or_name}' not found."}
+        return space
+    except Exception as exc:
+        logger.error("get_space_full failed: %s", exc)
+        return {"error": str(exc)}
+
+
+def save_space(
+    name: str,
+    domain: str,
+    purpose: str,
+    extraction_schema: dict,
+    system_prompt: str,
+    field_descriptions: dict,
+    description: str = "",
+) -> dict:
+    """Persist a NEW projection space (schema) co-designed with the user.
+
+    Call this only after the user has explicitly approved the draft. If a space
+    with the same `name` already exists, this returns an error — call
+    `update_space_schema` instead.
+
+    Args:
+        name: Unique short identifier (snake_case), e.g. "catalysis_qa".
+        domain: Research domain string, e.g. "heterogeneous catalysis".
+        purpose: One of "tabular_database", "qa_benchmark", "skill_cards", "freeform".
+        extraction_schema: The JSON schema (shape depends on purpose).
+        system_prompt: Domain-specific instructions for the projection agent.
+        field_descriptions: Per-top-level-field extraction guidance.
+        description: Optional human-readable description.
+    """
+    from mkb import api
+
+    if purpose not in _VALID_PURPOSES:
+        return {"error": f"Invalid purpose '{purpose}'. Must be one of {list(_VALID_PURPOSES)}."}
+
+    try:
+        return api.create_space(
+            name=name,
+            domain=domain,
+            extraction_schema=extraction_schema,
+            system_prompt=system_prompt,
+            field_descriptions=field_descriptions,
+            description=description or None,
+            purpose=purpose,
+        )
+    except Exception as exc:
+        logger.error("save_space failed: %s", exc)
+        return {"error": str(exc)}
+
+
+def update_space_schema(
+    space_id: str,
+    extraction_schema: dict | None = None,
+    system_prompt: str | None = None,
+    field_descriptions: dict | None = None,
+    domain: str | None = None,
+    purpose: str | None = None,
+    description: str | None = None,
+) -> dict:
+    """Update fields on an existing space. Bumps version automatically.
+
+    Pass only the fields the user agreed to change; omit (or leave None) for the rest.
+    """
+    from mkb import api
+
+    changes: dict = {}
+    if extraction_schema is not None:
+        changes["extraction_schema"] = extraction_schema
+    if system_prompt is not None:
+        changes["system_prompt"] = system_prompt
+    if field_descriptions is not None:
+        changes["field_descriptions"] = field_descriptions
+    if domain is not None:
+        changes["domain"] = domain
+    if purpose is not None:
+        if purpose not in _VALID_PURPOSES:
+            return {"error": f"Invalid purpose '{purpose}'."}
+        changes["purpose"] = purpose
+    if description is not None:
+        changes["description"] = description
+
+    if not changes:
+        return {"error": "No fields to update."}
+
+    try:
+        return api.update_space(space_id, **changes)
+    except Exception as exc:
+        logger.error("update_space_schema failed: %s", exc)
+        return {"error": str(exc)}
+
+
+def delete_space(space_id: str) -> dict:
+    """Delete a space by id. DESTRUCTIVE — ask the user to confirm before calling."""
+    from mkb import api
+
+    try:
+        return api.delete_space(space_id)
+    except Exception as exc:
+        logger.error("delete_space failed: %s", exc)
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Tool list for the agent
 # ---------------------------------------------------------------------------
 
@@ -383,6 +504,7 @@ ORCHESTRATOR_TOOLS = [
     list_projects,
     get_project_details,
     list_spaces,
+    get_space_full,
     get_knowledge_frame,
     list_projections,
     get_open_feedback,
@@ -392,4 +514,7 @@ ORCHESTRATOR_TOOLS = [
     trigger_knowledge_graph_extraction,
     trigger_feedback_review,
     trigger_projection_review,
+    save_space,
+    update_space_schema,
+    delete_space,
 ]

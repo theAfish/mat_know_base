@@ -52,6 +52,7 @@ class ProjectionStatus(str, enum.Enum):
     FAILED = "FAILED"
     NEEDS_FEEDBACK = "NEEDS_FEEDBACK"
     REVIEWED = "REVIEWED"
+    NOT_RELEVANT = "NOT_RELEVANT"
 
 
 class FeedbackStatus(str, enum.Enum):
@@ -265,6 +266,15 @@ class Space(Base):
     description: Mapped[str | None] = mapped_column(Text)
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
 
+    # What kind of projection this space produces. Common values:
+    #   "tabular_database" — list-of-rows for structured DBs (default, legacy)
+    #   "qa_benchmark"     — question/answer pairs for evaluation
+    #   "skill_cards"      — procedural/skill cards (technique, conditions, success criteria)
+    #   "freeform"         — agent-defined arbitrary JSON shape
+    purpose: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="tabular_database"
+    )
+
     # The space definition — what to extract
     extraction_schema: Mapped[dict] = mapped_column(JSONB, nullable=False)
     # Prompt components
@@ -293,6 +303,13 @@ class Projection(Base):
     )
     space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     frame_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    # Where the projection data came from:
+    #   "frame"    — projected from the agent-curated KnowledgeFrame (default)
+    #   "markdown" — projected directly from processed-markdown of the project's papers
+    source_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="frame"
+    )
 
     status: Mapped[ProjectionStatus] = mapped_column(
         Enum(ProjectionStatus, name="projection_status"),

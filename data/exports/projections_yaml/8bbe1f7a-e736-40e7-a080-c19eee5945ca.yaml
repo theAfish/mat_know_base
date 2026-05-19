@@ -1,0 +1,690 @@
+projection_id: 8bbe1f7a-e736-40e7-a080-c19eee5945ca
+project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+frame_id: a74c5aa0-a07e-4ec0-963b-1270a6fef9dd
+space_id: 0195c0fa-7057-47a0-b53b-aa37c26f5210
+space_version: 4
+status: COMPLETED
+created_at: '2026-05-18T11:10:15.979955+00:00'
+extracted_at: '2026-05-18T11:15:29.893877+00:00'
+validation_result:
+  coerced_fields:
+    qa_pairs[].topic_tags[]: 43
+    qa_pairs[].methods_software[]: 58
+    qa_pairs[].prerequisite_knowledge[]: 42
+  notes: All QA pairs are self-contained, orthogonal, and grounded in the frame content.
+    Each question includes all necessary computational parameters, structural descriptions,
+    and method specifications. No question references another. Evidence levels assigned
+    based on explicit method descriptions (1 for methods section, 2 for detailed computational
+    results, 4 for cross-paper synthesis). Key parameters drawn directly from frame.
+    Expected outputs match reported numerical values. 10 pairs covering structure_construction,
+    workflow_design, property_calculation, analysis_interpretation, and model_validation
+    task types.
+data:
+  qa_pairs:
+  - answer: '1. Build the Ag₃PO₄ bulk crystal structure and cleave along the (100)
+      plane to create a slab model. The (100) surface is the most stable low-index
+      surface. At this surface, Ag atoms are the outermost layer with coordination
+      number 2 (compared to 3 in bulk). 2. Create a (3×3) surface supercell with dimensions
+      ~17.69 × 17.69 Å. 3. Construct the double-ring tubular B₂₀ cluster: 20 boron
+      atoms arranged in two parallel rings connected by an antiprism bonding motif.
+      This represents the critical 2D-to-3D transition structure in boron clusters.
+      4. Place the B₂₀ cluster above the Ag₃PO₄(100) slab with the ring plane parallel
+      (horizontal) to the surface. 5. Add a 15 Å vacuum layer along the z-direction,
+      giving total supercell volume ~17.69 × 17.69 × 27.31 Å³. 6. Run VASP DFT calculations
+      with PBE-GGA functional + DFT-D3 Grimme vdW correction, plane-wave cutoff 340
+      eV, energy convergence <10⁻⁶ eV, force convergence <0.01 eV/Å. 7. After relaxation,
+      verify: B₂₀ retains its shape (vdW interaction, not covalent); ~10 B atoms interact
+      with surface; interfacial distance ~2.02 Å; two Ag atoms are dragged up ~0.65
+      Å by the B₂₀ cluster.'
+    question: Construct the B₂₀/Ag₃PO₄(100)-H van der Waals heterostructure slab model
+      for DFT calculation. The B₂₀ cluster is a double-ring tubular structure of 20
+      boron atoms arranged in two parallel rings connected by an antiprism bonding
+      motif. The Ag₃PO₄(100) surface is the most stable low-index surface of Ag₃PO₄.
+      In the H (horizontal/parallel) configuration, the B₂₀ ring plane should be placed
+      parallel to the Ag₃PO₄(100) surface. Use a (3×3) Ag₃PO₄(100) surface supercell
+      with dimensions approximately 17.69 × 17.69 Å in the surface plane, and include
+      a 15 Å vacuum layer along the z-direction to avoid artificial periodic interactions.
+      The total supercell volume should be approximately 17.69 × 17.69 × 27.31 Å³.
+      Use VASP with PBE-GGA functional and DFT-D3 Grimme van der Waals correction,
+      a plane-wave cutoff energy of 340 eV, total energy convergence criterion of
+      less than 10⁻⁶ eV, and force convergence criterion of less than 0.01 eV/Å. After
+      relaxation, verify that the B₂₀ cluster maintains its structural integrity (vdW
+      rather than covalent interaction) and that approximately 10 B atoms interact
+      with the surface at an interfacial distance of approximately 2.02 Å.
+    task_type: structure_construction
+    difficulty: medium
+    topic_tags:
+    - vdw_heterostructure
+    - slab_model
+    - surface_construction
+    - boron_cluster
+    evidence_level: 1
+    evidence_quote: Supercell of 17.69 × 17.69 × 27.31 Å³ containing a (3×3) Ag₃PO₄(100)
+      surface coupled with a B₂₀ cluster. 15 Å vacuum depth to avoid artificial interaction
+      between periodic images. PBE-GGA with DFT-D3 correction method of Grimme et
+      al. for van der Waals interactions. 340 eV plane-wave cutoff. Total energy converged
+      to less than 10⁻⁶ eV. All forces on atoms converged to less than 0.01 eV/Å.
+    key_parameters:
+      ecutwfc: 340 eV
+      functional: PBE-GGA
+      surface_repeat: (3×3)
+      vdw_correction: DFT-D3 Grimme
+      vacuum_thickness: 15 Å
+      force_convergence: <0.01 eV/Å
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      energy_convergence: <10⁻⁶ eV
+      supercell_dimensions: 17.69 × 17.69 × 27.31 Å³
+    expected_output: Relaxed heterostructure with B₂₀ cluster maintaining its shape,
+      ~10 B atoms interacting with the surface, interfacial distance ~2.02 Å, and
+      two Ag atoms dragged up ~0.65 Å.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - PAW
+    prerequisite_knowledge:
+    - slab model construction
+    - surface selection criteria
+    - vacuum layer in periodic calculations
+    - vdW correction methods in DFT
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Starting from the relaxed B₂₀/Ag₃PO₄(100)-H heterostructure, define
+      the equilibrium interfacial distance (~2.02 Å between B₂₀ and surface). 2. Create
+      a series of configurations by systematically displacing the B₂₀ cluster along
+      the z-direction relative to the surface, varying the interfacial distance both
+      above and below the equilibrium value. 3. For each configuration, perform single-point
+      energy calculations in VASP with PBE-GGA + DFT-D3 Grimme, 340 eV cutoff, keeping
+      atomic positions fixed. 4. Calculate the interaction energy at each distance
+      as E_interaction = E(heterostructure) - E(Ag₃PO₄ slab) - E(B₂₀ cluster). 5.
+      Plot the energy curve as a function of r (deviation from equilibrium distance).
+      6. Fit the energy curve to the Morse potential E(r) = a·[exp(-2b(r-c)) - 2·exp(-b(r-c))]
+      + d using nonlinear least-squares fitting. 7. For the H configuration, expect
+      fitting parameters: a = 3.066, b = 1.054, c = 0.02848, d = 0.02971, with R²
+      = 0.9992. 8. Compare with Coulomb and Lennard-Jones potentials, which do not
+      well-describe the energy curve for this system.'
+    question: Using VASP with PBE-GGA functional and DFT-D3 Grimme vdW correction
+      (340 eV plane-wave cutoff, energy convergence <10⁻⁶ eV, force convergence <0.01
+      eV/Å), calculate the interfacial potential energy curve for the B₂₀/Ag₃PO₄(100)-H
+      configuration by systematically varying the interfacial distance between the
+      double-ring tubular B₂₀ cluster and the (3×3) Ag₃PO₄(100) slab surface. Then
+      fit the resulting energy curve to a Morse potential function of the form E(r)
+      = a·[exp(-2b(r-c)) - 2·exp(-b(r-c))] + d, where r is the variation of interfacial
+      distance with respect to equilibrium distance.
+    task_type: workflow_design
+    difficulty: hard
+    topic_tags:
+    - interfacial_potential
+    - morse_potential
+    - vdw_interaction
+    - energy_curve_fitting
+    evidence_level: 1
+    evidence_quote: 'The interfacial potential is described by: E(r) = a·(exp(-2·b·(r-c))
+      - 2·exp(-b·(r-c))) + d, where r is the variation of interfacial distance with
+      respect to equilibrium distance. Morse potential fitting parameters for parallel
+      configuration showing strong interaction with highest degree of fitting (R²
+      = 0.9992). Coulomb and Lennard-Jones potentials were tested but did not well-describe
+      the energy curve.'
+    key_parameters:
+      ecutwfc: 340 eV
+      morse_a: '3.066'
+      morse_b: '1.054'
+      morse_c: '0.02848'
+      morse_d: '0.02971'
+      functional: PBE-GGA
+      R_squared_H: '0.9992'
+      vdw_correction: DFT-D3 Grimme
+      force_convergence: <0.01 eV/Å
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      energy_convergence: <10⁻⁶ eV
+    expected_output: Morse potential fit with parameters a=3.066, b=1.054, c=0.02848,
+      d=0.02971 and R²=0.9992 for the H configuration. Coulomb and Lennard-Jones potentials
+      should not fit well.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - Morse potential fitting
+    - nonlinear least-squares
+    prerequisite_knowledge:
+    - potential energy curve calculation
+    - Morse potential function
+    - nonlinear curve fitting
+    - interaction energy decomposition
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Build the (3×3) Ag₃PO₄(100) slab model in the same supercell (17.69
+      × 17.69 × 27.31 Å³, 15 Å vacuum). 2. Build the isolated B₂₀ double-ring tubular
+      cluster in the same supercell dimensions for consistent reference energy. 3.
+      Build both heterostructure configurations: (a) H - B₂₀ ring plane parallel to
+      surface, (b) V - B₂₀ ring plane perpendicular to surface. 4. Relax all three
+      systems (slab, isolated B₂₀, and both heterostructures) using VASP with PBE-GGA
+      + DFT-D3 Grimme, 340 eV cutoff, convergence criteria as specified. 5. Calculate
+      formation energy: E_form = E(heterostructure) - E(Ag₃PO₄ slab) - E(isolated
+      B₂₀). 6. For H configuration, expect E_form ≈ -7.88 eV (strong interaction,
+      10 B atoms contacting surface, interfacial distance 2.02 Å). 7. For V configuration,
+      expect E_form ≈ -0.19 eV (weak interaction, ~5 B atoms contacting surface, interfacial
+      distance 2.40 Å).'
+    question: Using VASP with PBE-GGA functional and DFT-D3 Grimme vdW correction
+      (340 eV plane-wave cutoff, energy convergence <10⁻⁶ eV, force convergence <0.01
+      eV/Å), calculate the formation energy of both the B₂₀/Ag₃PO₄(100)-H (parallel)
+      and B₂₀/Ag₃PO₄(100)-V (perpendicular) heterostructure configurations. The B₂₀
+      cluster is a double-ring tubular structure of 20 boron atoms, and the substrate
+      is a (3×3) Ag₃PO₄(100) surface slab in a supercell of 17.69 × 17.69 × 27.31
+      Å³ with 15 Å vacuum. In the H configuration, the B₂₀ ring plane is parallel
+      to the surface; in the V configuration, the ring plane is perpendicular to the
+      surface.
+    task_type: property_calculation
+    difficulty: easy
+    topic_tags:
+    - formation_energy
+    - heterostructure_stability
+    - vdw_heterostructure
+    evidence_level: 1
+    evidence_quote: 'Parallel configuration (H) shows stronger interaction (-7.88
+      eV formation energy) than perpendicular (V, -0.19 eV). B₂₀/Ag₃PO₄(100)-H: shorter
+      interfacial distance (2.02 Å), and stronger interfacial interaction (formation
+      energy -7.88 eV). B₂₀/Ag₃PO₄(100)-V: longer interfacial distance (2.40 Å), and
+      weaker interaction (formation energy -0.19 eV).'
+    key_parameters:
+      vacuum: 15 Å
+      ecutwfc: 340 eV
+      supercell: 17.69 × 17.69 × 27.31 Å³
+      functional: PBE-GGA
+      vdw_correction: DFT-D3 Grimme
+      force_convergence: <0.01 eV/Å
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      energy_convergence: <10⁻⁶ eV
+    expected_output: Formation energy of approximately -7.88 eV for the H (parallel)
+      configuration and approximately -0.19 eV for the V (perpendicular) configuration.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    prerequisite_knowledge:
+    - formation energy calculation
+    - reference energy consistency
+    - supercell size matching for energy differences
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Starting from the relaxed B₂₀/Ag₃PO₄(100)-V heterostructure, set up
+      VASP band structure calculation with PBE-GGA + DFT-D3 Grimme, 340 eV cutoff.
+      2. Perform a self-consistent static calculation to obtain the charge density.
+      3. Run a non-self-consistent band structure calculation along appropriate k-path
+      for the surface/interface Brillouin zone. 4. Calculate PDOS by projecting density
+      of states onto atomic orbitals (B 2s, B 2p, Ag 4d, Ag 5s, O 2p, P states). 5.
+      Analyze results: The band gap should be ~0.36 eV. 6. Identify Type-II band alignment:
+      both CB and VB edges of Ag₃PO₄ lie below the corresponding B₂₀ cluster counterparts,
+      creating staggered alignment. 7. VBM composition: dominated by B 2p and B 2s
+      states (B₂₀ cluster). 8. CBM composition: dominated by Ag 5s and O 2p states
+      from Ag₃PO₄. This type-II alignment is beneficial for separation of photoexcited
+      electron-hole pairs in photocatalysis.'
+    question: After constructing and relaxing the B₂₀/Ag₃PO₄(100)-V (perpendicular)
+      heterostructure — where the double-ring tubular B₂₀ cluster ring plane is perpendicular
+      to the (3×3) Ag₃PO₄(100) surface in a 17.69 × 17.69 × 27.31 Å³ supercell with
+      15 Å vacuum — using VASP with PBE-GGA functional and DFT-D3 Grimme vdW correction
+      (340 eV cutoff, energy convergence <10⁻⁶ eV, force convergence <0.01 eV/Å),
+      calculate the band structure and partial density of states (PDOS) of the heterostructure.
+      Identify the band gap value, determine whether a Type-II staggered band alignment
+      exists, and specify the orbital composition of the valence band maximum (VBM)
+      and conduction band minimum (CBM).
+    task_type: property_calculation
+    difficulty: medium
+    topic_tags:
+    - band_structure
+    - pdos
+    - type_ii_band_alignment
+    - heterostructure_electronics
+    evidence_level: 2
+    evidence_quote: B₂₀/Ag₃PO₄-V band gap 0.36 eV. Both CB and VB edges of Ag₃PO₄
+      lie below the corresponding B₂₀ cluster counterparts, forming valence band offset
+      and conduction band offset. VB top occupied by B 2p and 2s states; CB bottom
+      consists of Ag 5s and O 2p states from Ag₃PO₄. This type-II heterojunction is
+      very beneficial for separation of electron-hole pairs in photocatalysis.
+    key_parameters:
+      ecutwfc: 340 eV
+      functional: PBE-GGA
+      vdw_correction: DFT-D3 Grimme
+      force_convergence: <0.01 eV/Å
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      energy_convergence: <10⁻⁶ eV
+      expected_band_gap_V: 0.36 eV
+    expected_output: Band gap of approximately 0.36 eV for the V configuration. Type-II
+      staggered band alignment with VBM composed of B 2p and 2s states and CBM composed
+      of Ag 5s and O 2p states.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - PDOS
+    - band_structure
+    prerequisite_knowledge:
+    - band structure calculation workflow
+    - PDOS projection
+    - Type-II band alignment identification
+    - heterostructure band alignment analysis
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: 1. From the relaxed B₂₀/Ag₃PO₄(100)-H heterostructure, obtain the self-consistent
+      charge density from VASP (CHGCAR file). 2. Run Bader charge analysis using the
+      Henkelman group Bader code on the CHGCAR to partition charge among atoms. 3.
+      Sum Bader charges for all 20 B atoms in B₂₀ cluster to get total B₂₀ charge.
+      4. Compare with the charge of isolated B₂₀ cluster (reference) to determine
+      net transfer. 5. The expected result is 0.366 electrons transferred from B₂₀
+      cluster to Ag₃PO₄ surface. 6. This transfer corresponds to 10 B atoms interacting
+      with the surface in the H configuration. 7. The charge redistribution is localized
+      at the interface region, specifically between two Ag atoms dragged up ~0.65
+      Å and nearby B atoms. Maximum electron accumulation ~0.4 e/Å above two Ag atoms;
+      maximum electron depletion ~-0.18 e/Å below those Ag atoms.
+    question: Perform Bader charge analysis on the relaxed B₂₀/Ag₃PO₄(100)-H (parallel)
+      heterostructure — where the double-ring tubular B₂₀ cluster ring plane is parallel
+      to the (3×3) Ag₃PO₄(100) surface, computed with VASP using PBE-GGA functional,
+      DFT-D3 Grimme vdW correction, 340 eV plane-wave cutoff, energy convergence <10⁻⁶
+      eV, force convergence <0.01 eV/Å — to quantify the total interfacial charge
+      transfer. The supercell is 17.69 × 17.69 × 27.31 Å³ with 15 Å vacuum. Determine
+      the direction and magnitude of net charge transfer between B₂₀ and Ag₃PO₄.
+    task_type: analysis_interpretation
+    difficulty: medium
+    topic_tags:
+    - charge_transfer
+    - bader_analysis
+    - interfacial_charge
+    - heterostructure
+    evidence_level: 2
+    evidence_quote: Quantitative charge transfer of 0.366 electrons from B₂₀ cluster
+      to Ag₃PO₄(100) surface, corresponding to 10 B atoms interacting with surface.
+      Largest efficient electron accumulation localized above two Ag atoms dragged
+      up by B₂₀ ring, approximately 0.4 e/Å. Largest local electron depletion below
+      two Ag atoms, approximately -0.18 e/Å.
+    key_parameters:
+      ecutwfc: 340 eV
+      functional: PBE-GGA
+      vdw_correction: DFT-D3 Grimme
+      charge_direction: B₂₀ → Ag₃PO₄
+      charge_transfer_H: 0.366 electrons
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    expected_output: Total Bader charge transfer of approximately 0.366 electrons
+      from B₂₀ cluster to Ag₃PO₄(100) surface, with charge redistribution localized
+      at the interface.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - Bader charge analysis
+    prerequisite_knowledge:
+    - Bader charge analysis method
+    - CHGCAR file processing
+    - charge partitioning in DFT
+    - reference charge comparison
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Start from relaxed H and V heterostructure configurations. 2. In VASP,
+      set up frequency-dependent dielectric function calculation (LOPTICS = True in
+      INCAR). 3. The imaginary part ε₂(ω) is calculated from direct interband transitions
+      using Fermi''s golden rule within dipole approximation. 4. The real part ε₁(ω)
+      is obtained via Kramers-Kronig transformation of ε₂. 5. Calculate absorption
+      coefficient α(ω) from the dielectric function. 6. For comparison, also calculate
+      the optical absorption of pure Ag₃PO₄(100) surface (edge at 2.18 eV / ~569 nm).
+      7. Expected results: Both heterostructures show dramatically enhanced visible-light
+      response in 380-700 nm compared to pure Ag₃PO₄. The H configuration shows stronger
+      absorption in 400-580 nm. The V configuration shows stronger absorption in 580-800
+      nm (longer wavelength). The pure Ag₃PO₄ absorbs only part of visible light (<500
+      nm) with weak intensity.'
+    question: Calculate the optical absorption spectrum for both the B₂₀/Ag₃PO₄(100)-H
+      and B₂₀/Ag₃PO₄(100)-V heterostructures using VASP with PBE-GGA functional and
+      DFT-D3 Grimme vdW correction (340 eV cutoff). The frequency-dependent dielectric
+      function should be computed using Fermi's golden rule within the dipole approximation,
+      where the imaginary part ε₂ is calculated from direct interband transitions
+      and the real part ε₁ is obtained via Kramers-Kronig transformation. Compare
+      the visible-light absorption enhancement range between the two configurations
+      relative to the pure Ag₃PO₄(100) surface which has an absorption edge at 2.18
+      eV (~569 nm).
+    task_type: property_calculation
+    difficulty: medium
+    topic_tags:
+    - optical_absorption
+    - dielectric_function
+    - fermi_golden_rule
+    - heterostructure_optics
+    evidence_level: 2
+    evidence_quote: Frequency-dependent dielectric function calculated using Fermi's
+      golden rule within dipole approximation. Imaginary part ε₂ calculated from direct
+      interband transitions; real part ε₁ obtained via Kramers-Kronig transformation.
+      B₂₀/Ag₃PO₄ heterostructures show dramatically enhanced visible-light response
+      in 380-700 nm region compared to pure Ag₃PO₄. B₂₀/Ag₃PO₄-H shows stronger absorption
+      in 400-580 nm region. B₂₀/Ag₃PO₄-V shows stronger absorption in 580-800 nm.
+    key_parameters:
+      ecutwfc: 340 eV
+      H_band_gap: 0.33 eV
+      V_band_gap: 0.36 eV
+      functional: PBE-GGA
+      optical_method: Fermi's golden rule within dipole approximation
+      vdw_correction: DFT-D3 Grimme
+      Ag3PO4_bulk_edge: 2.45 eV (~506 nm)
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      Ag3PO4_surface_edge: 2.18 eV (~569 nm)
+    expected_output: Enhanced visible-light absorption in 380-700 nm for both configurations
+      vs pure Ag₃PO₄. H config stronger in 400-580 nm; V config stronger in 580-800
+      nm.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - Fermi golden rule
+    - Kramers-Kronig transformation
+    prerequisite_knowledge:
+    - optical property calculation in DFT
+    - Fermi's golden rule for dielectric function
+    - Kramers-Kronig transformation
+    - absorption coefficient derivation
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Relax both the pure Ag₃PO₄(100) surface slab and the B₂₀/Ag₃PO₄(100)-H
+      heterostructure using same computational parameters. 2. Perform Mulliken population
+      analysis on both systems (this requires plane-wave pseudopotential calculations
+      as noted in the paper). 3. For pure surface: 3-fold coordinated O at top layer
+      has charge -1.0; 2-fold coordinated Ag at top layer has charge +0.56. 4. For
+      heterostructure: O atoms near B₂₀ become -0.97 and -0.96 (electron reduction
+      due to B₂₀ interaction); Ag atoms dragged up by B₂₀ have charge +0.99 (more
+      electrons lost due to stronger interaction vs +0.56 baseline). 5. B atoms nearest
+      to Ag have large negative charges -0.26 and -0.23 (electron gain from Ag); B
+      atoms at lower circumference have -0.03; B atoms at top circumference have +0.03.
+      6. Key observation: stronger interaction in H config causes more electron loss
+      from Ag atoms (+0.99 vs +0.56 baseline) and larger electron gain by nearby B
+      atoms.'
+    question: Perform Mulliken population analysis on the relaxed B₂₀/Ag₃PO₄(100)-H
+      (parallel) heterostructure — where the double-ring tubular B₂₀ cluster ring
+      plane is parallel to the (3×3) Ag₃PO₄(100) surface — and compare the Mulliken
+      charges of key atoms (Ag, B, O) near the interface with those of the pure Ag₃PO₄(100)
+      surface. Use VASP with PBE-GGA functional, DFT-D3 Grimme vdW correction, 340
+      eV cutoff, energy convergence <10⁻⁶ eV, and force convergence <0.01 eV/Å. The
+      supercell is 17.69 × 17.69 × 27.31 Å³ with 15 Å vacuum.
+    task_type: analysis_interpretation
+    difficulty: medium
+    topic_tags:
+    - mulliken_analysis
+    - charge_distribution
+    - interfacial_charge
+    - population_analysis
+    evidence_level: 2
+    evidence_quote: 3-fold coordinated O at top layer of Ag₃PO₄(100) surface has Mulliken
+      charge of -1.0. 2-fold coordinated Ag at top layer has Mulliken charge of +0.56.
+      Ag atoms dragged up by B₂₀ cluster in H configuration have Mulliken charge of
+      +0.99. B atoms nearest to Ag atoms have large Mulliken charges of -0.26 and
+      -0.23.
+    key_parameters:
+      O_pure: '-1.0'
+      ecutwfc: 340 eV
+      O_near_B2O: -0.97, -0.96
+      functional: PBE-GGA
+      B_nearest_Ag_H: -0.26, -0.23
+      vdw_correction: DFT-D3 Grimme
+      Ag_dragged_up_H: '+0.99'
+      Ag_pure_Mulliken: '+0.56'
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    expected_output: 'In H configuration: dragged-up Ag atoms with Mulliken charge
+      +0.99 (vs +0.56 in pure surface), nearest B atoms with -0.26 and -0.23, O atoms
+      near B₂₀ at -0.97 and -0.96 (vs -1.0 pure).'
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - Mulliken population analysis
+    prerequisite_knowledge:
+    - Mulliken population analysis
+    - charge comparison methodology
+    - surface vs heterostructure charge analysis
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Build the anatase TiO₂(101) slab model — this is the dominating surface
+      of the anatase phase, with O atoms at the topmost layer. 2. Build both B₂₀/TiO₂
+      configurations: H (ring plane parallel to surface) and V (ring plane perpendicular).
+      3. Use VASP with PBE-GGA + DFT-D3 Grimme, 340 eV cutoff, convergence as specified.
+      4. Relax both configurations. 5. For each configuration, systematically vary
+      the interfacial distance between B₂₀ and TiO₂(101) surface and calculate single-point
+      energies. 6. Compute interaction energies as E_interaction = E(heterostructure)
+      - E(TiO₂ slab) - E(B₂₀). 7. Fit each energy curve to Morse potential E(r) =
+      a·[exp(-2b(r-c)) - 2·exp(-b(r-c))] + d. 8. Expected Morse parameters: for H
+      config: a=0.525, b=1.055, c=0.1794, d=0.0476, R²=0.9958; for V config: a=0.525,
+      b=1.367, c=-1.016, d=0.2207, R²=0.9995. 9. Key observation: the B₂₀/TiO₂ energy
+      curve is more similar to B₂₀/Ag₃PO₄-V than B₂₀/Ag₃PO₄-H due to weaker O-B interaction
+      compared to Ag-B interaction.'
+    question: Construct the B₂₀/TiO₂(101) heterostructure comparison system using
+      VASP with PBE-GGA functional and DFT-D3 Grimme vdW correction (340 eV cutoff,
+      energy convergence <10⁻⁶ eV, force convergence <0.01 eV/Å). The anatase TiO₂(101)
+      surface is selected because it is the dominating surface of the anatase phase,
+      where O atoms are the topmost layer (unlike Ag₃PO₄(100) where Ag atoms are outermost).
+      Place the double-ring tubular B₂₀ cluster on this surface in both parallel (H)
+      and perpendicular (V) orientations, calculate the interfacial potential energy
+      curves by varying interfacial distance, and fit each curve to a Morse potential
+      of the form E(r) = a·[exp(-2b(r-c)) - 2·exp(-b(r-c))] + d.
+    task_type: workflow_design
+    difficulty: hard
+    topic_tags:
+    - comparison_system
+    - morse_potential
+    - tio2_surface
+    - interfacial_potential
+    evidence_level: 2
+    evidence_quote: 'At anatase TiO₂(101) surface, topmost atoms are O atoms. B₂₀/TiO₂
+      interaction potential energy curve more similar to B₂₀/Ag₃PO₄-V than B₂₀/Ag₃PO₄-H
+      due to weaker surface-B interactions. Morse potential fitting parameters: a=0.525,
+      b=1.055, c=0.1794, d=0.0476 (H config, R²=0.9958); a=0.525, b=1.367, c=-1.016,
+      d=0.2207 (V config, R²=0.9995).'
+    key_parameters:
+      ecutwfc: 340 eV
+      surface: anatase TiO₂(101)
+      morse_H_a: '0.525'
+      morse_H_b: '1.055'
+      morse_H_c: '0.1794'
+      morse_H_d: '0.0476'
+      morse_V_a: '0.525'
+      morse_V_b: '1.367'
+      morse_V_c: '-1.016'
+      morse_V_d: '0.2207'
+      functional: PBE-GGA
+      morse_H_R2: '0.9958'
+      morse_V_R2: '0.9995'
+      vdw_correction: DFT-D3 Grimme
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    expected_output: 'Morse potential parameters for H config: a=0.525, b=1.055, c=0.1794,
+      d=0.0476, R²=0.9958. For V config: a=0.525, b=1.367, c=-1.016, d=0.2207, R²=0.9995.
+      Energy curve shape should resemble B₂₀/Ag₃PO₄-V more than B₂₀/Ag₃PO₄-H.'
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - Morse potential fitting
+    prerequisite_knowledge:
+    - anatase TiO₂(101) surface construction
+    - dominating surface identification
+    - Morse potential fitting
+    - surface chemistry comparison
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. From the relaxed H and V heterostructure configurations, obtain the
+      self-consistent local electrostatic potential from VASP (LOCPOT file). 2. Compute
+      the planar average of the electrostatic potential along the z-direction by averaging
+      over the x and y plane at each z-coordinate. 3. Plot the planar average potential
+      vs z-position. 4. Identify potential regions: vacuum region, B₂₀ cluster region,
+      Ag₃PO₄ slab region, and interfacial region. 5. Key finding: the planar average
+      electrostatic potential at the Ag₃PO₄(100) surface is greater than at the B₂₀
+      cluster, creating a large built-in potential between them. 6. The periodic lattice
+      potential in Ag₃PO₄ is maintained with slight distortion at surface atoms. 7.
+      In the H configuration, B₂₀ has more influence on the lattice potential at the
+      interface than in the V configuration. 8. The built-in potential well can significantly
+      reduce recombination rate of photogenerated carriers under visible-light irradiation.'
+    question: Calculate the planar average electrostatic potential along the z-direction
+      for the relaxed B₂₀/Ag₃PO₄(100) heterostructure (both H and V configurations)
+      using VASP with PBE-GGA functional and DFT-D3 Grimme vdW correction (340 eV
+      cutoff, energy convergence <10⁻⁶ eV, force convergence <0.01 eV/Å). Identify
+      the built-in potential difference between the B₂₀ cluster region and the Ag₃PO₄(100)
+      surface region. The B₂₀ is a double-ring tubular cluster of 20 boron atoms;
+      Ag₃PO₄(100) is a (3×3) slab in a 17.69 × 17.69 × 27.31 Å³ supercell with 15
+      Å vacuum.
+    task_type: analysis_interpretation
+    difficulty: medium
+    topic_tags:
+    - electrostatic_potential
+    - built_in_potential
+    - carrier_recombination
+    - interfacial_analysis
+    evidence_level: 2
+    evidence_quote: Large built-in potential formed between B₂₀ cluster and Ag₃PO₄(100)
+      surface due to interfacial electrostatic potential difference. Planar average
+      electrostatic potential at Ag₃PO₄(100) surface is greater than at B₂₀ cluster.
+      The potential well can significantly reduce recombination rate of photogenerated
+      carriers. B₂₀ cluster in parallel configuration (H) has more influence on lattice
+      potential at interface than in perpendicular configuration (V).
+    key_parameters:
+      ecutwfc: 340 eV
+      functional: PBE-GGA
+      analysis_type: planar average electrostatic potential
+      vdw_correction: DFT-D3 Grimme
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    expected_output: A built-in potential difference between the Ag₃PO₄ surface (higher)
+      and B₂₀ cluster (lower) regions. The H configuration shows more influence on
+      the interfacial lattice potential than the V configuration.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - electrostatic_potential_analysis
+    prerequisite_knowledge:
+    - planar average electrostatic potential
+    - LOCPOT file analysis
+    - built-in potential concept
+    - photogenerated carrier separation
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Calculate band structure for each system: isolated B₂₀ cluster, Ag₃PO₄(100)
+      surface, B₂₀/Ag₃PO₄(100)-H, and B₂₀/Ag₃PO₄(100)-V. 2. Use VASP with PBE-GGA
+      + DFT-D3 Grimme, 340 eV cutoff. 3. Expected band gaps: B₂₀ cluster ~1.30 eV;
+      Ag₃PO₄(100) surface ~2.18 eV; H heterostructure ~0.33 eV; V heterostructure
+      ~0.36 eV. 4. The dramatic reduction from ~2.18 eV (surface) to ~0.33-0.36 eV
+      (heterostructure) occurs because B₂₀ energy levels near the Fermi level are
+      embedded within the band gap of Ag₃PO₄(100), forming the upper part of the valence
+      band of the heterostructure. 5. B₂₀ acts as a charge-transfer sensitizer: in
+      H config, large charge transfer leaves holes on B₂₀ making CBM formed by B 2p;
+      in V config, weak interaction keeps electrons with B₂₀ making VBM formed by
+      B 2p. 6. This band gap reduction mechanism enables the heterostructure to absorb
+      light from visible to near-infrared.'
+    question: Calculate the band gap values for the isolated B₂₀ double-ring tubular
+      cluster (20 boron atoms), the Ag₃PO₄(100) surface slab, and both B₂₀/Ag₃PO₄(100)
+      heterostructure configurations (H and V) using VASP with PBE-GGA functional
+      and DFT-D3 Grimme vdW correction (340 eV plane-wave cutoff, energy convergence
+      <10⁻⁶ eV, force convergence <0.01 eV/Å). The Ag₃PO₄(100) surface uses a (3×3)
+      slab in a 17.69 × 17.69 × 27.31 Å³ supercell with 15 Å vacuum. Analyze the mechanism
+      behind the band gap reduction in the heterostructures.
+    task_type: property_calculation
+    difficulty: medium
+    topic_tags:
+    - band_gap
+    - band_gap_reduction
+    - charge_transfer_sensitizer
+    - heterostructure_electronics
+    evidence_level: 2
+    evidence_quote: Calculated band gap of pure B₂₀ cluster is 1.30 eV. Surface band
+      gap reduced to 2.18 eV due to presence of surface states. B₂₀/Ag₃PO₄-H band
+      gap 0.33 eV. B₂₀/Ag₃PO₄-V band gap 0.36 eV. B₂₀ energy levels near Fermi level
+      are embedded within the band gap of Ag₃PO₄(100) surface, forming the upper part
+      of valence band of the heterostructure. B₂₀ acts as efficient charge-transfer
+      sensitizer.
+    key_parameters:
+      ecutwfc: 340 eV
+      H_band_gap: 0.33 eV
+      V_band_gap: 0.36 eV
+      functional: PBE-GGA
+      B20_band_gap: 1.30 eV
+      vdw_correction: DFT-D3 Grimme
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      Ag3PO4_surface_band_gap: 2.18 eV
+    expected_output: 'Band gaps: B₂₀ ~1.30 eV, Ag₃PO₄(100) surface ~2.18 eV, H heterostructure
+      ~0.33 eV, V heterostructure ~0.36 eV. The mechanism is B₂₀ energy levels embedding
+      within Ag₃PO₄ gap.'
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - band_structure
+    prerequisite_knowledge:
+    - band structure calculation
+    - PDOS analysis
+    - band gap reduction mechanisms
+    - sensitizer effect in heterostructures
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true
+  - answer: '1. Construct and relax both H and V configurations of B₂₀/Ag₃PO₄(100)
+      heterostructure. 2. After relaxation, compare B₂₀ cluster structure in the heterostructure
+      with isolated B₂₀: if B₂₀ maintains its shape and B atom positions (no significant
+      deformation), this indicates vdW interaction rather than covalent bonding —
+      this is the primary structural evidence. 3. Measure interfacial distances: H
+      config ~2.02 Å, V config ~2.40 Å. These distances are consistent with vdW contacts
+      rather than covalent bond lengths. 4. Perform Bader charge analysis: H config
+      shows 0.366 e transfer, V config shows 0.080 e transfer. The relatively small
+      charge transfer (vs full electron transfer in covalent bonds) supports vdW interaction.
+      5. Calculate formation energies: H config -7.88 eV, V config -0.19 eV. These
+      energies are consistent with vdW adhesion energies. 6. The Morse potential applicability
+      (rather than covalent bond potentials) with high R² values also supports vdW
+      nature. 7. Additional evidence: charge redistribution is localized at interface
+      region, not distributed throughout B₂₀ as would happen in covalent bonding.'
+    question: Design a computational workflow to verify that the interfacial interaction
+      between the double-ring tubular B₂₀ cluster and the (3×3) Ag₃PO₄(100) surface
+      is van der Waals rather than covalent. Use VASP with PBE-GGA functional and
+      DFT-D3 Grimme vdW correction (340 eV cutoff, energy convergence <10⁻⁶ eV, force
+      convergence <0.01 eV/Å). The supercell is 17.69 × 17.69 × 27.31 Å³ with 15 Å
+      vacuum. The workflow should include structural analysis after relaxation of
+      the B₂₀/Ag₃PO₄(100)-H (parallel) and B₂₀/Ag₃PO₄(100)-V (perpendicular) configurations,
+      Bader charge transfer quantification, and comparison of the interfacial distance
+      values.
+    task_type: model_validation
+    difficulty: hard
+    topic_tags:
+    - vdw_interaction_validation
+    - covalent_vs_vdw
+    - heterostructure_validation
+    - structural_analysis
+    evidence_level: 4
+    evidence_quote: 'B₂₀ cluster maintains its shape and B atom positions after adsorption
+      on Ag₃PO₄(100) surface, confirming van der Waals interaction rather than covalent
+      bonding. B₂₀/Ag₃PO₄(100)-H: interfacial distance 2.02 Å. B₂₀/Ag₃PO₄(100)-V:
+      interfacial distance 2.40 Å. Bader charge transfer: 0.366 e (H), 0.080 e (V).
+      Formation energy: -7.88 eV (H), -0.19 eV (V).'
+    key_parameters:
+      ecutwfc: 340 eV
+      functional: PBE-GGA
+      vdw_correction: DFT-D3 Grimme
+      charge_transfer_H: 0.366 e
+      charge_transfer_V: 0.080 e
+      source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+      formation_energy_H: -7.88 eV
+      formation_energy_V: -0.19 eV
+      interface_distance_H: 2.02 Å
+      interface_distance_V: 2.40 Å
+    expected_output: Structural preservation of B₂₀ shape after adsorption, interfacial
+      distances of ~2.02 Å (H) and ~2.40 Å (V), charge transfers of 0.366 e (H) and
+      0.080 e (V), all consistent with vdW rather than covalent interaction.
+    methods_software:
+    - DFT
+    - VASP
+    - PBE-GGA
+    - DFT-D3 Grimme
+    - Bader charge analysis
+    - structural comparison
+    prerequisite_knowledge:
+    - vdW vs covalent interaction criteria
+    - Bader charge analysis interpretation
+    - interfacial distance analysis
+    - structural integrity assessment
+    source_project_id: d7102373-fde7-46aa-be0f-b428df2e8aa5
+    is_core_study_data: true

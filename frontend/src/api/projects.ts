@@ -22,10 +22,14 @@ export const extractProject = (id: string, spaceId?: string) =>
     spaceId ? { space_id: spaceId } : {},
   ).then(r => r.data)
 
-export const projectToSpace = (id: string, spaceId: string) =>
+export const projectToSpace = (
+  id: string,
+  spaceId: string,
+  sourceType: 'frame' | 'markdown' = 'frame',
+) =>
   client.post<{ job_id: string }>(
     `/projects/${id}/project`,
-    { space_id: spaceId },
+    { space_id: spaceId, source_type: sourceType },
   ).then(r => r.data)
 
 export const kgExtractProject = (id: string) =>

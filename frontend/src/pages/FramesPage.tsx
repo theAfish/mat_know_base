@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { Fragment, useState, useCallback, useEffect, useRef } from 'react'
 import { listFrames, getFrame, getFrameHistory } from '../api/frames'
 import { listProjects, listAssets, listProcessedAssets, processProject, extractProject, projectToSpace, kgExtractProject } from '../api/projects'
 import { listProjections } from '../api/projections'
@@ -96,77 +96,269 @@ function AssetsTab({ projectId }: { projectId: string }) {
 
 // ─── Tab: Knowledge Frame ─────────────────────────────────────────────────────
 
-function FrameContentSection({ name, value }: { name: string; value: unknown }) {
-  const [expanded, setExpanded] = useState(true)
+// Evidence level → small coloured pill.
+const EVIDENCE_META: Record<number, { label: string; cls: string }> = {
+  1: { label: 'L1 · causal',      cls: 'bg-emerald-900/50 text-emerald-300 border-emerald-700/50' },
+  2: { label: 'L2 · observed',    cls: 'bg-sky-900/50 text-sky-300 border-sky-700/50' },
+  3: { label: 'L3 · correlative', cls: 'bg-amber-900/40 text-amber-300 border-amber-700/50' },
+  4: { label: 'L4 · inferred',    cls: 'bg-orange-900/40 text-orange-300 border-orange-700/50' },
+}
 
+function EvidenceBadge({ level }: { level: number }) {
+  const meta = EVIDENCE_META[level]
+  if (!meta) return null
+  return (
+    <span className={`inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded border ${meta.cls}`}>
+      {meta.label}
+    </span>
+  )
+}
+
+const prettyKey = (k: string) =>
+  k.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+// A "section block" is the shape the extraction prompt may emit:
+//   { heading, description?, items?, subsections? }
+function isSectionBlock(v: unknown): v is {
+  heading?: string; description?: string;
+  items?: unknown[]; subsections?: Record<string, unknown>;
+} {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const o = v as Record<string, unknown>
+  return ('heading' in o || 'description' in o) && ('items' in o || 'subsections' in o)
+}
+
+// Render any value inline (used inside item-detail rows).
+function InlineValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined || value === '') return <span className="text-slate-600">—</span>
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return (
-      <div className="flex gap-3 text-sm py-1 border-b border-slate-800">
-        <span className="text-slate-500 w-44 flex-shrink-0 capitalize">{name.replace(/_/g, ' ')}</span>
-        <span className="text-slate-300">{String(value)}</span>
-      </div>
-    )
+    return <span>{String(value)}</span>
   }
-
   if (Array.isArray(value)) {
+    // Array of primitives → comma list. Array of objects → bullet list of objects.
+    const allPrim = value.every(v => v === null || typeof v !== 'object')
+    if (allPrim) return <span>{value.map(v => String(v)).join(', ')}</span>
     return (
-      <div className="mb-3">
-        <button onClick={() => setExpanded(s => !s)}
-          className="flex items-center gap-1.5 text-sm font-medium text-slate-200 capitalize mb-1 hover:text-white">
-          <span className="text-slate-500">{expanded ? '▾' : '▸'}</span>
-          {name.replace(/_/g, ' ')} ({value.length})
-        </button>
-        {expanded && value.length > 0 && (
-          <div className="space-y-2 pl-2">
-            {value.map((item, i) => (
-              <div key={i} className="bg-slate-900 rounded p-2 text-xs text-slate-400 space-y-0.5">
-                {typeof item === 'object' && item !== null
-                  ? Object.entries(item as Record<string, unknown>)
-                      .filter(([, v]) => v !== null && v !== '' && !(Array.isArray(v) && (v as unknown[]).length === 0))
-                      .map(([k, v]) => (
-                        <div key={k} className="flex gap-2">
-                          <span className="text-slate-500 w-36 flex-shrink-0 truncate">{k.replace(/_/g, ' ')}</span>
-                          <span className="text-slate-300 flex-1">
-                            {Array.isArray(v) ? (v as unknown[]).map(String).join(', ') : String(v).slice(0, 200)}
-                          </span>
-                        </div>
-                      ))
-                  : <span className="text-slate-300">{String(item)}</span>
-                }
-              </div>
+      <ul className="list-disc list-inside space-y-1">
+        {value.map((v, i) => (
+          <li key={i}><InlineValue value={v} /></li>
+        ))}
+      </ul>
+    )
+  }
+  // Object → small definition-list
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== null && v !== '' && !(Array.isArray(v) && v.length === 0))
+  return (
+    <span className="inline-block">
+      {entries.map(([k, v], i) => (
+        <span key={k}>
+          <span className="text-slate-500">{prettyKey(k)}:</span>{' '}
+          <InlineValue value={v} />
+          {i < entries.length - 1 ? <span className="text-slate-600">; </span> : null}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+// Render a single leaf item dict as a wiki-style paragraph card.
+function ItemCard({ item }: { item: Record<string, unknown> }) {
+  // Pick a headline string from the most "title-like" fields.
+  const headlineFields = ['name', 'title', 'claim', 'finding', 'subject', 'property', 'concept']
+  const bodyFields = ['description', 'summary', 'detail', 'details', 'explanation', 'statement', 'note', 'notes']
+  const evidence = typeof item.evidence_level === 'number' ? item.evidence_level : undefined
+
+  let headline: string | null = null
+  for (const f of headlineFields) {
+    const v = item[f]
+    if (typeof v === 'string' && v.trim()) { headline = v; break }
+  }
+  let body: string | null = null
+  for (const f of bodyFields) {
+    const v = item[f]
+    if (typeof v === 'string' && v.trim()) { body = v; break }
+  }
+
+  const usedKeys = new Set<string>(['evidence_level'])
+  if (headline) usedKeys.add(headlineFields.find(f => item[f] === headline)!)
+  if (body) usedKeys.add(bodyFields.find(f => item[f] === body)!)
+
+  const rest = Object.entries(item).filter(
+    ([k, v]) => !usedKeys.has(k) && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0),
+  )
+
+  // Fallback headline: if nothing matched, use the first string field.
+  if (!headline) {
+    for (const [k, v] of rest) {
+      if (typeof v === 'string' && v.trim()) {
+        headline = v
+        usedKeys.add(k)
+        break
+      }
+    }
+  }
+
+  return (
+    <div className="bg-slate-900/60 border border-slate-800 rounded-md px-3 py-2 text-sm">
+      {(headline || evidence !== undefined) && (
+        <div className="flex items-start gap-2">
+          {headline && <span className="font-medium text-slate-100 flex-1">{headline}</span>}
+          {evidence !== undefined && <EvidenceBadge level={evidence} />}
+        </div>
+      )}
+      {body && <p className="mt-1 text-slate-300 leading-relaxed">{body}</p>}
+      {rest.length > 0 && (
+        <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs text-slate-300">
+          {rest
+            .filter(([k]) => !usedKeys.has(k))
+            .map(([k, v]) => (
+              <Fragment key={k}>
+                <dt className="text-slate-500">{prettyKey(k)}</dt>
+                <dd className="min-w-0"><InlineValue value={v} /></dd>
+              </Fragment>
             ))}
-          </div>
-        )}
-      </div>
-    )
-  }
+        </dl>
+      )}
+    </div>
+  )
+}
 
-  if (typeof value === 'object' && value !== null) {
+// Render a list of items as cards (or as a bullet list of primitives).
+function ItemList({ items }: { items: unknown[] }) {
+  if (items.length === 0) return null
+  const allPrim = items.every(it => it === null || typeof it !== 'object')
+  if (allPrim) {
     return (
-      <div className="mb-3">
-        <button onClick={() => setExpanded(s => !s)}
-          className="flex items-center gap-1.5 text-sm font-medium text-slate-200 capitalize mb-1 hover:text-white">
-          <span className="text-slate-500">{expanded ? '▾' : '▸'}</span>
-          {name.replace(/_/g, ' ')}
-        </button>
-        {expanded && (
-          <div className="bg-slate-900 rounded p-2 space-y-0.5 pl-4">
-            {Object.entries(value as Record<string, unknown>)
-              .filter(([, v]) => v !== null && v !== '')
-              .map(([k, v]) => (
-                <div key={k} className="flex gap-2 text-xs">
-                  <span className="text-slate-500 w-36 flex-shrink-0 truncate">{k.replace(/_/g, ' ')}</span>
-                  <span className="text-slate-300">{String(v).slice(0, 200)}</span>
-                </div>
-              ))
-            }
-          </div>
-        )}
-      </div>
+      <ul className="list-disc list-inside text-sm text-slate-300 space-y-0.5">
+        {items.map((it, i) => <li key={i}>{String(it)}</li>)}
+      </ul>
     )
   }
+  return (
+    <div className="space-y-2">
+      {items.map((it, i) =>
+        it && typeof it === 'object' && !Array.isArray(it)
+          ? <ItemCard key={i} item={it as Record<string, unknown>} />
+          : <div key={i} className="text-sm text-slate-300">{String(it)}</div>,
+      )}
+    </div>
+  )
+}
 
-  return null
+// Recursive wiki section. depth controls heading size and indent.
+function FrameSection({
+  name, value, depth = 1, defaultOpen = true,
+}: { name: string; value: unknown; depth?: number; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  // Resolve heading + payload.
+  let heading: string = prettyKey(name)
+  let description: string | undefined
+  let items: unknown[] | undefined
+  let subsections: Record<string, unknown> | undefined
+  let primitive: unknown
+  let arrayItems: unknown[] | undefined
+  let objectFallback: Record<string, unknown> | undefined
+
+  if (isSectionBlock(value)) {
+    if (typeof value.heading === 'string' && value.heading.trim()) heading = value.heading
+    description = typeof value.description === 'string' ? value.description : undefined
+    items = Array.isArray(value.items) ? value.items : undefined
+    subsections = value.subsections && typeof value.subsections === 'object'
+      ? value.subsections as Record<string, unknown>
+      : undefined
+  } else if (Array.isArray(value)) {
+    arrayItems = value
+  } else if (value !== null && typeof value === 'object') {
+    objectFallback = value as Record<string, unknown>
+  } else {
+    primitive = value
+  }
+
+  const headingCls = depth <= 1
+    ? 'text-lg font-semibold text-slate-100'
+    : depth === 2
+      ? 'text-base font-semibold text-slate-200'
+      : 'text-sm font-semibold text-slate-300'
+
+  const indentCls = depth <= 1 ? '' : 'pl-3 border-l border-slate-800'
+  const count = items?.length ?? arrayItems?.length
+
+  return (
+    <section className={`mb-4 ${indentCls}`}>
+      <button
+        onClick={() => setOpen(s => !s)}
+        className={`flex items-baseline gap-2 ${headingCls} hover:text-white text-left w-full`}
+      >
+        <span className="text-slate-500 text-xs">{open ? '▾' : '▸'}</span>
+        <span>{heading}</span>
+        {count !== undefined && <span className="text-xs font-normal text-slate-500">({count})</span>}
+      </button>
+
+      {open && (
+        <div className="mt-2 space-y-3">
+          {description && (
+            <p className="text-sm text-slate-400 leading-relaxed">{description}</p>
+          )}
+
+          {primitive !== undefined && (
+            <p className="text-sm text-slate-300">{String(primitive)}</p>
+          )}
+
+          {items && <ItemList items={items} />}
+          {arrayItems && <ItemList items={arrayItems} />}
+
+          {objectFallback && (
+            <div className="space-y-1">
+              {Object.entries(objectFallback)
+                .filter(([, v]) => v !== null && v !== '')
+                .map(([k, v]) => (
+                  <FrameSection key={k} name={k} value={v} depth={depth + 1} defaultOpen={depth < 2} />
+                ))}
+            </div>
+          )}
+
+          {subsections && (
+            <div className="space-y-2">
+              {Object.entries(subsections).map(([k, v]) => (
+                <FrameSection key={k} name={k} value={v} depth={depth + 1} defaultOpen={depth < 2} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// Top-level header: paper metadata + domain rendered as a wiki article header.
+function FrameHeader({ paper, domain }: { paper?: unknown; domain?: unknown }) {
+  const p = (paper && typeof paper === 'object') ? paper as Record<string, unknown> : {}
+  const title = typeof p.title === 'string' ? p.title : undefined
+  const authors = Array.isArray(p.authors) ? (p.authors as unknown[]).map(String) : []
+  const journal = typeof p.journal === 'string' ? p.journal : undefined
+  const year = p.year !== null && p.year !== undefined && p.year !== '' ? String(p.year) : undefined
+  const doi = typeof p.doi === 'string' ? p.doi : undefined
+  const meta = [journal, year].filter(Boolean).join(' · ')
+
+  return (
+    <header className="border-b border-slate-700 pb-3 mb-3">
+      {title && <h1 className="text-xl font-semibold text-slate-100 leading-snug">{title}</h1>}
+      {authors.length > 0 && (
+        <p className="text-sm text-slate-400 mt-1">{authors.join(', ')}</p>
+      )}
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
+        {meta && <span>{meta}</span>}
+        {doi && <span>DOI: <span className="text-slate-400">{doi}</span></span>}
+        {typeof domain === 'string' && domain && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-teal-700/50 bg-teal-900/30 text-teal-300">
+            {domain}
+          </span>
+        )}
+      </div>
+    </header>
+  )
 }
 
 function KnowledgeFrameTab({ projectId }: { projectId: string }) {
@@ -218,11 +410,14 @@ function KnowledgeFrameTab({ projectId }: { projectId: string }) {
       )}
 
       {content && (
-        <div className="space-y-1">
-          {Object.entries(content).map(([key, val]) => (
-            <FrameContentSection key={key} name={key} value={val} />
-          ))}
-        </div>
+        <article className="max-w-3xl">
+          <FrameHeader paper={(content as Record<string, unknown>).paper} domain={(content as Record<string, unknown>).domain} />
+          {Object.entries(content)
+            .filter(([k]) => k !== 'paper' && k !== 'domain')
+            .map(([key, val]) => (
+              <FrameSection key={key} name={key} value={val} depth={1} />
+            ))}
+        </article>
       )}
 
       {(clarifications.length > 0 || resolvedFeedback.length > 0) && (
@@ -316,31 +511,13 @@ function ProjectionsTab({ projectId }: { projectId: string }) {
             {p.review_notes && (
               <div className="bg-teal-900/30 border border-teal-700/40 rounded px-3 py-2 text-xs text-teal-200">{p.review_notes}</div>
             )}
-            {p.data && Object.entries(p.data).map(([section, value]) => {
-              const items = Array.isArray(value) ? value : []
-              return items.length > 0 ? (
-                <div key={section}>
-                  <p className="text-xs font-medium text-slate-300 capitalize mb-1">{section.replace(/_/g, ' ')} ({items.length})</p>
-                  <div className="space-y-1">
-                    {items.map((item, i) => (
-                      <div key={i} className="text-xs bg-slate-800 rounded p-2 text-slate-400 space-y-0.5">
-                        {typeof item === 'object' && item !== null
-                          ? Object.entries(item as Record<string, unknown>)
-                              .filter(([, v]) => v !== null && v !== '')
-                              .map(([k, v]) => (
-                                <div key={k} className="flex gap-2">
-                                  <span className="text-slate-500 w-36 flex-shrink-0 truncate">{k}</span>
-                                  <span className="text-slate-300">{Array.isArray(v) ? (v as unknown[]).map(String).join(', ') : String(v).slice(0, 150)}</span>
-                                </div>
-                              ))
-                          : <span className="text-slate-300">{String(item)}</span>
-                        }
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null
-            })}
+            {p.data && (
+              <div className="space-y-2">
+                {Object.entries(p.data).map(([section, value]) => (
+                  <FrameSection key={section} name={section} value={value} depth={2} defaultOpen={true} />
+                ))}
+              </div>
+            )}
           </div>
         </details>
       ))}
@@ -487,6 +664,7 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
   const [activeJob, setActiveJob] = useState<Job | null>(null)
   const [spaces, setSpaces] = useState<Space[]>([])
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>('')
+  const [projectionSource, setProjectionSource] = useState<'frame' | 'markdown'>('frame')
   const [feedbackCount, setFeedbackCount] = useState(0)
 
   useEffect(() => {
@@ -548,7 +726,14 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
             {spaces.length === 0 ? <option>No spaces</option>
               : spaces.map(s => <option key={s.space_id} value={s.space_id}>{s.name}</option>)}
           </select>
-          <button onClick={() => run(() => projectToSpace(project.project_id, selectedSpaceId), () => setActiveTab('projections'))}
+          <select value={projectionSource} onChange={e => setProjectionSource(e.target.value as 'frame' | 'markdown')}
+            disabled={!!activeJobId}
+            title="Project from the curated knowledge frame, or directly from the processed Markdown"
+            className="bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none disabled:opacity-40">
+            <option value="frame">from frame</option>
+            <option value="markdown">from markdown</option>
+          </select>
+          <button onClick={() => run(() => projectToSpace(project.project_id, selectedSpaceId, projectionSource), () => setActiveTab('projections'))}
             disabled={!!activeJobId || !selectedSpaceId}
             className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 rounded text-xs text-slate-200">
             🗂 Project

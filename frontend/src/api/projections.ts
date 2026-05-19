@@ -14,3 +14,6 @@ export const getProjection = (id: string) =>
 
 export const reviewProjections = (params: { space_id?: string; project_id?: string }) =>
   client.post<{ job_id: string }>('/projections/review', params).then(r => r.data)
+
+export const deleteProjection = (id: string) =>
+  client.delete(`/projections/${id}`)

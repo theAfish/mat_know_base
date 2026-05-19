@@ -5,6 +5,7 @@ import ProjectsPage from './pages/ProjectsPage'
 import FramesPage from './pages/FramesPage'
 import GraphPage from './pages/GraphPage'
 import ProjectionsPage from './pages/ProjectionsPage'
+import SpacesPage from './pages/SpacesPage'
 import FeedbackPage from './pages/FeedbackPage'
 
 function App() {
@@ -17,6 +18,7 @@ function App() {
       case 'frames':      return <FramesPage />
       case 'graph':       return <GraphPage />
       case 'projections': return <ProjectionsPage />
+      case 'spaces':      return <SpacesPage />
       case 'feedback':    return <FeedbackPage />
       default:            return <AssistantPage />
     }
