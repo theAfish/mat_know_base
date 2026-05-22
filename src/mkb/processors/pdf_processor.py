@@ -13,6 +13,7 @@ from pathlib import Path
 
 from mineru.cli.common import do_parse
 
+from mkb import runtime_settings
 from mkb.processors.base import ProcessingResult, TextualProcessor
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 class PDFProcessor(TextualProcessor):
     """
-    Converts PDF files to Markdown using MinerU with a local VLM backend.
+    Converts PDF files to Markdown using MinerU.
+
+    Dispatches between two backends based on runtime settings:
+
+    - ``local`` (default): uses MinerU's local VLM model (``vlm-transformers``).
+    - ``mineru_api``: uses the MinerU cloud API. Requires ``mineru_api_token``.
     """
 
     supported_mime_types = ["application/pdf"]
@@ -29,7 +35,10 @@ class PDFProcessor(TextualProcessor):
         return mime_type in self.supported_mime_types or filename.lower().endswith(".pdf")
 
     def process(self, data: bytes, filename: str) -> ProcessingResult:
+        backend = runtime_settings.get_setting("pdf_backend")
         try:
+            if backend == "mineru_api":
+                return self._process_with_mineru_api(data, filename)
             return self._process_with_mineru(data, filename)
         except Exception as e:
             return ProcessingResult(
@@ -38,6 +47,29 @@ class PDFProcessor(TextualProcessor):
                 content=b"",
                 error=f"PDF processing failed: {str(e)}"
             )
+
+    def _process_with_mineru_api(self, data: bytes, filename: str) -> ProcessingResult:
+        # Imported lazily so installations without API usage incur no cost.
+        from mkb.processors.pdf_mineru_api import MinerUApiPDFProcessor
+
+        token = runtime_settings.get_setting("mineru_api_token")
+        if not token:
+            logger.warning(
+                "pdf_backend=mineru_api but no token set; falling back to local backend"
+            )
+            return self._process_with_mineru(data, filename)
+
+        proc = MinerUApiPDFProcessor(
+            api_base=runtime_settings.get_setting("mineru_api_base"),
+            token=token,
+            model_version=runtime_settings.get_setting("mineru_api_model_version"),
+            language=runtime_settings.get_setting("mineru_api_language"),
+            enable_ocr=bool(runtime_settings.get_setting("mineru_api_enable_ocr")),
+            enable_formula=bool(runtime_settings.get_setting("mineru_api_enable_formula")),
+            enable_table=bool(runtime_settings.get_setting("mineru_api_enable_table")),
+            timeout=int(runtime_settings.get_setting("mineru_api_timeout")),
+        )
+        return proc.process(data, filename)
 
     def _process_with_mineru(self, data: bytes, filename: str) -> ProcessingResult:
         """Process using MinerU's local VLM backend."""

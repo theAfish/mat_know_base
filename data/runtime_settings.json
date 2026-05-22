@@ -1,0 +1,11 @@
+{
+  "mineru_api_base": "https://mineru.net/api/v4",
+  "mineru_api_enable_formula": true,
+  "mineru_api_enable_ocr": true,
+  "mineru_api_enable_table": true,
+  "mineru_api_language": "en",
+  "mineru_api_model_version": "vlm",
+  "mineru_api_timeout": 1800,
+  "mineru_api_token": "eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFM1MTIifQ.eyJqdGkiOiIxNDUwMDg0NyIsInJvbCI6IlJPTEVfUkVHSVNURVIiLCJpc3MiOiJPcGVuWExhYiIsImlhdCI6MTc3OTQxODc0MCwiY2xpZW50SWQiOiJsa3pkeDU3bnZ5MjJqa3BxOXgydyIsInBob25lIjoiIiwib3BlbklkIjpudWxsLCJ1dWlkIjoiYjhkMzRjMmMtOTZlMS00NTIzLTg5NjQtOGUyOWIxNDAyYzJhIiwiZW1haWwiOiIiLCJleHAiOjE3ODcxOTQ3NDB9.mlzht7dz4q7o0ad7fhLKHUgC2OMLd_w4TmQYIo0iPn6w96ufYniM3xzns25VfUehW5fn0YhYAzUsRTYLpUUKSQ",
+  "pdf_backend": "mineru_api"
+}
