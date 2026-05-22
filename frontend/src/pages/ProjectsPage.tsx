@@ -288,6 +288,7 @@ function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [selectedSpace, setSelectedSpace] = useState<string>(spaces[0]?.space_id ?? '')
+  const [selectedSourceType, setSelectedSourceType] = useState<'frame' | 'markdown'>('frame')
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const userSpaces = spaces.filter(s => s.name !== '__global_kg__')
@@ -341,8 +342,8 @@ function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
       <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-700">
-          <div>
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-700">
+          <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-slate-100 truncate">
               {project.label ?? project.source_path ?? project.project_id.slice(0, 12)}
             </h3>
@@ -352,7 +353,7 @@ function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 text-xl leading-none"
+            className="flex-shrink-0 text-slate-400 hover:text-slate-200 text-xl leading-none"
           >×</button>
         </div>
 
@@ -375,7 +376,7 @@ function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
               🧪 Extract frame
             </button>
             <button
-              onClick={() => runAction(() => projectToSpace(project.project_id, selectedSpace))}
+              onClick={() => runAction(() => projectToSpace(project.project_id, selectedSpace, selectedSourceType))}
               disabled={!!activeJobId || !selectedSpace}
               className="px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 rounded text-sm text-slate-200"
             >
@@ -392,17 +393,37 @@ function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
 
           {/* Space selector */}
           {userSpaces.length > 0 && (
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">Target space (for extract & project)</label>
-              <select
-                value={selectedSpace}
-                onChange={e => setSelectedSpace(e.target.value)}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-teal-500"
-              >
-                {userSpaces.map(s => (
-                  <option key={s.space_id} value={s.space_id}>{s.name}</option>
-                ))}
-              </select>
+            <div className="space-y-2">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Target space (for extract & project)</label>
+                <select
+                  value={selectedSpace}
+                  onChange={e => setSelectedSpace(e.target.value)}
+                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-teal-500"
+                >
+                  {userSpaces.map(s => (
+                    <option key={s.space_id} value={s.space_id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Source for &ldquo;Project to space&rdquo;</label>
+                <div className="flex gap-4">
+                  {(['frame', 'markdown'] as const).map(src => (
+                    <label key={src} className="flex items-center gap-1.5 cursor-pointer text-sm text-slate-300">
+                      <input
+                        type="radio"
+                        name={`source-type-${project.project_id}`}
+                        value={src}
+                        checked={selectedSourceType === src}
+                        onChange={() => setSelectedSourceType(src)}
+                        className="accent-teal-500"
+                      />
+                      {src === 'frame' ? 'Frame' : 'Markdown'}
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
