@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 
 from google.adk.agents import Agent
-from google.adk.runners import Runner
+from google.adk.runners import RunConfig, Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types as genai_types
 
@@ -49,9 +49,10 @@ class RunResult:
 class AgentRunner:
     """Reusable wrapper around google-adk Runner + InMemorySessionService."""
 
-    def __init__(self, agent: Agent, app_name: str):
+    def __init__(self, agent: Agent, app_name: str, max_llm_calls: int = 40):
         self.agent = agent
         self.app_name = app_name
+        self.max_llm_calls = max_llm_calls
         self.session_service = InMemorySessionService()
         self.runner = Runner(
             agent=agent,
@@ -129,6 +130,7 @@ class AgentRunner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=initial_message,
+                run_config=RunConfig(max_llm_calls=self.max_llm_calls),
             ):
                 if progress_callback and event.content and event.content.parts:
                     for part in event.content.parts:

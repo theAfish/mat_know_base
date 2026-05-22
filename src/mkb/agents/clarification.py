@@ -67,7 +67,7 @@ async def run_clarification_async(
     interfere with the caller's async context.
     """
     agent = build_clarification_agent(question=question, context=context, field=field, model=model)
-    runner = AgentRunner(agent=agent, app_name=APP_NAME)
+    runner = AgentRunner(agent=agent, app_name=APP_NAME, max_llm_calls=15)
 
     session_id = f"clarify_{frame_id}_{uuid.uuid4().hex[:8]}"
     await runner.create_session(session_id)

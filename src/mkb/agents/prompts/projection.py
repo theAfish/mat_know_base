@@ -124,7 +124,7 @@ Notes:
 5. **If a field is unclear, missing, or ambiguous**, first check `agent_annotations.clarifications` to see if the same question was answered in a previous run. If a matching entry exists, use that answer directly — do NOT call `request_frame_clarification` again.
    - Only call `request_frame_clarification` if the question is genuinely new (not in the annotations).
    - After it returns, call `get_frame_content` again to read the updated frame before continuing.
-   - Repeat as needed for each gap — do not accumulate all questions; resolve them one at a time.
+   - **Hard limit: call `request_frame_clarification` at most 3 times total.** After that, proceed with extraction using whatever data is available; set missing fields to null.
 6. For required fields where data is genuinely absent in the source, set the value to null and note the gap in your assessment.
 7. Call `save_projection` with the extracted data and your confidence assessment.
 8. Use `flag_for_feedback` only if you encounter a **structural or architectural problem** with the extraction pipeline itself (see guidelines below). Before flagging, check `agent_annotations.resolved_feedback` — if the same issue was already resolved or dismissed, do NOT re-flag it.
