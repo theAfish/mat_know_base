@@ -10,6 +10,7 @@ const NAV_ITEMS: { page: Page; label: string; icon: string }[] = [
   { page: 'projections', label: 'Projections',         icon: '📊' },
   { page: 'spaces',      label: 'Spaces',              icon: '🗂️' },
   { page: 'feedback',    label: 'Feedback',            icon: '💬' },
+  { page: 'settings',    label: 'Settings',            icon: '⚙️' },
 ]
 
 interface Props { children: ReactNode }

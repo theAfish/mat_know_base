@@ -29,6 +29,7 @@ dependencies = [
     "fastapi>=0.116",
     "uvicorn>=0.35",
     "python-multipart>=0.0.20",
+    "requests>=2.31",
     "streamlit>=1.38",
     "streamlit-agraph>=0.0.45",
     "pyvis>=0.3.2",

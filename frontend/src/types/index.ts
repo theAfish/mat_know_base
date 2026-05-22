@@ -183,4 +183,4 @@ export interface UploadProject {
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
-export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces'
+export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces' | 'settings'

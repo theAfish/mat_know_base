@@ -414,6 +414,16 @@ def link_manual_processed_data(
                 ingest_result = ingest(paper_path, label=paper_path.name)
                 pid = uuid.UUID(ingest_result["project_id"])
                 project = session.query(ResearchProject).filter_by(project_id=pid).first()
+        elif asset_id is not None:
+            # Look up the owning project via ProjectAsset link
+            aid = uuid.UUID(str(asset_id))
+            link = session.query(ProjectAsset).filter_by(asset_id=aid).first()
+            if link is not None:
+                project = (
+                    session.query(ResearchProject)
+                    .filter_by(project_id=link.project_id)
+                    .first()
+                )
 
         if not project:
             raise ValueError("Could not find a target project. Provide --paper-dir or --project-id.")
@@ -439,6 +449,46 @@ def link_manual_processed_data(
             session.add(ProjectAsset(project_id=project.project_id, asset_id=target_asset.asset_id))
 
         s3_key = f"{project.project_id}/{target_asset.asset_id}/{bundle['primary_relpath']}"
+
+        # Mirror the bundle into the canonical processed-local-root so it survives
+        # after any caller-supplied temp directory is cleaned up. The local cache
+        # is used by the idempotency check and by downstream readers.
+        import shutil
+
+        canonical_root = (
+            Path(settings.processed_local_root)
+            / str(project.project_id)
+            / str(target_asset.asset_id)
+        )
+        bundle_root = Path(bundle["local_dir"]).resolve()
+        if bundle_root != canonical_root.resolve():
+            canonical_root.mkdir(parents=True, exist_ok=True)
+            for relpath in [bundle["primary_relpath"], *bundle["artifact_files"]]:
+                src = bundle_root / relpath
+                dst = canonical_root / relpath
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            bundle["local_dir"] = str(canonical_root)
+            bundle_root = canonical_root
+
+        # Upload primary file + artifacts to the processed-assets S3 bucket so that
+        # downstream consumers (idempotency check, frame extraction, projections,
+        # etc.) can fetch the bundle the same way as auto-processed outputs.
+        from mkb.storage.s3 import upload_bytes
+
+        upload_bytes(
+            (bundle_root / bundle["primary_relpath"]).read_bytes(),
+            settings.s3_bucket_processed,
+            s3_key,
+        )
+        for relpath in bundle["artifact_files"]:
+            artifact_key = f"{project.project_id}/{target_asset.asset_id}/{relpath}"
+            upload_bytes(
+                (bundle_root / relpath).read_bytes(),
+                settings.s3_bucket_processed,
+                artifact_key,
+            )
+
         metadata = {
             "project_id": str(project.project_id),
             "local_dir": bundle["local_dir"],

@@ -38,6 +38,23 @@ class Settings(BaseSettings):
     # Local mirror for processed outputs (organized by batch/asset)
     processed_local_root: str = "data/processed"
 
+    # ── PDF Processing Backend ──────────────────────────────────
+    # "local" → local MinerU VLM (default), "mineru_api" → MinerU cloud API
+    pdf_backend: str = "local"
+    mineru_api_base: str = "https://mineru.net/api/v4"
+    mineru_api_token: str = ""
+    # vlm | pipeline (only used for mineru_api)
+    mineru_api_model_version: str = "vlm"
+    mineru_api_language: str = "en"
+    mineru_api_enable_ocr: bool = False
+    mineru_api_enable_formula: bool = True
+    mineru_api_enable_table: bool = True
+    # Polling timeout for MinerU API (seconds)
+    mineru_api_timeout: int = 600
+
+    # Persisted runtime overrides (written by Settings UI)
+    runtime_settings_path: str = "data/runtime_settings.json"
+
     # ── LLM / Agent ─────────────────────────────────────────────
     extraction_model: str = "openai/qwen-plus"
     google_api_key: str = ""

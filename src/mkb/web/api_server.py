@@ -870,3 +870,95 @@ def assistant_chat(body: AssistantChatRequest):
         target=_run_chat,
     )
     return {"job_id": job_id}
+
+
+# ─── Runtime Settings ────────────────────────────────────────────────────────
+
+class SettingsUpdateRequest(BaseModel):
+    pdf_backend: str | None = None
+    mineru_api_base: str | None = None
+    mineru_api_token: str | None = None
+    mineru_api_model_version: str | None = None
+    mineru_api_language: str | None = None
+    mineru_api_enable_ocr: bool | None = None
+    mineru_api_enable_formula: bool | None = None
+    mineru_api_enable_table: bool | None = None
+    mineru_api_timeout: int | None = None
+
+
+@app.get("/api/settings")
+def get_settings_endpoint():
+    from mkb import runtime_settings
+
+    return runtime_settings.public_view()
+
+
+@app.put("/api/settings")
+def update_settings_endpoint(body: SettingsUpdateRequest):
+    from mkb import runtime_settings
+
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        result = runtime_settings.update_settings(updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return runtime_settings.public_view(result)
+
+
+# ─── Per-asset manual processed upload ──────────────────────────────────────
+
+@app.post("/api/assets/{asset_id}/processed-upload")
+def upload_processed_for_asset(
+    asset_id: str,
+    files: list[UploadFile] = File(...),
+    relative_paths: list[str] | None = Form(default=None),
+    primary_file: str | None = Form(default=None),
+    processing_type: str | None = Form(default=None),
+    output_format: str | None = Form(default=None),
+):
+    """Attach user-provided processed output (e.g. a hand-edited .md plus
+    images/) to an existing raw asset.
+
+    The request is multipart/form-data with one or more `files` and optional
+    parallel `relative_paths` entries so callers can preserve nested layout
+    such as ``images/figure1.png``.
+    """
+    _parse_uuid(asset_id, "asset_id")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    if relative_paths is not None and len(relative_paths) != len(files):
+        raise HTTPException(
+            status_code=400,
+            detail="relative_paths length must match files",
+        )
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="mkb_proc_upload_"))
+    try:
+        for idx, upload in enumerate(files):
+            rel = (relative_paths[idx] if relative_paths else None) or upload.filename
+            if not rel:
+                continue
+            dest = _safe_child(tmp_dir, rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("wb") as fh:
+                while True:
+                    chunk = upload.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+
+        try:
+            result = api.link_manual_processed_data(
+                processed_dir=tmp_dir,
+                asset_id=asset_id,
+                primary_file=primary_file,
+                processing_type=processing_type,
+                output_format=output_format,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -29,3 +29,29 @@ export const uploadComplete = (uploadId: string) =>
 
 export const uploadIngest = (payload: UploadProject[]): Promise<{ job_id: string }> =>
   client.post('/upload/ingest', payload).then(r => r.data)
+
+/**
+ * Upload one or more processed-output files for an existing raw asset.
+ * The first file is treated as the primary (typically `.md`); the rest are
+ * artifacts (images, JSON, etc.). Each file's path within the bundle is sent
+ * as a parallel `relative_paths` form field so nested layouts like
+ * `images/figure1.png` are preserved.
+ */
+export const uploadProcessedAsset = (
+  assetId: string,
+  files: { file: File; relativePath: string }[],
+  primaryFile?: string,
+) => {
+  const form = new FormData()
+  for (const item of files) {
+    form.append('files', item.file, item.file.name)
+    form.append('relative_paths', item.relativePath)
+  }
+  if (primaryFile) form.append('primary_file', primaryFile)
+  return client
+    .post(`/assets/${assetId}/processed-upload`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 600_000,
+    })
+    .then(r => r.data)
+}

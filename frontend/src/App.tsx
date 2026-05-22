@@ -7,6 +7,7 @@ import GraphPage from './pages/GraphPage'
 import ProjectionsPage from './pages/ProjectionsPage'
 import SpacesPage from './pages/SpacesPage'
 import FeedbackPage from './pages/FeedbackPage'
+import SettingsPage from './pages/SettingsPage'
 
 function App() {
   const page = useUiStore(s => s.page)
@@ -20,6 +21,7 @@ function App() {
       case 'projections': return <ProjectionsPage />
       case 'spaces':      return <SpacesPage />
       case 'feedback':    return <FeedbackPage />
+      case 'settings':    return <SettingsPage />
       default:            return <AssistantPage />
     }
   }
