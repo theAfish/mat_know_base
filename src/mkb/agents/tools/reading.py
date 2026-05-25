@@ -115,6 +115,39 @@ def list_project_files(project_id: str) -> list[dict]:
 _MAX_MARKDOWN_CHARS = 80_000  # leave headroom for conversation history
 
 
+def get_markdown_length(asset_id: str) -> dict:
+    """Return the total character length of a processed-Markdown asset.
+
+    Useful for planning paged reads with `read_processed_markdown` without
+    first pulling the whole text into context. Also reports how many
+    `read_processed_markdown` calls (chunks of up to 80,000 characters) are
+    needed to cover the entire file.
+    """
+    with SyncSessionLocal() as session:
+        aid, error = _resolve_asset_id(session, asset_id)
+        if not aid:
+            return {"error": error or invalid_identifier_message("asset_id", asset_id)}
+
+        pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN)
+        if not pa:
+            return {"error": f"No processed markdown found for asset {asset_id}."}
+        try:
+            data = _read_processed_bytes(pa)
+        except Exception as exc:
+            return {"error": f"Cannot read markdown for asset {asset_id}: {exc}"}
+
+    text = data.decode("utf-8", errors="replace")
+    total = len(text)
+    chunk_size = _MAX_MARKDOWN_CHARS
+    num_chunks = max(1, (total + chunk_size - 1) // chunk_size) if total else 0
+    return {
+        "asset_id": str(aid),
+        "total_chars": total,
+        "chunk_size": chunk_size,
+        "num_chunks": num_chunks,
+    }
+
+
 def read_processed_markdown(asset_id: str, start_char: int = 0) -> str:
     """Read processed Markdown content for a given asset.
 
@@ -367,6 +400,7 @@ READING_TOOLS = [
     read_processed_markdown,
     read_markdown_section,
     list_markdown_headings,
+    get_markdown_length,
     read_raw_text,
     read_dataframe_summary,
     read_dataframe_rows,

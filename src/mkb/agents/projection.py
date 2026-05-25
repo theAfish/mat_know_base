@@ -19,6 +19,7 @@ from mkb.agents._utils import SpaceConfig, create_llm, sync_agent_run
 from mkb.agents.prompts.projection import build_projection_prompt
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.projection import PROJECTION_TOOLS, write_projection_trace
+from mkb.agents.tools.vision import VISION_TOOLS
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     FrameStatus,
@@ -38,6 +39,7 @@ def build_projection_agent(
     model: str | None = None,
     source_type: str = "frame",
     source_id: str | None = None,
+    project_id: str | None = None,
 ) -> Agent:
     """Create a projection agent configured for a specific space."""
     prompt = build_projection_prompt(
@@ -48,6 +50,7 @@ def build_projection_agent(
         purpose=getattr(space, "purpose", None),
         source_type=source_type,
         source_id=source_id,
+        project_id=project_id,
     )
 
     llm = create_llm(model)
@@ -55,7 +58,7 @@ def build_projection_agent(
         name="projection_agent",
         model=llm,
         instruction=prompt,
-        tools=PROJECTION_TOOLS,
+        tools=PROJECTION_TOOLS + VISION_TOOLS,
     )
 
 
@@ -166,6 +169,7 @@ async def _run_projection_async(
     )
     agent = build_projection_agent(
         space_cfg, model, source_type=source_kind, source_id=source_id,
+        project_id=str(resolved_project_id),
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -178,16 +182,25 @@ async def _run_projection_async(
             f"using the '{space_name}' space schema, reading directly from "
             f"the project's processed Markdown. "
             f"The projection ID is {projection_id}. "
-            f"Start by calling get_project_markdown(project_id=\"{resolved_project_id}\"), "
-            f"then extract data according to the schema."
+            f"Start by calling list_project_markdown_files(project_id=\"{resolved_project_id}\") "
+            f"to plan your reads, then walk the files section by section "
+            f"(read_markdown_section / read_project_markdown_file). Seed the "
+            f"projection once with save_projection, then use update_projection "
+            f"to append items as you go — do not re-emit the full payload."
         )
     else:
         message = (
             f"Extract structured data from frame {frame_id} "
+            f"(project {resolved_project_id}) "
             f"using the '{space_name}' space schema. "
             f"The projection ID is {projection_id}. "
             f"Start by reading the frame content, then extract "
-            f"data according to the schema."
+            f"data according to the schema. Seed the projection once with "
+            f"save_projection and use update_projection for additional batches "
+            f"so you avoid re-emitting the full payload. "
+            f"If you encounter image references (``![](images/...)``) in the "
+            f"frame content that may contain schema-relevant data, use the "
+            f"vision tools with project_id=\"{resolved_project_id}\"."
         )
 
     result = await runner.run(

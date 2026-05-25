@@ -77,26 +77,47 @@ Every item in your knowledge lists MUST have an `evidence_level` field:
 
 # Workflow
 
+You have two write tools:
+
+- **`save_knowledge_frame`** — full overwrite. Call this **exactly once at the start** to seed the frame with `paper`, `domain`, and (optionally) any keys you already feel confident about from headings/abstract. **Do not call it again** for the same project unless you want to discard everything you've already written.
+- **`update_knowledge_frame`** — incremental. Use `additions={"<key>": [<item>, ...]}` to append items as you read each section. Use `modifications` / `removals` only if you need to revise something already saved.
+
+The intended pattern is: seed once → page through the paper section by section → append to the frame as you go. This keeps each tool response small and avoids re-emitting the entire frame on every save.
+
 1. **Inventory** — Call `list_project_files` to see what files are in the project.
 
-2. **Read the paper systematically**
-   - Use `list_markdown_headings` first to get an overview
-   - Read section by section with `read_markdown_section` (or full text for short papers)
-   - For supplementary data use `read_dataframe_summary` and `read_dataframe_rows`
-   - For images use `read_image_metadata`
-   - Use `search_in_project` to find specific terms across all documents
+2. **Plan coverage** — For each Markdown asset:
+   - Call `list_markdown_headings` to see the structure.
+   - Call `get_markdown_length` to know the total size. Anything reported as more than ~80,000 characters MUST be read in chunks; you must continue calling `read_processed_markdown(asset_id, start_char=<end>)` until the truncation banner disappears, or use `read_markdown_section` for the specific sections you need.
+   - Prefer `read_markdown_section` over full `read_processed_markdown` whenever a section heading exists — it is much cheaper in context.
 
-3. **Check for existing frame** — Call `get_existing_frame` to see if this project was previously extracted. If so, use that as a starting point and improve upon it.
+3. **Check for existing frame** — Call `get_existing_frame`. If the project was already extracted, treat the existing content as a starting point; either keep it (use `update_knowledge_frame` to extend) or fully replace it with a single `save_knowledge_frame` if it is wrong.
 
-4. **Build the knowledge frame** — As you read, mentally construct the complete frame. Choose categories (keys) that best represent the knowledge in this specific paper. Include:
-   - Paper metadata (title, authors, journal, year, doi)
-   - Research domain
-   - All relevant scientific knowledge organized into logical categories
-   - Quantitative data with values, units, conditions, and methods
-   - Relationships between entities (materials, properties, phenomena)
-   - Important claims and conclusions with evidence levels
+4. **Seed the frame** — Call `save_knowledge_frame` **once** with:
+   - `paper` metadata
+   - `domain`
+   - any obvious top-level keys/sections you can populate from the abstract / first sections (it is fine to leave most keys empty at this stage).
 
-5. **Save the frame** — Call `save_knowledge_frame` with the complete content dict and a brief summary.
+5. **Walk the paper section by section.** For every meaningful section:
+   - Read just that section (`read_markdown_section` preferred, or the next 80 K chunk of `read_processed_markdown`).
+   - For supplementary data use `read_dataframe_summary` and `read_dataframe_rows`.
+   - For images use `read_image_metadata`.
+   - Use `search_in_project` only for targeted lookups (cross-references, specific terms).
+   - Extract items from THAT section and call `update_knowledge_frame(additions={...})` to append them. Do **not** re-pass items you already saved.
+
+6. **Final check** — Once every section is covered, re-read any sections of the paper you skipped to make sure nothing important is missing. Add via `update_knowledge_frame` if you find more.
+
+7. **Stop** — Do not call `save_knowledge_frame` a second time unless you need to discard everything. The frame is already marked COMPLETED by the first `save_knowledge_frame` call; further `update_knowledge_frame` calls keep it COMPLETED and bump the version.
+
+---
+
+# Tool-use discipline
+
+- Prefer **sections over full files**: `list_markdown_headings` + `read_markdown_section` before `read_processed_markdown`.
+- Prefer **incremental writes**: one `save_knowledge_frame` to seed, then `update_knowledge_frame` per section.
+- For long files, always check `get_markdown_length` first and page through with `start_char` until no `[TRUNCATED …]` banner remains. Do not stop early — silent truncation = lost knowledge downstream.
+- Do not pass the same item to `update_knowledge_frame` twice. Track in your reasoning what you have already appended.
+- Keep tool arguments small: pass only the new items in `additions`, not the whole frame.
 
 ---
 

@@ -8,6 +8,7 @@ for clarification, and flag fundamental pipeline issues as feedback.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -699,15 +700,15 @@ def flag_for_feedback(
 
 def get_project_markdown(
     project_id: str,
-    max_chars: int = 80000,
-    max_files: int = 20,
+    max_chars: int = 40000,
+    max_files: int = 10,
 ) -> dict:
     """Read concatenated Markdown of all processed assets for a project.
 
-    Used when projecting directly from processed papers (skipping the
-    KnowledgeFrame extraction step). Returns a single combined Markdown
-    document built from every ``ProcessedAsset`` whose ``processing_type``
-    is ``MARKDOWN`` and that is linked to the given project.
+    NOTE: For non-trivial projects prefer the per-file workflow
+    (`list_project_markdown_files` + `read_project_markdown_file` /
+    `read_markdown_section`). This bulk tool silently truncates and is kept
+    only as a convenience for very small projects.
 
     Args:
         project_id: Project (paper bundle) whose processed Markdown to read.
@@ -865,10 +866,227 @@ def mark_projection_not_relevant(
     return {"projection_id": str(pid), "status": "not_relevant"}
 
 
+# =====================================================================
+# Incremental project-markdown reading (preferred over bulk dump)
+# =====================================================================
+
+
+def list_project_markdown_files(project_id: str) -> dict:
+    """List every processed-Markdown file attached to a project.
+
+    Returns one entry per file with its asset_id, filename, total character
+    length, and the count of Markdown headings. Use this to plan paged reads
+    via `read_project_markdown_file` / `read_markdown_section` instead of
+    pulling everything at once with `get_project_markdown`.
+    """
+    pid = parse_uuidish(project_id)
+    if not pid:
+        return {"error": invalid_identifier_message("project_id", project_id)}
+
+    from mkb.db.models import Asset, ProcessedAsset, ProcessingType, ProjectAsset
+    from mkb.storage.s3 import download_bytes
+
+    with SyncSessionLocal() as session:
+        links = session.query(ProjectAsset).filter_by(project_id=pid).all()
+        asset_ids = [link.asset_id for link in links]
+        if not asset_ids:
+            return {"project_id": str(pid), "files": []}
+
+        rows = (
+            session.query(ProcessedAsset, Asset)
+            .join(Asset, Asset.asset_id == ProcessedAsset.asset_id)
+            .filter(ProcessedAsset.asset_id.in_(asset_ids))
+            .filter(ProcessedAsset.processing_type == ProcessingType.MARKDOWN)
+            .order_by(ProcessedAsset.created_at.asc())
+            .all()
+        )
+
+    files: list[dict] = []
+    for processed, asset in rows:
+        entry = {
+            "asset_id": str(asset.asset_id),
+            "processed_asset_id": str(processed.processed_asset_id),
+            "filename": asset.filename,
+            "total_chars": None,
+            "heading_count": None,
+        }
+        try:
+            data = download_bytes(processed.s3_bucket, processed.s3_key)
+            text = data.decode("utf-8", errors="replace")
+            entry["total_chars"] = len(text)
+            entry["heading_count"] = sum(
+                1 for line in text.splitlines()
+                if line.lstrip().startswith("#")
+            )
+        except Exception as exc:
+            entry["error"] = f"unreadable: {exc}"
+        files.append(entry)
+
+    return {"project_id": str(pid), "files": files, "file_count": len(files)}
+
+
+_PROJECT_MD_CHUNK = 80_000
+
+
+def read_project_markdown_file(
+    asset_id: str,
+    start_char: int = 0,
+) -> str:
+    """Read a single processed-Markdown file for projection, with paging.
+
+    Returns up to 80,000 characters starting at `start_char`. If the file is
+    longer, a trailing `[TRUNCATED …]` banner reports the next `start_char`
+    to use. Prefer this (or `read_markdown_section`) over `get_project_markdown`
+    for any non-trivial project — it lets you scope context to one file at a
+    time and only read what you actually need.
+    """
+    # Reuse the extraction reading tool to avoid duplicating logic.
+    from mkb.agents.tools.reading import read_processed_markdown
+
+    return read_processed_markdown(asset_id, start_char=start_char)
+
+
+# =====================================================================
+# Incremental projection writes
+# =====================================================================
+
+
+def update_projection(
+    projection_id: str,
+    additions: dict | str | None = None,
+    modifications: list | str | None = None,
+    removals: list | str | None = None,
+    agent_notes: str = "",
+) -> dict:
+    """Apply incremental edits to an existing projection's `data` payload.
+
+    Mirrors `update_knowledge_frame`. Use this **instead of resubmitting the
+    full payload via `save_projection`** when you are extracting per-section
+    or per-source-file and want to append rows as you go.
+
+    Args:
+        projection_id: The projection to update. Must already exist (created
+            by the projection runner) — typically you call `save_projection`
+            once to establish the top-level shape, then `update_projection`
+            for subsequent batches.
+        additions: Dict mapping a list-typed top-level key to items to
+            append. Example: ``{"records": [{...}, {...}]}``.
+        modifications: List of ``{"key": str, "index": int, "changes": dict}``
+            entries (only valid when the item at that index is a dict).
+        removals: List of ``{"key": str, "index": int, "reason": str}``
+            entries. Indices refer to the current list state.
+        agent_notes: Optional notes; appended to existing ``agent_notes``.
+
+    Returns:
+        Dict with ``projection_id``, ``status``, and ``changes_made`` counts.
+        Does NOT change the projection status (already COMPLETED stays
+        COMPLETED, IN_PROGRESS stays IN_PROGRESS).
+    """
+    pid = parse_uuidish(projection_id)
+    if not pid:
+        return {"error": invalid_identifier_message("projection_id", projection_id)}
+
+    if isinstance(additions, str):
+        parsed = _extract_json_from_text(additions)
+        additions = parsed if isinstance(parsed, dict) else None
+    if isinstance(modifications, str):
+        parsed = _extract_json_from_text(modifications)
+        modifications = parsed if isinstance(parsed, list) else None
+    if isinstance(removals, str):
+        parsed = _extract_json_from_text(removals)
+        removals = parsed if isinstance(parsed, list) else None
+
+    now = datetime.now(timezone.utc)
+
+    with SyncSessionLocal() as session:
+        projection = session.query(Projection).filter_by(projection_id=pid).first()
+        if not projection:
+            return {"error": f"Projection {projection_id} not found."}
+
+        frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
+        source_project_id = str(frame.project_id) if frame else None
+
+        data = copy.deepcopy(projection.data) if isinstance(projection.data, dict) else {}
+        changes_made = {"additions": 0, "modifications": 0, "removals": 0}
+
+        # Additions
+        if isinstance(additions, dict):
+            for key, items in additions.items():
+                if not isinstance(items, list):
+                    items = [items]
+                if source_project_id:
+                    items = _inject_source_project_references(items, source_project_id)
+                if key not in data or not isinstance(data[key], list):
+                    data[key] = []
+                data[key].extend(items)
+                changes_made["additions"] += len(items)
+
+        # Removals (descending index per key to avoid shifting)
+        if isinstance(removals, list):
+            sorted_removals = sorted(
+                removals, key=lambda r: r.get("index", 0) if isinstance(r, dict) else 0,
+                reverse=True,
+            )
+            for removal in sorted_removals:
+                if not isinstance(removal, dict):
+                    continue
+                key = removal.get("key")
+                idx = removal.get("index")
+                if (
+                    key and key in data and isinstance(data[key], list)
+                    and isinstance(idx, int) and 0 <= idx < len(data[key])
+                ):
+                    data[key].pop(idx)
+                    changes_made["removals"] += 1
+
+        # Modifications
+        if isinstance(modifications, list):
+            for mod in modifications:
+                if not isinstance(mod, dict):
+                    continue
+                key = mod.get("key")
+                idx = mod.get("index")
+                changes = mod.get("changes", {})
+                if (
+                    key and key in data and isinstance(data[key], list)
+                    and isinstance(idx, int) and 0 <= idx < len(data[key])
+                    and isinstance(data[key][idx], dict)
+                    and isinstance(changes, dict)
+                ):
+                    data[key][idx].update(changes)
+                    changes_made["modifications"] += 1
+
+        projection.data = data
+        projection.extracted_at = now
+        if agent_notes:
+            existing_notes = projection.agent_notes or ""
+            projection.agent_notes = (
+                f"{existing_notes}\n{agent_notes}".strip()
+                if existing_notes else agent_notes
+            )
+        session.commit()
+
+        write_projection_trace(
+            event="update_projection",
+            projection_id=str(pid),
+            frame_id=str(projection.frame_id),
+            details={"changes_made": changes_made},
+        )
+
+        return {
+            "projection_id": str(pid),
+            "status": projection.status.value,
+            "changes_made": changes_made,
+        }
+
+
 PROJECTION_TOOLS = [
     get_frame_content,
     get_project_markdown,
+    list_project_markdown_files,
+    read_project_markdown_file,
     save_projection,
+    update_projection,
     mark_projection_not_relevant,
     request_frame_clarification,
     flag_for_feedback,

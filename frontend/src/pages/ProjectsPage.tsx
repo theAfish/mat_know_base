@@ -282,9 +282,10 @@ interface ProjectDetailProps {
   project: Project
   spaces: Space[]
   onClose: () => void
+  onJobComplete?: () => void
 }
 
-function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
+function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetailProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [selectedSpace, setSelectedSpace] = useState<string>(spaces[0]?.space_id ?? '')
@@ -319,13 +320,19 @@ function ProjectDetail({ project, spaces, onClose }: ProjectDetailProps) {
           pollRef.current = setTimeout(poll, 1000)
         } else {
           setActiveJobId(null)
+          if (job.status === 'COMPLETED') {
+            // Refresh in-modal job list and notify the parent so the
+            // outer table (asset counts, frame status, ...) updates too.
+            loadJobs()
+            onJobComplete?.()
+          }
         }
       } catch {
         pollRef.current = setTimeout(poll, 2000)
       }
     }
     pollRef.current = setTimeout(poll, 500)
-  }, [])
+  }, [loadJobs, onJobComplete])
 
   const runAction = async (fn: () => Promise<{ job_id: string }>) => {
     try {
@@ -718,6 +725,7 @@ function BrowseTab({ spaces }: { spaces: Space[] }) {
           project={selected}
           spaces={spaces}
           onClose={() => { setSelected(null); load() }}
+          onJobComplete={load}
         />
       )}
     </>

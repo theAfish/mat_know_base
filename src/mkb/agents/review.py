@@ -9,16 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import uuid
 
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
 
+from mkb.agents._utils import create_llm
 from mkb.agents.prompts.review import REVIEW_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools import ALL_TOOLS
-from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import KnowledgeFrame
 
@@ -29,15 +27,9 @@ APP_NAME = "mkb_review"
 
 def build_review_agent(model: str | None = None) -> Agent:
     """Create a configured review agent."""
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-    if settings.openai_api_base:
-        os.environ.setdefault("OPENAI_API_BASE", settings.openai_api_base)
-
-    llm = LiteLlm(model=model or settings.extraction_model)
     return Agent(
         name="knowledge_reviewer",
-        model=llm,
+        model=create_llm(model),
         instruction=REVIEW_PROMPT,
         tools=ALL_TOOLS,
     )

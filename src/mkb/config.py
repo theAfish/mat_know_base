@@ -57,6 +57,9 @@ class Settings(BaseSettings):
 
     # ── LLM / Agent ─────────────────────────────────────────────
     extraction_model: str = "openai/qwen-plus"
+    # Multimodal model used by vision-capable projection tools.
+    # Falls back to extraction_model when empty; set to e.g. "openai/qwen-vl-plus".
+    vision_model: str = ""
     google_api_key: str = ""
     openai_api_key: str = Field(
         default="",

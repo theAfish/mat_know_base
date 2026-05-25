@@ -601,6 +601,7 @@ def list_projects(limit: int = 50) -> list[dict]:
                 "asset_count": asset_count,
                 "frame_status": frame.status.value if frame else "NO_FRAME",
                 "created_at": p.created_at.isoformat() if p.created_at else None,
+                "duplicate_of": (p.metadata_ or {}).get("duplicate_of"),
             })
         return result
 
@@ -1366,6 +1367,7 @@ def review_knowledge_graph(
     model: str | None = None,
     verbose: bool = False,
     seed_count: int = 10,
+    progress_callback=None,
 ) -> dict:
     """Run the graph review agent to deduplicate and clean the knowledge graph.
 
@@ -1388,7 +1390,7 @@ def review_knowledge_graph(
     from mkb.agents.graph_review import run_graph_review
 
     init_db()
-    return run_graph_review(mode=mode, model=model, verbose=verbose, seed_count=seed_count)
+    return run_graph_review(mode=mode, model=model, verbose=verbose, seed_count=seed_count, progress_callback=progress_callback)
 
 
 def get_graph_review_counts(space_id: str | uuid.UUID | None = None) -> dict:

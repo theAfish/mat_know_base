@@ -277,7 +277,13 @@ def _render_project_list():
         status_text = running_job["label"] if running_job else p["frame_status"]
         status_icon = "🟡" if running_job else icon
         cols[0].write(f"{status_icon} {status_text}")
-        cols[1].write(p["label"] or p["source_path"] or str(p["project_id"])[:12])
+        label = p["label"] or p["source_path"] or str(p["project_id"])[:12]
+        if p.get("duplicate_of"):
+            label = f"⚠️ {label}"
+        cols[1].write(label)
+        if p.get("duplicate_of"):
+            # Show a short tooltip-style note under the label
+            cols[1].caption(f"Redundant — same content as project `{p['duplicate_of'][:8]}…`")
         cols[2].write(str(p["asset_count"]))
         if cols[3].button("View", key=f"view_{p['project_id']}"):
             st.session_state["selected_frame_project"] = p["project_id"]
@@ -302,7 +308,12 @@ def _render_search_results(results: dict):
         st.write("**Projects**")
         for project in projects:
             cols = st.columns([5, 1])
-            cols[0].write(project["label"] or project["source_path"] or project["project_id"])
+            label = project["label"] or project["source_path"] or project["project_id"]
+            if project.get("duplicate_of"):
+                label = f"⚠️ {label}"
+            cols[0].write(label)
+            if project.get("duplicate_of"):
+                cols[0].caption(f"Redundant — same content as project `{project['duplicate_of'][:8]}…`")
             if cols[1].button("View", key=f"search_project_{project['project_id']}"):
                 st.session_state["selected_frame_project"] = project["project_id"]
                 st.session_state["frame_detail_project"] = project["project_id"]
@@ -342,6 +353,14 @@ def _render_project_detail(project_id: str):
             st.session_state.pop("selected_frame_project", None)
             st.session_state.pop("frame_detail_project", None)
             st.rerun()
+
+    if p.get("duplicate_of"):
+        st.warning(
+            f"⚠️ This project is redundant — its files are identical to project "
+            f"`{p['duplicate_of'][:8]}…` which was uploaded earlier. "
+            "You can safely delete this project.",
+            icon=None,
+        )
 
     # ── Pipeline actions ──────────────────────────────────────────
     st.write("**Pipeline**")
