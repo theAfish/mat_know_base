@@ -8,18 +8,15 @@ Uses the AgentRunner for execution and flexible prompts for extraction.
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
 
-from mkb.agents._utils import run_async_sync
+from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.kb_extraction import EXTRACTION_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools import ALL_TOOLS
-from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import FrameStatus, KnowledgeFrame
 
@@ -33,21 +30,11 @@ APP_NAME = "mkb_extraction"
 # =====================================================================
 
 
-def _setup_env():
-    """Ensure LLM environment variables are set."""
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-    if settings.openai_api_base:
-        os.environ.setdefault("OPENAI_API_BASE", settings.openai_api_base)
-
-
 def build_extraction_agent(model: str | None = None) -> Agent:
     """Create a configured extraction agent with all tools."""
-    _setup_env()
-    llm = LiteLlm(model=model or settings.extraction_model)
     return Agent(
         name="knowledge_extractor",
-        model=llm,
+        model=create_llm(model),
         instruction=EXTRACTION_PROMPT,
         tools=ALL_TOOLS,
     )
@@ -103,9 +90,12 @@ async def _run_extraction_async(
     message = (
         f"Extract knowledge from project {project_id} "
         f"(label: {project_label}). "
-        f"Start by listing the files, then systematically "
-        f"read and extract all scientific knowledge into "
-        f"a single knowledge frame."
+        f"Follow the seed-then-incremental workflow: "
+        f"list files, inspect headings and total length, seed the frame "
+        f"once with save_knowledge_frame, then walk the paper section by "
+        f"section and append items via update_knowledge_frame. Make sure "
+        f"every section of every Markdown file is covered (page through "
+        f"truncated reads until no [TRUNCATED] banner remains)."
     )
 
     result = await runner.run(

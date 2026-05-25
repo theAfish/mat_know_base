@@ -15,6 +15,7 @@ to care which backend produced the output.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -142,7 +143,7 @@ class MinerUApiPDFProcessor(TextualProcessor):
             "language": self.language,
             "model_version": self.model_version,
             "is_ocr": self.enable_ocr,
-            "files": [{"name": filename, "is_ocr": self.enable_ocr, "data_id": filename}],
+            "files": [{"name": filename, "is_ocr": self.enable_ocr, "data_id": hashlib.sha256(filename.encode()).hexdigest()}],
         }
         resp = _http_json(
             f"{self.api_base}/file-urls/batch",

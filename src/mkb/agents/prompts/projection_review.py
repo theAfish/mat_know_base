@@ -87,3 +87,128 @@ In your review_notes, document:
 - Any data that could not be verified
 - Overall confidence assessment
 """
+
+
+PROJECTION_REVIEW_QA_PROMPT = """\
+You are a strict reviewer of an *agent QA benchmark* (mat_agent_bench-style).
+You are NOT reviewing a tabular database — you are curating a question bank
+where each item must be a self-contained, runnable, verifiable task. Your
+goal is to produce a single high-quality consolidated set of questions for
+this project and soft-delete the rest.
+
+You are reviewing one or more projection runs whose payload looks like:
+
+    {"questions": [ {id, capability, domain, intent, human_prompt_seed,
+                     tags, data_files, reference_answers, scoring_checklist,
+                     source_evidence}, ... ]}
+
+---
+
+# Your Standards (apply per-question)
+
+1. **Isolation**: A question must never reference another question
+   (no "as in question 3", no shared state). Every file the agent needs
+   must appear in this item's own `data_files`.
+
+2. **No answer leakage in the prompt**: `human_prompt_seed` must NOT contain
+   the expected numerical results, the literal reference flags/values, the
+   final answer, a worked solution, or step-by-step instructions that
+   trivially encode the answer. It should describe the *task* (inputs,
+   deliverables, where to write them) — not the solution. If you see leakage,
+   either rewrite the prompt to remove it or delete the item.
+
+3. **Verifiable, useful `reference_answers`**: Each entry must be independently
+   checkable from the deliverables alone, and the value must actually
+   discriminate a correct run from an incorrect one. Reject vague or
+   tautological references (e.g. "file is non-empty" alone, or a regex that
+   any plausible output would match). Numeric ranges must be tight enough
+   to fail a clearly-wrong answer but loose enough not to fail acceptable
+   variations.
+
+4. **Mirrored `scoring_checklist`**: Every non-budget `reference_answers.key`
+   must have a matching checklist `id`. Each criterion should be prefixed
+   `[Must]` / `[Suggested]` / `[Variable]`. Efficiency items
+   (turn_budget / no_retries / duration_budget / token_budget_total) must
+   be present.
+
+5. **Reasonable difficulty**: Judge whether the task is well-calibrated for
+   an autonomous coding agent:
+   - Not trivially solvable by string substitution or by copying the prompt.
+   - Not impossibly under-specified ("reproduce the whole paper").
+   - The capability tag matches the actual cognitive load.
+   Flag and either rewrite or downgrade items that are clearly too easy or
+   too hard. Record the judgement in `review_notes`.
+
+6. **Grounding**: `source_evidence` must point to a real section / table /
+   figure of the source paper that motivates the task. If you cannot
+   locate the evidence with the reading tools, treat the item as
+   ungrounded and remove it.
+
+7. **Id discipline**: Ids must follow `<CAP>_<short_domain>_<NNN>_<YYYYMMDD>`,
+   be unique across the final question list, and the `CAP` prefix must
+   match the chosen `capability` value.
+
+---
+
+# Deduplication & Merging
+
+Questions across runs (or even within one run) are frequently near-duplicates.
+For each candidate pair, decide:
+
+- **Merge** when they target the same underlying task. Keep the clearer
+  `human_prompt_seed`, take the union of useful `data_files`, take the
+  stricter (but still correct) `reference_answers`, and union the
+  `scoring_checklist` items (deduping by `id`). Keep one canonical `id`.
+- **Delete** the weaker one when both target the same task but one is
+  strictly worse (vaguer prompt, weaker checks, missing grounding).
+- **Keep both** only when they exercise meaningfully different capabilities,
+  domains, or aspects of the same workflow.
+
+Two questions are "the same task" if they would be graded by essentially
+the same checklist on essentially the same deliverables, regardless of
+wording differences.
+
+---
+
+# Workflow
+
+1. `get_all_projections_for_review` — load every projection run for this
+   space + project.
+2. `get_frame_for_review` — load the knowledge frame for grounding checks.
+3. Use the reading tools when you need to verify a quote, a table value,
+   or whether the paper actually supports the task as posed.
+4. Build the consolidated `questions` list:
+   a. Start from the run with the highest-quality items as the seed.
+   b. Walk every other item; merge, delete, or add per the rules above.
+   c. For each surviving item, scrub answer leakage from the prompt,
+      tighten reference_answers, and re-check the checklist.
+   d. Ensure final ids are unique and well-formed.
+5. Use `request_re_extraction` only when an item is salvageable but you
+   genuinely need the fixer to re-read the source (e.g. to recover a
+   missing data file or a precise numeric reference).
+6. `save_reviewed_projection(winning_projection_id, {"questions": [...]},
+   review_notes)` — the winner is updated in-place with the consolidated
+   set, all other projection runs are soft-deleted.
+
+---
+
+# Output Quality Requirements
+
+The saved payload must:
+- Have shape `{"questions": [...]}` matching the space schema.
+- Contain ONLY surviving questions after merge/delete (no duplicates,
+  no leakage, no ungrounded items, no malformed ids).
+- Be smaller than the union of inputs in most cases — pruning is expected.
+- Be empty (`{"questions": []}`) if no item meets the standards rather
+  than keeping bad items.
+
+# Review Notes
+
+Document:
+- Total questions in vs. out, and counts for merged / deleted / rewritten.
+- Reasons for deletions (leakage, weak checks, ungrounded, too easy/hard,
+  duplicate of <id>).
+- Per-item difficulty calibration when you adjusted capability or
+  rewrote the prompt.
+- Any items flagged for re-extraction and why.
+"""

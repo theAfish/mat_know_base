@@ -8,19 +8,16 @@ Activated by the user (not automatically by projection agents).
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
 
-from mkb.agents._utils import run_async_sync
+from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.feedback_review import FEEDBACK_REVIEW_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
 from mkb.agents.tools.frames import FRAME_TOOLS
 from mkb.agents.tools.feedback import FEEDBACK_TOOLS
-from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Feedback, FeedbackStatus
 
@@ -34,15 +31,9 @@ FEEDBACK_REVIEW_TOOLS = READING_TOOLS + FRAME_TOOLS + FEEDBACK_TOOLS
 
 def build_feedback_review_agent(model: str | None = None) -> Agent:
     """Create a feedback review agent."""
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-    if settings.openai_api_base:
-        os.environ.setdefault("OPENAI_API_BASE", settings.openai_api_base)
-
-    llm = LiteLlm(model=model or settings.extraction_model)
     return Agent(
         name="feedback_reviewer",
-        model=llm,
+        model=create_llm(model),
         instruction=FEEDBACK_REVIEW_PROMPT,
         tools=FEEDBACK_REVIEW_TOOLS,
     )

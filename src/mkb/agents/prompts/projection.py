@@ -52,6 +52,7 @@ def build_projection_prompt(
     purpose: str | None = None,
     source_type: str = "frame",
     source_id: str | None = None,
+    project_id: str | None = None,
 ) -> str:
     """Build a projection prompt from space components.
 
@@ -75,35 +76,76 @@ def build_projection_prompt(
     field_desc_str = "\n".join(f"- **{k}**: {v}" for k, v in field_descriptions.items())
 
     source_kind = (source_type or "frame").strip().lower()
+    project_id_for_images = project_id or (source_id if source_kind == "markdown" else None) or ""
+    vision_block = f"""\
+## Inspecting figures and images
+
+The processed Markdown may contain image references like
+``![](images/<hash>.jpg)``.  Some critical information (protein
+sequences, gel images, schema diagrams, plots, chemical structures)
+appears **only inside these figures** and is invisible in the plain
+text.  When the schema requires data that the surrounding text does
+not contain but a nearby figure plausibly does, use the vision tools:
+
+1. ``list_project_images(project_id="{project_id_for_images}")`` to see
+   what images are available for this project.
+2. ``read_image_with_ocr(project_id="{project_id_for_images}", image_ref=...)``
+   for text-heavy images (sequences, tables-as-image, captions).
+3. ``read_image_with_vision(project_id="{project_id_for_images}", image_ref=..., question=...)``
+   for figures requiring interpretation (diagrams, plots, multi-panel
+   composites).  Keep ``question`` narrowly scoped to the schema field
+   you are filling.
+
+Prefer OCR first for sequence-like or text-like images (faster, no LLM
+cost).  Fall back to the vision call if OCR returns garbage or the
+image is not text-based.  Do not call the vision tools on every image —
+only on the ones that plausibly contain schema-relevant data.
+"""
     if source_kind == "markdown":
         source_block = f"""\
 The source for this projection is the **raw processed Markdown** of the
 project's papers (the extraction step was skipped, so no curated knowledge
 frame is consulted).
 
-1. Call `get_project_markdown(project_id="{source_id or ''}")` to read the
-   concatenated Markdown of every processed paper attached to this project.
-   - The response separates files with `<!-- ── FILE: <name> ── -->` headers.
-   - It may be truncated; if so, you must still produce best-effort
-     extraction from what is returned.
-2. **Relevance check**: Before extracting anything, assess whether the
-   paper's subject matter is relevant to this space's domain ({domain}).
-   - If the paper clearly covers a completely different field (e.g. a
-     physics / materials-physics topic applied against a biomedical space,
-     or vice-versa), call `mark_projection_not_relevant(projection_id, reason)`
-     with a concise explanation and **stop — do not call `save_projection`**.
-   - If there is any plausible overlap, proceed with extraction.
-3. Analyze the Markdown systematically, field by field.
-4. Extract data matching each field in the schema. Do **not** invent
-   facts that are not present in the Markdown.
-5. For required fields where data is genuinely absent in the source, set
-   the value to null and note the gap in your assessment.
-6. Call `save_projection` with the extracted data and your confidence assessment.
+1. Plan your reads. Start with
+   ``list_project_markdown_files(project_id="{source_id or ''}")`` to see
+   every processed Markdown file with its total character length and
+   heading count.
+2. **Relevance check**: For each file (or just the first if the project is
+   a single paper), read a small slice — either the first chunk of
+   ``read_project_markdown_file(asset_id, start_char=0)`` or one or two
+   headings via ``read_markdown_section(asset_id, section_heading=...)`` —
+   and judge whether the subject matter is relevant to this space's domain
+   ({domain}).
+   - If clearly outside the domain, call
+     ``mark_projection_not_relevant(projection_id, reason)`` and **stop —
+     do not call ``save_projection``**.
+3. **Walk the files section by section.** For every file in scope:
+   - Use ``list_markdown_headings(asset_id)`` to see structure, then
+     ``read_markdown_section(asset_id, section_heading=...)`` to read just
+     the section you need. For files without useful headings, page through
+     with ``read_project_markdown_file(asset_id, start_char=<end>)`` until
+     no ``[TRUNCATED …]`` banner remains.
+   - Do NOT just dump every file with ``get_project_markdown`` — that
+     silently truncates and wastes context.
+4. **Incremental writes** — after reading a section, extract just the
+   items grounded in that section and append them with
+   ``update_projection(projection_id, additions={{"<key>": [<items>]}})``.
+   The first write should be ``save_projection`` with at least the
+   top-level shape (it can be empty lists for list-typed keys); after that,
+   use ``update_projection`` for every subsequent batch so you never
+   re-emit the whole payload.
+5. Do not invent facts that are not present in the Markdown. For required
+   fields where data is genuinely absent in the source, set the value to
+   null and note the gap in your assessment.
+6. When every relevant section has been processed, you are done. The
+   projection status is set to COMPLETED by the first ``save_projection``
+   call; ``update_projection`` keeps it COMPLETED.
 
 Notes:
-- `request_frame_clarification` and `get_frame_content` are not available
-  in this mode; do not call them.
-- Use `flag_for_feedback` only for structural pipeline issues — see below.
+- ``request_frame_clarification`` and ``get_frame_content`` are not
+  available in this mode; do not call them.
+- Use ``flag_for_feedback`` only for structural pipeline issues — see below.
 """
     else:
         source_block = """\
@@ -124,9 +166,15 @@ Notes:
 5. **If a field is unclear, missing, or ambiguous**, first check `agent_annotations.clarifications` to see if the same question was answered in a previous run. If a matching entry exists, use that answer directly — do NOT call `request_frame_clarification` again.
    - Only call `request_frame_clarification` if the question is genuinely new (not in the annotations).
    - After it returns, call `get_frame_content` again to read the updated frame before continuing.
-   - Repeat as needed for each gap — do not accumulate all questions; resolve them one at a time.
+   - **Hard limit: call `request_frame_clarification` at most 3 times total.** After that, proceed with extraction using whatever data is available; set missing fields to null.
 6. For required fields where data is genuinely absent in the source, set the value to null and note the gap in your assessment.
-7. Call `save_projection` with the extracted data and your confidence assessment.
+7. **Incremental writes**: call `save_projection` ONCE to establish the
+   top-level shape (it can be empty lists for list-typed keys, plus any
+   scalar fields you already have). For every additional batch of items
+   you extract while exploring the frame, append them via
+   `update_projection(projection_id, additions={"<key>": [<items>]})`
+   instead of re-calling `save_projection`. This keeps each tool call
+   small and avoids re-emitting the entire payload.
 8. Use `flag_for_feedback` only if you encounter a **structural or architectural problem** with the extraction pipeline itself (see guidelines below). Before flagging, check `agent_annotations.resolved_feedback` — if the same issue was already resolved or dismissed, do NOT re-flag it.
 """
 
@@ -157,9 +205,19 @@ Domain: {domain}
 
 ---
 
+{vision_block}
+
+---
+
 # Guidelines
 
 - **Relevance first**: If the paper's subject is entirely outside this space's domain, call `mark_projection_not_relevant` and stop. Do not call `save_projection` in that case.
+- **Tool-use discipline**:
+  - Prefer **sections over full files**: `list_markdown_headings` + `read_markdown_section` before `read_project_markdown_file`; never use `get_project_markdown` for a project with more than one or two short files.
+  - For long single files, page through with `read_project_markdown_file(asset_id, start_char=<end>)` until no `[TRUNCATED …]` banner remains. Silent truncation = lost data downstream.
+  - Prefer **incremental writes**: one `save_projection` to seed the shape, then `update_projection(additions={...})` per batch. Do not re-emit the full payload on every save.
+  - Do not append the same item twice — track in your reasoning what you have already written.
+  - Keep tool arguments small. Pass only the new items in `additions`.
 - Extract ONLY from the source content — do not fabricate data.
 - Preserve numerical precision — do not round values.
 - Include units wherever applicable.

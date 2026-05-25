@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 import magic
+from sqlalchemy import func
 
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
@@ -85,6 +86,36 @@ def _scan_files(directory: Path) -> list[Path]:
     return sorted(p for p in directory.rglob("*") if p.is_file())
 
 
+def _find_containing_project(
+    session, asset_ids: list[uuid.UUID], exclude_project_id: uuid.UUID
+) -> uuid.UUID | None:
+    """Return the project_id of a project that contains ALL given assets, or None.
+
+    Only considers projects other than *exclude_project_id* (the newly
+    created one). If the assets are spread across multiple projects (or
+    belong to no other project), returns None.
+    """
+    if not asset_ids:
+        return None
+
+    unique_asset_ids = set(asset_ids)
+    matching_projects = (
+        session.query(ProjectAsset.project_id)
+        .filter(
+            ProjectAsset.asset_id.in_(unique_asset_ids),
+            ProjectAsset.project_id != exclude_project_id,
+        )
+        .group_by(ProjectAsset.project_id)
+        .having(func.count(func.distinct(ProjectAsset.asset_id)) == len(unique_asset_ids))
+        .all()
+    )
+    if not matching_projects:
+        return None
+
+    # Return any single matching project (prefer the oldest / smallest UUID).
+    return min(row.project_id for row in matching_projects)
+
+
 def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
     """Ingest a directory as a research project. Creates or updates the project."""
     directory = Path(directory).resolve()
@@ -113,6 +144,8 @@ def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
         stats = {"total": len(files), "ingested": 0, "duplicates": 0, "errors": 0,
                  "project_id": str(project.project_id)}
 
+        duplicate_asset_ids: list[uuid.UUID] = []
+
         for fpath in files:
             try:
                 asset, is_new = _ingest_file(fpath, session, project.project_id)
@@ -120,6 +153,7 @@ def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
                     stats["ingested"] += 1
                 else:
                     stats["duplicates"] += 1
+                    duplicate_asset_ids.append(asset.asset_id)
             except Exception:
                 logger.exception("Failed to ingest %s", fpath)
                 stats["errors"] += 1
@@ -128,6 +162,24 @@ def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
         project.file_count = session.query(ProjectAsset).filter_by(
             project_id=project.project_id
         ).count()
+
+        # Detect duplicate projects: if ALL files were already-ingested assets,
+        # check whether they all belong to a single existing project.
+        if stats["ingested"] == 0 and duplicate_asset_ids:
+            duplicate_of_id = _find_containing_project(
+                session, duplicate_asset_ids, project.project_id
+            )
+            if duplicate_of_id is not None:
+                meta = dict(project.metadata_ or {})
+                meta["duplicate_of"] = str(duplicate_of_id)
+                project.metadata_ = meta
+                stats["duplicate_of"] = str(duplicate_of_id)
+                logger.info(
+                    "Project %s marked as duplicate of %s",
+                    project.project_id,
+                    duplicate_of_id,
+                )
+
         session.commit()
         logger.info("Project %s (%s) complete: %s", project.project_id, project.label, stats)
 

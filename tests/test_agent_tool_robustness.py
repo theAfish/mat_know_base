@@ -1,3 +1,4 @@
+import json
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -199,3 +200,161 @@ def test_compact_json_payload_trims_large_strings_lists_and_dicts():
     first_value = next(iter(compacted.values()))
     assert len(first_value["items"]) <= 20
     assert len(first_value["text"]) <= 120
+
+
+# ---------------------------------------------------------------------------
+# update_projection tests
+# ---------------------------------------------------------------------------
+
+
+def _make_update_projection_session(fake_projection, fake_frame):
+    """Return a context-manager mock for SyncSessionLocal."""
+
+    def query_side_effect(cls):
+        q = MagicMock()
+        if cls is Projection:
+            q.filter_by.return_value.first.return_value = fake_projection
+        elif cls is KnowledgeFrame:
+            q.filter_by.return_value.first.return_value = fake_frame
+        return q
+
+    session = MagicMock()
+    session.query.side_effect = query_side_effect
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=session)
+    cm.__exit__ = MagicMock(return_value=False)
+    return cm, session
+
+
+def test_update_projection_parses_json_string_inputs():
+    """Additions and removals passed as JSON strings are parsed before use."""
+    from mkb.agents.tools.projection import update_projection
+
+    projection_id = uuid.uuid4()
+    frame_id = uuid.uuid4()
+
+    fake_projection = MagicMock(spec=Projection)
+    fake_projection.projection_id = projection_id
+    fake_projection.frame_id = frame_id
+    fake_projection.data = {"records": [{"name": "existing"}]}
+    fake_projection.status.value = "COMPLETED"
+    fake_projection.agent_notes = ""
+
+    fake_frame = MagicMock(spec=KnowledgeFrame)
+    fake_frame.project_id = uuid.uuid4()
+
+    cm, session = _make_update_projection_session(fake_projection, fake_frame)
+
+    additions_str = json.dumps({"records": [{"name": "new_item"}]})
+
+    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
+        with patch("mkb.agents.tools.projection.write_projection_trace"):
+            result = update_projection(
+                projection_id=str(projection_id),
+                additions=additions_str,
+            )
+
+    assert result["changes_made"]["additions"] == 1
+    assert result["changes_made"]["removals"] == 0
+    session.commit.assert_called_once()
+
+
+def test_update_projection_additions_append_to_existing_list():
+    """Additions extend an existing list in the projection data."""
+    from mkb.agents.tools.projection import update_projection
+
+    projection_id = uuid.uuid4()
+    frame_id = uuid.uuid4()
+
+    fake_projection = MagicMock(spec=Projection)
+    fake_projection.projection_id = projection_id
+    fake_projection.frame_id = frame_id
+    fake_projection.data = {"records": [{"name": "alpha"}]}
+    fake_projection.status.value = "COMPLETED"
+    fake_projection.agent_notes = ""
+
+    fake_frame = None  # no frame — source_project_id injection skipped
+
+    cm, session = _make_update_projection_session(fake_projection, fake_frame)
+
+    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
+        with patch("mkb.agents.tools.projection.write_projection_trace"):
+            update_projection(
+                projection_id=str(projection_id),
+                additions={"records": [{"name": "beta"}, {"name": "gamma"}]},
+            )
+
+    updated_data = fake_projection.data
+    assert len(updated_data["records"]) == 3
+    assert updated_data["records"][0]["name"] == "alpha"
+    assert updated_data["records"][1]["name"] == "beta"
+    assert updated_data["records"][2]["name"] == "gamma"
+
+
+def test_update_projection_removals_applied_in_descending_index_order():
+    """Removals at higher indices are processed first to avoid index shifting."""
+    from mkb.agents.tools.projection import update_projection
+
+    projection_id = uuid.uuid4()
+    frame_id = uuid.uuid4()
+
+    fake_projection = MagicMock(spec=Projection)
+    fake_projection.projection_id = projection_id
+    fake_projection.frame_id = frame_id
+    fake_projection.data = {"records": [{"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}]}
+    fake_projection.status.value = "COMPLETED"
+    fake_projection.agent_notes = ""
+
+    fake_frame = None
+
+    cm, session = _make_update_projection_session(fake_projection, fake_frame)
+
+    # Remove indices 1 and 3 (b and d). Providing in ascending order to verify
+    # the function itself reorders them descending.
+    removals = [
+        {"key": "records", "index": 1, "reason": "duplicate"},
+        {"key": "records", "index": 3, "reason": "irrelevant"},
+    ]
+
+    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
+        with patch("mkb.agents.tools.projection.write_projection_trace"):
+            result = update_projection(
+                projection_id=str(projection_id),
+                removals=removals,
+            )
+
+    assert result["changes_made"]["removals"] == 2
+    remaining_names = [r["name"] for r in fake_projection.data["records"]]
+    assert remaining_names == ["a", "c"]
+
+
+def test_update_projection_injects_source_project_id_when_frame_exists():
+    """When a frame is found, source_project_id is injected into added items."""
+    from mkb.agents.tools.projection import update_projection
+
+    projection_id = uuid.uuid4()
+    frame_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+
+    fake_projection = MagicMock(spec=Projection)
+    fake_projection.projection_id = projection_id
+    fake_projection.frame_id = frame_id
+    fake_projection.data = {}
+    fake_projection.status.value = "IN_PROGRESS"
+    fake_projection.agent_notes = ""
+
+    fake_frame = MagicMock(spec=KnowledgeFrame)
+    fake_frame.project_id = project_id
+
+    cm, session = _make_update_projection_session(fake_projection, fake_frame)
+
+    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
+        with patch("mkb.agents.tools.projection.write_projection_trace"):
+            update_projection(
+                projection_id=str(projection_id),
+                additions={"records": [{"name": "item_a"}]},
+            )
+
+    records = fake_projection.data["records"]
+    assert len(records) == 1
+    assert records[0]["source_project_id"] == str(project_id)

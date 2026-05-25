@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo, useLayoutEffect } from 'react'
 import { listProjections, deleteProjection } from '../api/projections'
 import { listSpaces, getSpace } from '../api/spaces'
 import { listProjects } from '../api/projects'
@@ -103,48 +103,389 @@ function sectionToRows(
 
 // ─── Combined table for one section ──────────────────────────────────────────
 
+// ─── Column preferences (per section, persisted to localStorage) ─────────────
+
+type ColPrefs = {
+  // Ordered list of visible columns (subset of all known cols).
+  visible: string[]
+  // Per-column width (px). Missing = auto.
+  widths: Record<string, number>
+  // All columns ever seen (so we can offer hidden ones in the picker).
+  known: string[]
+}
+
+const COL_PREFS_KEY = (name: string) => `mkb_proj_cols::${name}`
+
+function loadColPrefs(name: string): ColPrefs | null {
+  try {
+    const raw = localStorage.getItem(COL_PREFS_KEY(name))
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || !Array.isArray(parsed.visible)) return null
+    return {
+      visible: parsed.visible,
+      widths: parsed.widths ?? {},
+      known: Array.isArray(parsed.known) ? parsed.known : parsed.visible,
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveColPrefs(name: string, prefs: ColPrefs) {
+  try { localStorage.setItem(COL_PREFS_KEY(name), JSON.stringify(prefs)) } catch { /* ignore quota */ }
+}
+
+// ─── Combined table for one section ──────────────────────────────────────────
+
 function SectionTable({
   name,
   rows,
+  onRequestDeleteProjection,
 }: {
   name: string
   rows: Array<Record<string, string>>
+  onRequestDeleteProjection?: (projectionIds: string[]) => void
 }) {
   const [page, setPage] = useState(1)
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
   const start = (page - 1) * PAGE_SIZE
   const pageRows = rows.slice(start, start + PAGE_SIZE)
-  const cols = rows.length > 0 ? defaultColumns(Object.keys(rows[0])) : []
+
+  // Discover every column across all rows so hidden cols remain pickable.
+  const allCols = useMemo(() => {
+    const seen = new Set<string>()
+    for (const r of rows) for (const k of Object.keys(r)) seen.add(k)
+    return Array.from(seen)
+  }, [rows])
+
+  // Initial / merged column preferences
+  const [prefs, setPrefs] = useState<ColPrefs>(() => {
+    const saved = loadColPrefs(name)
+    const defaults = defaultColumns(allCols.length > 0 ? allCols : [])
+    if (!saved) return { visible: defaults, widths: {}, known: allCols }
+    // Merge: keep saved ordering, append any newly discovered cols at end (hidden)
+    const merged = { ...saved, known: Array.from(new Set([...saved.known, ...allCols])) }
+    return merged
+  })
+
+  // When rows change and new columns appear, fold them into `known`.
+  useEffect(() => {
+    setPrefs(p => {
+      const merged = Array.from(new Set([...p.known, ...allCols]))
+      if (merged.length === p.known.length) return p
+      const next = { ...p, known: merged }
+      saveColPrefs(name, next)
+      return next
+    })
+  }, [allCols, name])
+
+  const visibleCols = prefs.visible.filter(c => prefs.known.includes(c))
+
+  // Persist on change
+  const updatePrefs = (fn: (p: ColPrefs) => ColPrefs) =>
+    setPrefs(p => {
+      const next = fn(p)
+      saveColPrefs(name, next)
+      return next
+    })
+
+  // ── Cell expansion modal ────────────────────────────────────────────────
+  const [expandedCell, setExpandedCell] = useState<{ col: string; value: string } | null>(null)
+
+  // ── Selection (row-level → maps to projection_id) ───────────────────────
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set())
+  const rowKey = (row: Record<string, string>, idx: number) =>
+    row.projection_id || row.id || `${start + idx}`
+  const pageRowKeys = pageRows.map(rowKey)
+  const allPageSelected = pageRowKeys.length > 0 && pageRowKeys.every(k => selectedRowKeys.has(k))
+  const togglePageAll = () => {
+    setSelectedRowKeys(prev => {
+      const next = new Set(prev)
+      if (allPageSelected) pageRowKeys.forEach(k => next.delete(k))
+      else pageRowKeys.forEach(k => next.add(k))
+      return next
+    })
+  }
+  const toggleRow = (k: string) => {
+    setSelectedRowKeys(prev => {
+      const next = new Set(prev)
+      if (next.has(k)) next.delete(k); else next.add(k)
+      return next
+    })
+  }
+  // Unique projection ids implicated by selection
+  const selectedProjectionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const r of rows) {
+      const k = r.projection_id || r.id
+      if (k && selectedRowKeys.has(k) && r.projection_id) ids.add(r.projection_id)
+    }
+    return Array.from(ids)
+  }, [rows, selectedRowKeys])
+
+  // ── Floating bottom scrollbar (always reachable, even when the table
+  //    is tall and the native scrollbar sits below the viewport) ──────────
+  const floatingScrollRef = useRef<HTMLDivElement>(null)
+  const bodyScrollRef = useRef<HTMLDivElement>(null)
+  const [innerWidth, setInnerWidth] = useState(0)
+  const [floating, setFloating] = useState<{ visible: boolean; left: number; width: number }>({
+    visible: false, left: 0, width: 0,
+  })
+
+  useLayoutEffect(() => {
+    const el = bodyScrollRef.current
+    if (!el) return
+    const update = () => setInnerWidth(el.scrollWidth)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [pageRows, visibleCols, prefs.widths])
+
+  useEffect(() => {
+    const recompute = () => {
+      const el = bodyScrollRef.current
+      if (!el) { setFloating(s => s.visible ? { ...s, visible: false } : s); return }
+      const r = el.getBoundingClientRect()
+      const vh = window.innerHeight
+      const overflows = el.scrollWidth > el.clientWidth + 1
+      // Hide the floating bar when the native one is already on-screen.
+      const nativeVisible = r.bottom <= vh
+      const partlyOnScreen = r.bottom > 0 && r.top < vh
+      const visible = overflows && partlyOnScreen && !nativeVisible
+      setFloating(prev =>
+        prev.visible === visible &&
+        Math.round(prev.left) === Math.round(r.left) &&
+        Math.round(prev.width) === Math.round(r.width)
+          ? prev
+          : { visible, left: r.left, width: r.width },
+      )
+    }
+    recompute()
+    window.addEventListener('scroll', recompute, true)
+    window.addEventListener('resize', recompute)
+    return () => {
+      window.removeEventListener('scroll', recompute, true)
+      window.removeEventListener('resize', recompute)
+    }
+  }, [innerWidth])
+
+  const onFloatingScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (bodyScrollRef.current && bodyScrollRef.current.scrollLeft !== e.currentTarget.scrollLeft)
+      bodyScrollRef.current.scrollLeft = e.currentTarget.scrollLeft
+  }
+  const onBodyScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (floatingScrollRef.current && floatingScrollRef.current.scrollLeft !== e.currentTarget.scrollLeft)
+      floatingScrollRef.current.scrollLeft = e.currentTarget.scrollLeft
+  }
+
+  // ── Column picker popover ───────────────────────────────────────────────
+  const [showPicker, setShowPicker] = useState(false)
+  const moveCol = (col: string, dir: -1 | 1) => updatePrefs(p => {
+    const idx = p.visible.indexOf(col)
+    if (idx < 0) return p
+    const swap = idx + dir
+    if (swap < 0 || swap >= p.visible.length) return p
+    const next = [...p.visible]
+    ;[next[idx], next[swap]] = [next[swap], next[idx]]
+    return { ...p, visible: next }
+  })
+  const toggleColVisible = (col: string) => updatePrefs(p => {
+    if (p.visible.includes(col)) return { ...p, visible: p.visible.filter(c => c !== col) }
+    return { ...p, visible: [...p.visible, col] }
+  })
+  const setColWidth = (col: string, w: number | null) => updatePrefs(p => {
+    const widths = { ...p.widths }
+    if (w == null || Number.isNaN(w) || w <= 0) delete widths[col]
+    else widths[col] = Math.max(40, Math.min(1200, Math.round(w)))
+    return { ...p, widths }
+  })
+  const resetPrefs = () => updatePrefs(() => ({
+    visible: defaultColumns(allCols),
+    widths: {},
+    known: allCols,
+  }))
+
+  const colStyle = (col: string): React.CSSProperties => {
+    const w = prefs.widths[col]
+    if (!w) return { maxWidth: '20rem' }
+    return { width: w, minWidth: w, maxWidth: w }
+  }
 
   return (
     <div className="space-y-2">
-      <h4 className="text-sm font-semibold text-slate-200 capitalize">
-        {name.replace(/_/g, ' ')} ({rows.length})
-      </h4>
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs border-collapse">
+      <div className="flex items-center gap-2 flex-wrap">
+        <h4 className="text-sm font-semibold text-slate-200 capitalize">
+          {name.replace(/_/g, ' ')} ({rows.length})
+        </h4>
+        <button
+          onClick={() => setShowPicker(s => !s)}
+          className="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"
+          title="Show/hide, reorder, and resize columns"
+        >
+          ⚙ Columns ({visibleCols.length}/{prefs.known.length})
+        </button>
+        {selectedRowKeys.size > 0 && (
+          <>
+            <span className="text-[11px] text-slate-400">
+              {selectedRowKeys.size} row(s) · {selectedProjectionIds.length} projection(s) selected
+            </span>
+            <button
+              onClick={() => setSelectedRowKeys(new Set())}
+              className="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
+            >
+              Clear
+            </button>
+            {onRequestDeleteProjection && selectedProjectionIds.length > 0 && (
+              <button
+                onClick={() => {
+                  onRequestDeleteProjection(selectedProjectionIds)
+                  setSelectedRowKeys(new Set())
+                }}
+                className="text-[11px] px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800/70 text-red-200 border border-red-700/40"
+                title="Delete every projection that contributed any selected row"
+              >
+                Delete {selectedProjectionIds.length} projection(s)
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {showPicker && (
+        <div className="bg-slate-900 border border-slate-700 rounded p-3 text-xs space-y-2 max-h-72 overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <span className="text-slate-400">Column controls</span>
+            <button onClick={resetPrefs} className="text-teal-400 hover:text-teal-300">Reset defaults</button>
+          </div>
+          <div className="grid grid-cols-1 gap-1">
+            {/* Visible cols first (in order), then hidden */}
+            {[...prefs.visible, ...prefs.known.filter(c => !prefs.visible.includes(c))].map(col => {
+              const isVisible = prefs.visible.includes(col)
+              return (
+                <div key={col} className="flex items-center gap-2 py-0.5">
+                  <input
+                    type="checkbox"
+                    checked={isVisible}
+                    onChange={() => toggleColVisible(col)}
+                    className="accent-teal-500"
+                  />
+                  <span className={`flex-1 truncate ${isVisible ? 'text-slate-200' : 'text-slate-500'}`}>
+                    {col.replace(/_/g, ' ')}
+                  </span>
+                  {isVisible && (
+                    <>
+                      <button
+                        onClick={() => moveCol(col, -1)}
+                        className="px-1 text-slate-500 hover:text-slate-200"
+                        title="Move left"
+                      >↑</button>
+                      <button
+                        onClick={() => moveCol(col, 1)}
+                        className="px-1 text-slate-500 hover:text-slate-200"
+                        title="Move right"
+                      >↓</button>
+                      <input
+                        type="number"
+                        placeholder="auto"
+                        value={prefs.widths[col] ?? ''}
+                        onChange={e => setColWidth(col, e.target.value === '' ? null : Number(e.target.value))}
+                        className="w-16 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-slate-200"
+                        title="Width in pixels (blank = auto)"
+                      />
+                      <span className="text-slate-600">px</span>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Body scroll container (native horizontal scrollbar lives here) */}
+      <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-x-auto">
+        <table className="text-xs border-collapse" style={{ minWidth: '100%' }}>
           <thead>
             <tr className="border-b border-slate-700">
-              {cols.map(col => (
-                <th key={col} className="text-left px-2 py-1.5 text-slate-400 font-medium whitespace-nowrap">
+              <th className="px-2 py-1.5 w-8">
+                <input
+                  type="checkbox"
+                  checked={allPageSelected}
+                  onChange={togglePageAll}
+                  className="accent-teal-500"
+                  title="Select all rows on this page"
+                />
+              </th>
+              {visibleCols.map(col => (
+                <th
+                  key={col}
+                  className="text-left px-2 py-1.5 text-slate-400 font-medium whitespace-nowrap"
+                  style={colStyle(col)}
+                >
                   {col.replace(/_/g, ' ')}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {pageRows.map((row, i) => (
-              <tr key={i} className="hover:bg-slate-800/40">
-                {cols.map(col => (
-                  <td key={col} className="px-2 py-1.5 text-slate-300 max-w-xs truncate" title={row[col]}>
-                    {row[col] ?? ''}
+            {pageRows.map((row, i) => {
+              const k = rowKey(row, i)
+              const selected = selectedRowKeys.has(k)
+              return (
+                <tr key={k} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
+                  <td className="px-2 py-1.5 w-8 align-top">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => toggleRow(k)}
+                      className="accent-teal-500"
+                    />
                   </td>
-                ))}
-              </tr>
-            ))}
+                  {visibleCols.map(col => {
+                    const v = row[col] ?? ''
+                    const long = v.length > 60 || v.includes('\n')
+                    return (
+                      <td
+                        key={col}
+                        className="px-2 py-1.5 text-slate-300 truncate align-top"
+                        style={colStyle(col)}
+                        title={long ? 'Click to view full value' : v}
+                        onClick={() => { if (v) setExpandedCell({ col, value: v }) }}
+                      >
+                        <span className={long ? 'cursor-pointer underline decoration-dotted decoration-slate-600 hover:decoration-teal-400' : ''}>
+                          {v}
+                        </span>
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
+
+      {/* Floating bottom scrollbar — pinned to viewport bottom when the
+          table's native scrollbar would otherwise be off-screen. */}
+      <div
+        ref={floatingScrollRef}
+        onScroll={onFloatingScroll}
+        className="overflow-x-auto bg-slate-900/90 border-t border-slate-700 shadow-lg"
+        style={{
+          position: 'fixed',
+          left: floating.left,
+          width: floating.width,
+          bottom: 0,
+          height: 14,
+          zIndex: 30,
+          display: floating.visible ? 'block' : 'none',
+        }}
+      >
+        <div style={{ width: innerWidth, height: 1 }} />
+      </div>
+
       {totalPages > 1 && (
         <div className="flex items-center gap-2 text-xs text-slate-400">
           <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
@@ -161,6 +502,39 @@ function SectionTable({
           </span>
         </div>
       )}
+
+      {expandedCell && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6"
+          onClick={() => setExpandedCell(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700">
+              <span className="text-sm text-slate-300 font-medium">{expandedCell.col.replace(/_/g, ' ')}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(expandedCell.value).catch(() => {}) }}
+                  className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => setExpandedCell(null)}
+                  className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <pre className="px-4 py-3 text-xs text-slate-200 whitespace-pre-wrap break-words overflow-auto">
+              {expandedCell.value}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -171,20 +545,33 @@ function ProjectionRow({
   proj,
   paperLookup,
   onDeleted,
+  selected,
+  onToggleSelected,
 }: {
   proj: Projection
   paperLookup: Record<string, string>
   onDeleted: (id: string) => void
+  selected: boolean
+  onToggleSelected: (id: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
-      <button
-        onClick={() => setExpanded(s => !s)}
-        className="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-slate-700/50"
-      >
+    <div className={`border rounded-lg overflow-hidden ${selected ? 'bg-teal-900/20 border-teal-700/50' : 'bg-slate-800 border-slate-700'}`}>
+      <div className="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-slate-700/50">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelected(proj.projection_id)}
+          onClick={e => e.stopPropagation()}
+          className="accent-teal-500"
+          title="Select for batch actions"
+        />
+        <button
+          onClick={() => setExpanded(s => !s)}
+          className="flex-1 flex items-center gap-3 text-left"
+        >
         <StatusBadge status={proj.status} />
         <span className="flex-1 text-sm text-slate-300 truncate">
           {paperLookup[proj.project_id] ?? proj.project_id.slice(0, 12)}
@@ -212,7 +599,8 @@ function ProjectionRow({
           {proj.extracted_at ? ` · ${proj.extracted_at.slice(0, 10)}` : ''}
         </span>
         <span className="text-slate-500 text-xs">{expanded ? '▲' : '▼'}</span>
-      </button>
+        </button>
+      </div>
 
       {expanded && (
         <div className="px-4 pb-4 pt-1 border-t border-slate-700 space-y-3">
@@ -281,6 +669,43 @@ export default function ProjectionsPage() {
   const [reviewJob, setReviewJob] = useState<Job | null>(null)
   const [isReviewing, setIsReviewing] = useState(false)
   const [showSpaceDetail, setShowSpaceDetail] = useState(false)
+  const [selectedProjectionIds, setSelectedProjectionIds] = useState<Set<string>>(new Set())
+  const [batchDeleting, setBatchDeleting] = useState(false)
+
+  const toggleProjectionSelected = useCallback((id: string) => {
+    setSelectedProjectionIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }, [])
+
+  const selectAllProjections = useCallback(() => {
+    setSelectedProjectionIds(new Set(projections.map(p => p.projection_id)))
+  }, [projections])
+
+  const clearProjectionSelection = useCallback(() => setSelectedProjectionIds(new Set()), [])
+
+  const batchDeleteIds = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return
+    if (!confirm(`Delete ${ids.length} projection(s)? This cannot be undone.`)) return
+    setBatchDeleting(true)
+    try {
+      const results = await Promise.allSettled(ids.map(id => deleteProjection(id)))
+      const deletedOk = ids.filter((_, i) => results[i].status === 'fulfilled')
+      const failed = results.length - deletedOk.length
+      const okSet = new Set(deletedOk)
+      setProjections(prev => prev.filter(p => !okSet.has(p.projection_id)))
+      setSelectedProjectionIds(prev => {
+        const next = new Set(prev)
+        deletedOk.forEach(id => next.delete(id))
+        return next
+      })
+      if (failed > 0) alert(`${failed} projection(s) failed to delete.`)
+    } finally {
+      setBatchDeleting(false)
+    }
+  }, [])
 
   // Load spaces once
   useEffect(() => {
@@ -458,7 +883,12 @@ export default function ProjectionsPage() {
             ) : (
               <div className="space-y-6">
                 {Object.entries(sectionRows).map(([section, rows]) => (
-                  <SectionTable key={section} name={section} rows={rows} />
+                  <SectionTable
+                    key={section}
+                    name={section}
+                    rows={rows}
+                    onRequestDeleteProjection={batchDeleteIds}
+                  />
                 ))}
               </div>
             )}
@@ -466,16 +896,53 @@ export default function ProjectionsPage() {
 
           {/* ── Individual projection list ── */}
           <div>
-            <h3 className="text-base font-semibold text-slate-200 mb-3 pt-2 border-t border-slate-700">
-              Individual Projections
-            </h3>
+            <div className="flex items-center gap-2 flex-wrap mb-3 pt-2 border-t border-slate-700">
+              <h3 className="text-base font-semibold text-slate-200">
+                Individual Projections
+              </h3>
+              <button
+                onClick={selectAllProjections}
+                className="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200"
+              >
+                Select all ({projections.length})
+              </button>
+              {selectedProjectionIds.size > 0 && (
+                <>
+                  <span className="text-[11px] text-slate-400">
+                    {selectedProjectionIds.size} selected
+                  </span>
+                  <button
+                    onClick={clearProjectionSelection}
+                    className="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => batchDeleteIds(Array.from(selectedProjectionIds))}
+                    disabled={batchDeleting}
+                    className="text-[11px] px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800/70 text-red-200 border border-red-700/40 disabled:opacity-40"
+                  >
+                    {batchDeleting ? 'Deleting…' : `Delete ${selectedProjectionIds.size} selected`}
+                  </button>
+                </>
+              )}
+            </div>
             <div className="space-y-1">
               {projections.map(p => (
                 <ProjectionRow
                   key={p.projection_id}
                   proj={p}
                   paperLookup={paperLookup}
-                  onDeleted={id => setProjections(prev => prev.filter(x => x.projection_id !== id))}
+                  selected={selectedProjectionIds.has(p.projection_id)}
+                  onToggleSelected={toggleProjectionSelected}
+                  onDeleted={id => {
+                    setProjections(prev => prev.filter(x => x.projection_id !== id))
+                    setSelectedProjectionIds(prev => {
+                      const next = new Set(prev)
+                      next.delete(id)
+                      return next
+                    })
+                  }}
                 />
               ))}
             </div>

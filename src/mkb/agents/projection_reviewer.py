@@ -16,7 +16,10 @@ import uuid
 from google.adk.agents import Agent
 
 from mkb.agents._utils import create_llm, sync_agent_run
-from mkb.agents.prompts.projection_review import PROJECTION_REVIEW_PROMPT
+from mkb.agents.prompts.projection_review import (
+    PROJECTION_REVIEW_PROMPT,
+    PROJECTION_REVIEW_QA_PROMPT,
+)
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
 from mkb.agents.tools.projection_review import PROJECTION_REVIEW_TOOLS
@@ -36,13 +39,28 @@ APP_NAME = "mkb_projection_reviewer"
 REVIEWER_TOOLS = READING_TOOLS + PROJECTION_REVIEW_TOOLS
 
 
-def build_projection_reviewer_agent(model: str | None = None) -> Agent:
-    """Create a projection reviewer agent."""
+def build_projection_reviewer_agent(
+    model: str | None = None,
+    purpose: str | None = None,
+) -> Agent:
+    """Create a projection reviewer agent.
+
+    The instruction prompt is selected from the space ``purpose``:
+    ``qa_benchmark`` spaces use a question-bank-specific reviewer that
+    deduplicates, scrubs answer leakage, and calibrates difficulty;
+    everything else uses the generic strict-data-auditor prompt.
+    """
     llm = create_llm(model)
+    if (purpose or "").lower() == "qa_benchmark":
+        instruction = PROJECTION_REVIEW_QA_PROMPT
+        agent_name = "projection_reviewer_qa"
+    else:
+        instruction = PROJECTION_REVIEW_PROMPT
+        agent_name = "projection_reviewer"
     return Agent(
-        name="projection_reviewer",
+        name=agent_name,
         model=llm,
-        instruction=PROJECTION_REVIEW_PROMPT,
+        instruction=instruction,
         tools=REVIEWER_TOOLS,
     )
 
@@ -79,8 +97,9 @@ async def _run_review_async(
             }
 
         space_name = space.name
+        space_purpose = getattr(space, "purpose", None)
 
-    agent = build_projection_reviewer_agent(model)
+    agent = build_projection_reviewer_agent(model, purpose=space_purpose)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"review_proj_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"

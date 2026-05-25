@@ -6,6 +6,7 @@ Includes tools for saving, retrieving, and updating knowledge frames.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import uuid
@@ -208,7 +209,7 @@ def update_knowledge_frame(
         if not frame.content:
             return {"error": "Frame has no content to update."}
 
-        content = dict(frame.content)
+        content = copy.deepcopy(frame.content)
         changes_made = {"additions": 0, "modifications": 0, "removals": 0}
 
         # Apply additions

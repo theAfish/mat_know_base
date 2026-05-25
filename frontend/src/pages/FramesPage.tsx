@@ -666,6 +666,14 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
   const [selectedSpaceId, setSelectedSpaceId] = useState<string>('')
   const [projectionSource, setProjectionSource] = useState<'frame' | 'markdown'>('frame')
   const [feedbackCount, setFeedbackCount] = useState(0)
+  // Bumped whenever a background job completes; passed as a key into the
+  // active tab so its useEffect-driven fetches re-run automatically.
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const refreshFeedbackCount = useCallback(() => {
+    listFeedback({ project_id: project.project_id, limit: 100 })
+      .then(items => setFeedbackCount(items.length)).catch(() => {})
+  }, [project.project_id])
 
   useEffect(() => {
     listSpaces().then(sps => {
@@ -673,9 +681,8 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
       setSpaces(visible)
       if (visible.length > 0 && !selectedSpaceId) setSelectedSpaceId(visible[0].space_id)
     }).catch(() => {})
-    listFeedback({ project_id: project.project_id, limit: 100 })
-      .then(items => setFeedbackCount(items.length)).catch(() => {})
-  }, [project.project_id])
+    refreshFeedbackCount()
+  }, [project.project_id, refreshFeedbackCount])
 
   const pollJob = useCallback((jobId: string, onDone?: () => void) => {
     setActiveJobId(jobId)
@@ -687,12 +694,17 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
           setTimeout(poll, 1000)
         } else {
           setActiveJobId(null)
-          if (j.status === 'COMPLETED') onDone?.()
+          if (j.status === 'COMPLETED') {
+            onDone?.()
+            // Force tabs that depend on backend data to refetch.
+            setRefreshKey(k => k + 1)
+            refreshFeedbackCount()
+          }
         }
       } catch { setTimeout(poll, 2000) }
     }
     setTimeout(poll, 500)
-  }, [])
+  }, [refreshFeedbackCount])
 
   const run = async (fn: () => Promise<{ job_id: string }>, onDone?: () => void) => {
     if (activeJobId) return
@@ -772,11 +784,11 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
-        {activeTab === 'assets'      && <AssetsTab projectId={project.project_id} />}
-        {activeTab === 'frame'       && <KnowledgeFrameTab projectId={project.project_id} />}
-        {activeTab === 'projections' && <ProjectionsTab projectId={project.project_id} />}
-        {activeTab === 'graph'       && <GraphTab projectId={project.project_id} />}
-        {activeTab === 'feedback'    && <FeedbackTab projectId={project.project_id} />}
+        {activeTab === 'assets'      && <AssetsTab key={`assets-${refreshKey}`} projectId={project.project_id} />}
+        {activeTab === 'frame'       && <KnowledgeFrameTab key={`frame-${refreshKey}`} projectId={project.project_id} />}
+        {activeTab === 'projections' && <ProjectionsTab key={`proj-${refreshKey}`} projectId={project.project_id} />}
+        {activeTab === 'graph'       && <GraphTab key={`graph-${refreshKey}`} projectId={project.project_id} />}
+        {activeTab === 'feedback'    && <FeedbackTab key={`fb-${refreshKey}`} projectId={project.project_id} />}
       </div>
     </div>
   )
