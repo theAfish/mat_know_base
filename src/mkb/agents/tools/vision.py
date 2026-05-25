@@ -150,8 +150,8 @@ def list_project_images(project_id: str, max_results: int = 200) -> dict:
         max_results: Hard cap on returned entries (defaults to 200).
 
     Returns:
-        Dict with ``images`` (list of {image_ref, source_filename,
-        processed_asset_id, size_bytes_known}), ``total``, and
+        Dict with ``images`` (list of {image_ref, relpath,
+        source_filename, processed_asset_id}), ``total``, and
         ``truncated``.
     """
     pid = parse_uuidish(project_id)
