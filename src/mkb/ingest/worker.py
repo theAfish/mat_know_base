@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 import magic
+from sqlalchemy import func
 
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
@@ -97,28 +98,22 @@ def _find_containing_project(
     if not asset_ids:
         return None
 
-    # For each duplicate asset, collect the set of projects it belongs to.
-    candidate_sets: list[set[uuid.UUID]] = []
-    for aid in asset_ids:
-        links = (
-            session.query(ProjectAsset)
-            .filter(
-                ProjectAsset.asset_id == aid,
-                ProjectAsset.project_id != exclude_project_id,
-            )
-            .all()
+    unique_asset_ids = set(asset_ids)
+    matching_projects = (
+        session.query(ProjectAsset.project_id)
+        .filter(
+            ProjectAsset.asset_id.in_(unique_asset_ids),
+            ProjectAsset.project_id != exclude_project_id,
         )
-        candidate_sets.append({link.project_id for link in links})
-
-    # Intersect all sets — projects that have every duplicate asset.
-    common = candidate_sets[0]
-    for s in candidate_sets[1:]:
-        common &= s
-        if not common:
-            return None
+        .group_by(ProjectAsset.project_id)
+        .having(func.count(func.distinct(ProjectAsset.asset_id)) == len(unique_asset_ids))
+        .all()
+    )
+    if not matching_projects:
+        return None
 
     # Return any single matching project (prefer the oldest / smallest UUID).
-    return min(common)
+    return min(row.project_id for row in matching_projects)
 
 
 def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
