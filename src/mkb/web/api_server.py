@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from mkb import api
 from mkb.agents.orchestrator import create_orchestrator_runner, send_message
 from mkb.agents.tools.orchestrator_tools import get_pending_workflows
+from mkb.config import settings
 
 
 _EVENT_LIMIT = 60
@@ -57,10 +58,12 @@ class AssistantSession:
 
 
 class JobManager:
-    def __init__(self) -> None:
+    def __init__(self, max_concurrent: int | None = None) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._queues: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
+        limit = max_concurrent if max_concurrent is not None else settings.max_concurrent_jobs
+        self._semaphore = threading.Semaphore(max(1, limit))
 
     def start_job(
         self,
@@ -81,7 +84,7 @@ class JobManager:
                 "job_id": job_id,
                 "kind": kind,
                 "label": label,
-                "status": "RUNNING",
+                "status": "QUEUED",
                 "project_id": project_id,
                 "result": None,
                 "error": None,
@@ -106,12 +109,16 @@ class JobManager:
             worker_kwargs["progress_callback"] = progress_callback
 
         def runner() -> None:
+            self._semaphore.acquire()
             try:
+                q.put({"type": "running"})
                 q.put({"type": "progress", "message": f"Started {label.lower()}"})
                 result = target(*worker_args, **worker_kwargs)
                 q.put({"type": "done", "result": result})
             except Exception as exc:  # noqa: BLE001
                 q.put({"type": "error", "error": str(exc)})
+            finally:
+                self._semaphore.release()
 
         threading.Thread(target=runner, daemon=True).start()
         return job_id
@@ -133,7 +140,10 @@ class JobManager:
                         continue
 
                     et = event.get("type")
-                    if et == "progress":
+                    if et == "running":
+                        job["status"] = "RUNNING"
+                        job["current_message"] = "Running"
+                    elif et == "progress":
                         message = event.get("message") or event.get("label") or "Working"
                         job["current_message"] = str(message)
                         payload = {"message": str(message), "timestamp": _now_iso()}
@@ -167,7 +177,22 @@ class JobManager:
             rows = list(self._jobs.values())
         if project_id is not None:
             rows = [j for j in rows if j.get("project_id") == project_id]
-        rows.sort(key=lambda j: j.get("updated_at") or "", reverse=True)
+        _active = {"QUEUED", "RUNNING"}
+        rows.sort(
+            key=lambda j: (
+                0 if j.get("status") in _active else 1,
+                j.get("updated_at") or "",
+            ),
+            reverse=False,
+        )
+        # active jobs first (ascending order within active), then completed desc
+        active = [j for j in rows if j.get("status") in _active]
+        inactive = sorted(
+            [j for j in rows if j.get("status") not in _active],
+            key=lambda j: j.get("updated_at") or "",
+            reverse=True,
+        )
+        rows = active + inactive
         return [dict(j) for j in rows[:limit]]
 
 

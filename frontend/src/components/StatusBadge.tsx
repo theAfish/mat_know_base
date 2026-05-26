@@ -2,6 +2,7 @@ const STATUS_COLORS: Record<string, string> = {
   COMPLETED:   'bg-green-800 text-green-100',
   RUNNING:     'bg-yellow-800 text-yellow-100',
   IN_PROGRESS: 'bg-yellow-800 text-yellow-100',
+  QUEUED:      'bg-slate-600 text-slate-200',
   PENDING:     'bg-slate-700 text-slate-300',
   FAILED:      'bg-red-800 text-red-100',
   NO_FRAME:    'bg-slate-700 text-slate-400',
@@ -10,6 +11,11 @@ const STATUS_COLORS: Record<string, string> = {
   OPEN:        'bg-orange-800 text-orange-100',
   RESOLVED:    'bg-green-800 text-green-100',
   DISMISSED:   'bg-slate-700 text-slate-400',
+  // Processing pipeline statuses
+  PROCESSED:   'bg-blue-800 text-blue-100',
+  UNPROCESSED: 'bg-slate-700 text-slate-400',
+  PARTIAL:     'bg-amber-800 text-amber-100',
+  NO_ASSETS:   'bg-slate-700 text-slate-500',
 }
 
 export default function StatusBadge({ status }: { status: string }) {

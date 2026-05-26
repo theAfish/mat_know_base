@@ -6,6 +6,7 @@ export interface Project {
   source_path: string | null
   file_count: number
   asset_count: number
+  processing_status: string
   frame_status: string | null
   created_at: string
 }
@@ -122,7 +123,7 @@ export interface Job {
   job_id: string
   kind: string
   label: string
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  status: 'QUEUED' | 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
   project_id: string | null
   result: Record<string, unknown> | null
   error: string | null

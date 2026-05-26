@@ -579,7 +579,9 @@ def link_manual_processed_data(
 
 def list_projects(limit: int = 50) -> list[dict]:
     """List research projects."""
-    from mkb.db.models import KnowledgeFrame, ProjectAsset, ResearchProject
+    from collections import defaultdict
+
+    from mkb.db.models import KnowledgeFrame, ProcessedAsset, ProjectAsset, ResearchProject
 
     init_db()
     with SyncSessionLocal() as session:
@@ -589,16 +591,56 @@ def list_projects(limit: int = 50) -> list[dict]:
             .limit(limit)
             .all()
         )
+        if not projects:
+            return []
+
+        project_ids = [p.project_id for p in projects]
+
+        # Bulk-fetch asset links for all queried projects
+        all_links = session.query(ProjectAsset).filter(ProjectAsset.project_id.in_(project_ids)).all()
+        project_to_asset_ids: dict = defaultdict(list)
+        for link in all_links:
+            project_to_asset_ids[link.project_id].append(link.asset_id)
+
+        # Bulk-fetch which assets have at least one ProcessedAsset record
+        all_asset_ids = [link.asset_id for link in all_links]
+        if all_asset_ids:
+            processed_ids = {
+                row.asset_id
+                for row in session.query(ProcessedAsset.asset_id)
+                .filter(ProcessedAsset.asset_id.in_(all_asset_ids))
+                .distinct()
+                .all()
+            }
+        else:
+            processed_ids = set()
+
+        # Bulk-fetch frames
+        frames = session.query(KnowledgeFrame).filter(KnowledgeFrame.project_id.in_(project_ids)).all()
+        frame_by_project = {f.project_id: f for f in frames}
+
         result = []
         for p in projects:
-            asset_count = session.query(ProjectAsset).filter_by(project_id=p.project_id).count()
-            frame = session.query(KnowledgeFrame).filter_by(project_id=p.project_id).first()
+            asset_ids_for_project = project_to_asset_ids[p.project_id]
+            total = len(asset_ids_for_project)
+            processed_count = sum(1 for aid in asset_ids_for_project if aid in processed_ids)
+            if total == 0:
+                processing_status = "NO_ASSETS"
+            elif processed_count == 0:
+                processing_status = "UNPROCESSED"
+            elif processed_count < total:
+                processing_status = "PARTIAL"
+            else:
+                processing_status = "PROCESSED"
+
+            frame = frame_by_project.get(p.project_id)
             result.append({
                 "project_id": str(p.project_id),
                 "label": p.label,
                 "source_path": p.source_path,
                 "file_count": p.file_count,
-                "asset_count": asset_count,
+                "asset_count": total,
+                "processing_status": processing_status,
                 "frame_status": frame.status.value if frame else "NO_FRAME",
                 "created_at": p.created_at.isoformat() if p.created_at else None,
                 "duplicate_of": (p.metadata_ or {}).get("duplicate_of"),

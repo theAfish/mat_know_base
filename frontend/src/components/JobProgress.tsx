@@ -8,7 +8,7 @@ interface Props {
 export default function JobProgress({ job, title }: Props) {
   if (!job) return null
 
-  const isRunning = job.status === 'RUNNING' || job.status === 'PENDING'
+  const isRunning = job.status === 'RUNNING' || job.status === 'PENDING' || job.status === 'QUEUED'
   const events = job.events?.slice(-5) ?? []
 
   return (
@@ -21,7 +21,8 @@ export default function JobProgress({ job, title }: Props) {
         <span className={`ml-auto text-xs px-2 py-0.5 rounded font-medium ${
           job.status === 'COMPLETED' ? 'bg-green-800 text-green-100' :
           job.status === 'FAILED'    ? 'bg-red-800 text-red-100' :
-          job.status === 'RUNNING'   ? 'bg-yellow-800 text-yellow-100' :
+          job.status === 'RUNNING'                                    ? 'bg-yellow-800 text-yellow-100' :
+          (job.status === 'QUEUED' || job.status === 'PENDING')       ? 'bg-slate-700 text-slate-300' :
           'bg-slate-700 text-slate-300'
         }`}>{job.status}</span>
       </div>
