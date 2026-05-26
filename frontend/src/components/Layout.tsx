@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { useUiStore } from '../store/uiStore'
 import type { Page } from '../types'
+import JobQueuePanel from './JobQueuePanel'
 
 const NAV_ITEMS: { page: Page; label: string; icon: string }[] = [
   { page: 'assistant',    label: 'Assistant',          icon: '🤖' },
@@ -42,6 +43,7 @@ export default function Layout({ children }: Props) {
             </button>
           ))}
         </nav>
+        <JobQueuePanel />
       </aside>
 
       {/* Main content */}

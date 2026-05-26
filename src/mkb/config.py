@@ -70,6 +70,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_BASE", "MKB_OPENAI_API_BASE"),
     )
 
+    # ── Job concurrency ─────────────────────────────────────────
+    # Maximum number of background agent jobs (extract/project/etc.) that run
+    # concurrently.  Extra jobs are queued and start as slots free up.
+    max_concurrent_jobs: int = 3
+
     # ── UI ──────────────────────────────────────────────────────
     ui_port: int = 8501
 

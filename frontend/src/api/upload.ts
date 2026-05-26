@@ -18,6 +18,7 @@ export const uploadFile = (
   form.append('file', file, file.name)
   return client.post('/upload/file', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600_000,
     onUploadProgress: e => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100))
     },

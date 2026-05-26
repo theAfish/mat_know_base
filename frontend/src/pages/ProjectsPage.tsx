@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import {
   listProjects, processProject, extractProject, projectToSpace, kgExtractProject, getProjectJobs,
   listAssets, listProcessedAssets,
@@ -8,6 +8,7 @@ import { uploadInit, uploadFile, uploadComplete, uploadIngest, uploadProcessedAs
 import { getJob } from '../api/jobs'
 import StatusBadge from '../components/StatusBadge'
 import JobProgress from '../components/JobProgress'
+import BatchActionBar from '../components/BatchActionBar'
 import type { Project, Space, Job, UploadProject, UploadFileEntry, Asset, ProcessedAsset } from '../types'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -147,10 +148,29 @@ function UploadTab() {
           const { file, relativePath } = proj.files[fi]
           setState(s => ({
             ...s,
-            progress: `Uploading ${projLabel} — ${fi + 1}/${proj.files.length}: ${file.name}`,
+            progress: `Uploading ${projLabel} (${pi + 1}/${pending.length}) — file ${fi + 1}/${proj.files.length}: ${file.name}`,
           }))
           const uploadPath = `${projLabel}/${relativePath}`
-          await uploadFile(upload_id, file, relativePath, uploadPath)
+          // Retry up to 2 times on network errors
+          let lastErr: unknown
+          let uploaded = false
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await uploadFile(upload_id, file, relativePath, uploadPath)
+              uploaded = true
+              break
+            } catch (err) {
+              lastErr = err
+              if (attempt < 2) {
+                setState(s => ({
+                  ...s,
+                  progress: `Retrying ${file.name} (attempt ${attempt + 2}/3)…`,
+                }))
+                await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
+              }
+            }
+          }
+          if (!uploaded) throw lastErr
           fileEntries.push({ name: file.name, relativePath, uploadPath })
         }
 
@@ -354,8 +374,12 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
             <h3 className="font-semibold text-slate-100 truncate">
               {project.label ?? project.source_path ?? project.project_id.slice(0, 12)}
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {project.asset_count} asset(s) · Frame: <StatusBadge status={project.frame_status ?? 'NO_FRAME'} />
+            <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+              <span>{project.asset_count} asset(s)</span>
+              <span className="text-slate-600">·</span>
+              <span>Processed: <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} /></span>
+              <span className="text-slate-600">·</span>
+              <span>Frame: <StatusBadge status={project.frame_status ?? 'NO_FRAME'} /></span>
             </p>
           </div>
           <button
@@ -658,12 +682,73 @@ function UploadProcessedModal({
   )
 }
 
+
+
 // ─── Browse tab ───────────────────────────────────────────────────────────────
 
 function BrowseTab({ spaces }: { spaces: Space[] }) {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Project | null>(null)
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
+  const [filterProcessing, setFilterProcessing] = useState<string | null>(null)
+  const [filterFrame, setFilterFrame] = useState<string | null>(null)
+  const lastClickedIdx = useRef<number | null>(null)
+
+  const visibleProjects = useMemo(() =>
+    projects.filter(p => {
+      if (filterProcessing && (p.processing_status ?? 'UNPROCESSED') !== filterProcessing) return false
+      if (filterFrame && (p.frame_status ?? 'NO_FRAME') !== filterFrame) return false
+      return true
+    }),
+    [projects, filterProcessing, filterFrame],
+  )
+
+  const handleCheck = (idx: number, id: string, shift: boolean) => {
+    if (shift && lastClickedIdx.current !== null) {
+      const lo = Math.min(lastClickedIdx.current, idx)
+      const hi = Math.max(lastClickedIdx.current, idx)
+      setCheckedIds(prev => {
+        const next = new Set(prev)
+        const adding = !prev.has(id)
+        for (let i = lo; i <= hi; i++) {
+          if (i >= 0 && i < visibleProjects.length) {
+            if (adding) next.add(visibleProjects[i].project_id)
+            else next.delete(visibleProjects[i].project_id)
+          }
+        }
+        return next
+      })
+    } else {
+      setCheckedIds(prev => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id); else next.add(id)
+        return next
+      })
+      lastClickedIdx.current = idx
+    }
+  }
+
+  const getStatus = useCallback(
+    (id: string) => projects.find(p => p.project_id === id)?.frame_status ?? 'NO_FRAME',
+    [projects],
+  )
+
+  const allChecked = visibleProjects.length > 0 && visibleProjects.every(p => checkedIds.has(p.project_id))
+  const toggleAll = () =>
+    setCheckedIds(allChecked ? new Set() : new Set(visibleProjects.map(p => p.project_id)))
+
+  const processingOptions = useMemo(() => {
+    const counts: Record<string, number> = {}
+    projects.forEach(p => { const s = p.processing_status ?? 'UNPROCESSED'; counts[s] = (counts[s] ?? 0) + 1 })
+    return Object.entries(counts).sort()
+  }, [projects])
+
+  const frameOptions = useMemo(() => {
+    const counts: Record<string, number> = {}
+    projects.forEach(p => { const s = p.frame_status ?? 'NO_FRAME'; counts[s] = (counts[s] ?? 0) + 1 })
+    return Object.entries(counts).sort()
+  }, [projects])
 
   const load = useCallback(async () => {
     try {
@@ -683,39 +768,117 @@ function BrowseTab({ spaces }: { spaces: Space[] }) {
   )
 
   return (
-    <>
+    <div className="space-y-4">
+      {checkedIds.size > 0 && (
+        <BatchActionBar
+          selectedIds={checkedIds}
+          allProjects={projects}
+          spaces={spaces}
+          getStatus={getStatus}
+          onSelectionChange={ids => setCheckedIds(ids)}
+          onRefresh={load}
+        />
+      )}
+
+      {/* Status filter pills */}
+      <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap text-xs">
+        <span className="text-slate-500 font-medium">Processed:</span>
+        {processingOptions.map(([s, count]) => (
+          <button
+            key={s}
+            onClick={() => setFilterProcessing(v => v === s ? null : s)}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors ${
+              filterProcessing === s ? 'border-teal-500 bg-teal-900/30' : 'border-slate-600 hover:border-slate-500'
+            }`}
+          >
+            <StatusBadge status={s} />
+            <span className="text-slate-400">{count}</span>
+          </button>
+        ))}
+        <span className="text-slate-600 mx-1">·</span>
+        <span className="text-slate-500 font-medium">Frame:</span>
+        {frameOptions.map(([s, count]) => (
+          <button
+            key={s}
+            onClick={() => setFilterFrame(v => v === s ? null : s)}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors ${
+              filterFrame === s ? 'border-teal-500 bg-teal-900/30' : 'border-slate-600 hover:border-slate-500'
+            }`}
+          >
+            <StatusBadge status={s} />
+            <span className="text-slate-400">{count}</span>
+          </button>
+        ))}
+        {(filterProcessing || filterFrame) && (
+          <button
+            onClick={() => { setFilterProcessing(null); setFilterFrame(null) }}
+            className="text-slate-500 hover:text-slate-300 ml-1"
+          >✕ clear</button>
+        )}
+        {(filterProcessing || filterFrame) && (
+          <button
+            onClick={() => setCheckedIds(new Set(visibleProjects.map(p => p.project_id)))}
+            className="text-teal-400 hover:text-teal-300 ml-1"
+          >select all {visibleProjects.length}</button>
+        )}
+      </div>
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-slate-400 uppercase tracking-wide border-b border-slate-700">
+              <th className="pb-2 pr-2 w-8">
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  onChange={toggleAll}
+                  className="accent-teal-500"
+                  title="Select all"
+                />
+              </th>
               <th className="pb-2 pr-3 font-medium">Label</th>
               <th className="pb-2 pr-3 font-medium">Assets</th>
+              <th className="pb-2 pr-3 font-medium">Processed</th>
               <th className="pb-2 pr-3 font-medium">Frame</th>
               <th className="pb-2 pr-3 font-medium">Created</th>
               <th className="pb-2 font-medium"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {projects.map(p => (
-              <tr key={p.project_id} className="hover:bg-slate-800/50">
-                <td className="py-2 pr-3 text-slate-200 max-w-xs truncate">
-                  {p.label ?? p.source_path ?? p.project_id.slice(0, 12)}
-                </td>
-                <td className="py-2 pr-3 text-slate-400">{p.asset_count}</td>
-                <td className="py-2 pr-3">
-                  <StatusBadge status={p.frame_status ?? 'NO_FRAME'} />
-                </td>
-                <td className="py-2 pr-3 text-slate-500 text-xs">{p.created_at?.slice(0, 10)}</td>
-                <td className="py-2">
-                  <button
-                    onClick={() => setSelected(p)}
-                    className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs"
-                  >
-                    Manage
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {visibleProjects.map((p, idx) => {
+              const checked = checkedIds.has(p.project_id)
+              return (
+                <tr key={p.project_id} className={checked ? 'bg-teal-900/15' : 'hover:bg-slate-800/50'}>
+                  <td className="py-2 pr-2 w-8">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => handleCheck(idx, p.project_id, (e.nativeEvent as MouseEvent).shiftKey)}
+                      className="accent-teal-500"
+                    />
+                  </td>
+                  <td className="py-2 pr-3 text-slate-200 max-w-xs truncate">
+                    {p.label ?? p.source_path ?? p.project_id.slice(0, 12)}
+                  </td>
+                  <td className="py-2 pr-3 text-slate-400">{p.asset_count}</td>
+                  <td className="py-2 pr-3">
+                    <StatusBadge status={p.processing_status ?? 'UNPROCESSED'} />
+                  </td>
+                  <td className="py-2 pr-3">
+                    <StatusBadge status={p.frame_status ?? 'NO_FRAME'} />
+                  </td>
+                  <td className="py-2 pr-3 text-slate-500 text-xs">{p.created_at?.slice(0, 10)}</td>
+                  <td className="py-2">
+                    <button
+                      onClick={() => setSelected(p)}
+                      className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs"
+                    >
+                      Manage
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -728,7 +891,7 @@ function BrowseTab({ spaces }: { spaces: Space[] }) {
           onJobComplete={load}
         />
       )}
-    </>
+    </div>
   )
 }
 
