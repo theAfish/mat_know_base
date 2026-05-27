@@ -1,3 +1,4 @@
+import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import {
   listProjects, processProject, extractProject, projectToSpace, kgExtractProject, getProjectJobs,
@@ -5,7 +6,7 @@ import {
 } from '../api/projects'
 import { listSpaces } from '../api/spaces'
 import { uploadInit, uploadFile, uploadComplete, uploadExpand, uploadIngest, uploadProcessedAsset } from '../api/upload'
-import { getJob } from '../api/jobs'
+import { getJob, cancelJob } from '../api/jobs'
 import StatusBadge from '../components/StatusBadge'
 import JobProgress from '../components/JobProgress'
 import BatchActionBar from '../components/BatchActionBar'
@@ -240,9 +241,11 @@ function UploadTab() {
   }
 
   const pollJob = useCallback((jobId: string) => {
+    let consecutiveErrors = 0
     const poll = async () => {
       try {
         const job = await getJob(jobId)
+        consecutiveErrors = 0
         setState(s => ({ ...s, uploadJob: job }))
         if (job.status === 'RUNNING' || job.status === 'PENDING') {
           pollRef.current = setTimeout(poll, 1000)
@@ -256,8 +259,17 @@ function UploadTab() {
             uploadJob: job,
           }))
         }
-      } catch {
-        pollRef.current = setTimeout(poll, 2000)
+      } catch (error) {
+        consecutiveErrors += 1
+        if (shouldStopJobPolling(error, consecutiveErrors)) {
+          setState(s => ({
+            ...s,
+            step: 'error',
+            error: 'Upload status is no longer available. Please refresh and retry if needed.',
+          }))
+          return
+        }
+        pollRef.current = setTimeout(poll, nextJobPollDelayMs(consecutiveErrors))
       }
     }
     pollRef.current = setTimeout(poll, 1000)
@@ -693,9 +705,11 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
 
   const pollJob = useCallback((jobId: string) => {
     setActiveJobId(jobId)
+    let consecutiveErrors = 0
     const poll = async () => {
       try {
         const job = await getJob(jobId)
+        consecutiveErrors = 0
         setJobs(prev => {
           const idx = prev.findIndex(j => j.job_id === jobId)
           if (idx === -1) return [job, ...prev]
@@ -712,8 +726,13 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
             onJobComplete?.()
           }
         }
-      } catch {
-        pollRef.current = setTimeout(poll, 2000)
+      } catch (error) {
+        consecutiveErrors += 1
+        if (shouldStopJobPolling(error, consecutiveErrors)) {
+          setActiveJobId(null)
+          return
+        }
+        pollRef.current = setTimeout(poll, nextJobPollDelayMs(consecutiveErrors))
       }
     }
     pollRef.current = setTimeout(poll, 500)

@@ -130,13 +130,13 @@ make up
 # 4. Create database tables
 mkb setup
 
-# 5. Start backend API (for the React app)
-make server
-
-# 6. In another terminal, start the React frontend
+# 5. Install frontend dependencies once
 cd frontend
 npm install
-npm run dev
+cd ..
+
+# 6. Start backend API + React frontend together
+bash scripts/dev.sh
 ```
 
 Open http://127.0.0.1:5173.
@@ -146,15 +146,16 @@ Open http://127.0.0.1:5173.
 After first-time setup, day-to-day startup is just:
 
 ```bash
-# terminal 1
 source .venv/bin/activate
 make up
-make server
-
-# terminal 2
-cd frontend
-npm run dev
+bash scripts/dev.sh
 ```
+
+`scripts/dev.sh` starts both services in one terminal:
+- backend API: `make server` (http://127.0.0.1:8503)
+- frontend dev server: `cd frontend && npm run dev` (http://127.0.0.1:5173)
+
+Press `Ctrl+C` once to stop both.
 
 If the UI appears empty:
 

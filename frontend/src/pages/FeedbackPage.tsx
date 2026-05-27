@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { listFeedback, resolveFeedback, reviewFeedback } from '../api/feedback'
 import { getJob } from '../api/jobs'
+import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import StatusBadge from '../components/StatusBadge'
 import JobProgress from '../components/JobProgress'
 import type { FeedbackItem, Job } from '../types'
@@ -141,9 +142,11 @@ export default function FeedbackPage() {
   }
 
   const pollJob = (jobId: string) => {
+    let consecutiveErrors = 0
     const poll = async () => {
       try {
         const job = await getJob(jobId)
+        consecutiveErrors = 0
         setReviewJob(job)
         if (job.status === 'RUNNING' || job.status === 'PENDING') {
           setTimeout(poll, 1000)
@@ -151,7 +154,14 @@ export default function FeedbackPage() {
           setIsReviewing(false)
           if (job.status === 'COMPLETED') load()
         }
-      } catch { setTimeout(poll, 2000) }
+      } catch (error) {
+        consecutiveErrors += 1
+        if (shouldStopJobPolling(error, consecutiveErrors)) {
+          setIsReviewing(false)
+          return
+        }
+        setTimeout(poll, nextJobPollDelayMs(consecutiveErrors))
+      }
     }
     setTimeout(poll, 500)
   }

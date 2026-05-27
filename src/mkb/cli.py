@@ -2,10 +2,12 @@
 
 import argparse
 import json
-import logging
 import sys
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+from mkb.logging_setup import setup_logging
+
+# Configure logging as early as possible so subsequent imports inherit it.
+setup_logging()
 
 
 def _json_dump(obj):

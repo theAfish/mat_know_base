@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { listJobs, cancelJob } from '../api/jobs'
+import { nextJobPollDelayMs } from '../api/jobPolling'
 import type { Job } from '../types'
 
 const STATUS_DOT: Record<string, string> = {
@@ -60,6 +61,7 @@ export default function JobQueuePanel() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [open, setOpen] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const errorsRef = useRef(0)
 
   const activeJobs = jobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
   const recentJobs = jobs.filter(j => j.status === 'COMPLETED' || j.status === 'FAILED' || j.status === 'CANCELLED').slice(0, 5)
@@ -67,9 +69,11 @@ export default function JobQueuePanel() {
   const fetchJobs = async () => {
     try {
       const data = await listJobs({ limit: 200 })
+      errorsRef.current = 0
       setJobs(data)
       return data
     } catch {
+      errorsRef.current += 1
       return jobs
     }
   }
@@ -89,6 +93,10 @@ export default function JobQueuePanel() {
       if (cancelled) return
       const data = await fetchJobs()
       if (cancelled) return
+      if (errorsRef.current > 0) {
+        timerRef.current = setTimeout(schedule, nextJobPollDelayMs(errorsRef.current, 2000, 15000))
+        return
+      }
       const hasActive = data.some(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
       timerRef.current = setTimeout(schedule, hasActive ? 1500 : 8000)
     }

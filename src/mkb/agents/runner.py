@@ -155,16 +155,24 @@ class AgentRunner:
                                         "stage": "agent_text",
                                     }
                                 )
-                if verbose and event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if part.text:
-                            logger.info("Agent: %s", part.text[:200])
-                        if part.function_call:
-                            logger.info(
-                                "Tool call: %s(%s)",
-                                part.function_call.name,
-                                list(part.function_call.args.keys()) if part.function_call.args else [],
-                            )
+                if verbose or logger.isEnabledFor(logging.DEBUG):
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if part.text:
+                                logger.debug("Agent text: %s", part.text[:500])
+                            if part.function_call:
+                                logger.debug(
+                                    "Tool call: %s(%s)",
+                                    part.function_call.name,
+                                    list(part.function_call.args.keys()) if part.function_call.args else [],
+                                )
+                            if getattr(part, "function_response", None):
+                                resp = part.function_response
+                                logger.debug(
+                                    "Tool result: %s -> %s",
+                                    getattr(resp, "name", "?"),
+                                    str(getattr(resp, "response", ""))[:500],
+                                )
                 result.events_collected.append(event)
                 if event.is_final_response() and event.content and event.content.parts:
                     result.final_text = "\n".join(

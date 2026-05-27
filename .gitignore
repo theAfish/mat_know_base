@@ -42,3 +42,6 @@ Thumbs.db
 # local usage
 
 .debug/
+
+# Logs
+logs/

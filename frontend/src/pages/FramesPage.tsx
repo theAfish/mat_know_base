@@ -1,3 +1,4 @@
+import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import { Fragment, useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { listFrames, getFrame, getFrameHistory } from '../api/frames'
 import { listProjects, listAssets, listProcessedAssets, processProject, extractProject, projectToSpace, kgExtractProject } from '../api/projects'
@@ -687,9 +688,11 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
 
   const pollJob = useCallback((jobId: string, onDone?: () => void) => {
     setActiveJobId(jobId)
+    let consecutiveErrors = 0
     const poll = async () => {
       try {
         const j = await getJob(jobId)
+        consecutiveErrors = 0
         setActiveJob(j)
         if (j.status === 'RUNNING' || j.status === 'PENDING') {
           setTimeout(poll, 1000)
@@ -702,7 +705,14 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
             refreshFeedbackCount()
           }
         }
-      } catch { setTimeout(poll, 2000) }
+      } catch (error) {
+        consecutiveErrors += 1
+        if (shouldStopJobPolling(error, consecutiveErrors)) {
+          setActiveJobId(null)
+          return
+        }
+        setTimeout(poll, nextJobPollDelayMs(consecutiveErrors))
+      }
     }
     setTimeout(poll, 500)
   }, [refreshFeedbackCount])
