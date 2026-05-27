@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { listJobs } from '../api/jobs'
+import { listJobs, cancelJob } from '../api/jobs'
 import type { Job } from '../types'
 
 const STATUS_DOT: Record<string, string> = {
@@ -8,9 +8,10 @@ const STATUS_DOT: Record<string, string> = {
   PENDING: 'bg-slate-400',
   COMPLETED: 'bg-green-400',
   FAILED: 'bg-red-400',
+  CANCELLED: 'bg-slate-500',
 }
 
-function JobRow({ job }: { job: Job }) {
+function JobRow({ job, onCancel }: { job: Job; onCancel?: (id: string) => void }) {
   const isActive = job.status === 'RUNNING' || job.status === 'PENDING' || job.status === 'QUEUED'
   return (
     <div className="px-3 py-2 border-t border-slate-700/60 first:border-t-0">
@@ -30,8 +31,18 @@ function JobRow({ job }: { job: Job }) {
           job.status === 'FAILED'                       ? 'bg-red-900 text-red-300' :
           job.status === 'RUNNING'                      ? 'bg-yellow-900 text-yellow-300' :
           (job.status === 'QUEUED' || job.status === 'PENDING') ? 'bg-slate-700 text-slate-300' :
+          job.status === 'CANCELLED'                    ? 'bg-slate-700 text-slate-400' :
           'bg-slate-700 text-slate-400'
         }`}>{job.status}</span>
+        {isActive && onCancel && (
+          <button
+            onClick={() => onCancel(job.job_id)}
+            className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-red-900/60 hover:bg-red-800 text-red-300 hover:text-red-200 transition-colors"
+            title="Cancel this job"
+          >
+            ✕
+          </button>
+        )}
       </div>
       {isActive && job.current_message && (
         <p className="mt-0.5 ml-4 text-[11px] text-slate-400 truncate italic">
@@ -51,7 +62,7 @@ export default function JobQueuePanel() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const activeJobs = jobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
-  const recentJobs = jobs.filter(j => j.status === 'COMPLETED' || j.status === 'FAILED').slice(0, 5)
+  const recentJobs = jobs.filter(j => j.status === 'COMPLETED' || j.status === 'FAILED' || j.status === 'CANCELLED').slice(0, 5)
 
   const fetchJobs = async () => {
     try {
@@ -61,6 +72,14 @@ export default function JobQueuePanel() {
     } catch {
       return jobs
     }
+  }
+
+  const handleCancel = async (jobId: string) => {
+    try {
+      await cancelJob(jobId)
+      // Optimistically update local state while the next poll confirms
+      setJobs(prev => prev.map(j => j.job_id === jobId ? { ...j, status: 'CANCELLED' as const, current_message: 'Cancelling…' } : j))
+    } catch { /* ignore — next poll will reflect the real state */ }
   }
 
   useEffect(() => {
@@ -117,7 +136,7 @@ export default function JobQueuePanel() {
 
           {activeJobs.length > 0 && (
             <div>
-              {activeJobs.map(job => <JobRow key={job.job_id} job={job} />)}
+              {activeJobs.map(job => <JobRow key={job.job_id} job={job} onCancel={handleCancel} />)}
             </div>
           )}
 

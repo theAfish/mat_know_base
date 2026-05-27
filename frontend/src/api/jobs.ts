@@ -6,3 +6,6 @@ export const listJobs = (params?: { limit?: number }) =>
 
 export const getJob = (id: string) =>
   client.get<Job>(`/jobs/${id}`).then(r => r.data)
+
+export const cancelJob = (id: string) =>
+  client.post<{ ok: boolean }>(`/jobs/${id}/cancel`).then(r => r.data)

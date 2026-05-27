@@ -5,6 +5,7 @@ const STATUS_COLORS: Record<string, string> = {
   QUEUED:      'bg-slate-600 text-slate-200',
   PENDING:     'bg-slate-700 text-slate-300',
   FAILED:      'bg-red-800 text-red-100',
+  CANCELLED:   'bg-slate-700 text-slate-400',
   NO_FRAME:    'bg-slate-700 text-slate-400',
   REVIEWED:    'bg-teal-800 text-teal-100',
   DRAFT:       'bg-blue-800 text-blue-100',

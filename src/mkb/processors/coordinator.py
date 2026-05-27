@@ -178,6 +178,63 @@ def _repair_existing_processed_asset(
     processed_asset.raw_asset_hash = asset.sha256
 
 
+def _title_from_markdown(content: bytes) -> str | None:
+    """Extract the first top-level Markdown heading as a candidate project title.
+
+    Looks for a line beginning with ``# `` (ATX heading, level 1) and returns
+    its text, stripped and capped at 200 chars. Returns ``None`` when no such
+    heading exists.
+    """
+    try:
+        text = content.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            title = stripped[2:].strip()
+            if title:
+                return title[:200]
+    return None
+
+
+def _maybe_auto_rename_from_markdown(
+    session,
+    asset_id: uuid.UUID,
+    markdown_content: bytes,
+) -> None:
+    """Rename the project owning this asset from a markdown heading title.
+
+    No-ops when: the project has ``metadata_['user_named']`` set, the content
+    yields no title, or the derived title matches the current label.
+    """
+    from mkb.db.models import ResearchProject
+
+    title = _title_from_markdown(markdown_content)
+    if not title:
+        return
+    link = session.query(ProjectAsset).filter_by(asset_id=asset_id).first()
+    if not link:
+        return
+    project = session.query(ResearchProject).filter_by(project_id=link.project_id).first()
+    if not project:
+        return
+    meta = project.metadata_ or {}
+    if meta.get("user_named"):
+        return
+    if title == project.label:
+        return
+    previous = project.label
+    project.label = title
+    updated_meta = dict(meta)
+    updated_meta["auto_renamed_from"] = previous
+    project.metadata_ = updated_meta
+    logger.info(
+        "Auto-renamed project %s from markdown title: %r -> %r",
+        project.project_id, previous, title,
+    )
+
+
 def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
     """
     Process a raw asset and convert it to structured formats.
@@ -429,6 +486,8 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
                     "last_processed_local_dir": local_dir,
                 },
             )
+            if result.processing_type == ProcessingType.MARKDOWN:
+                _maybe_auto_rename_from_markdown(session, asset_id, result.content)
             session.commit()
             _emit(
                 f"Finished {asset.filename}",
