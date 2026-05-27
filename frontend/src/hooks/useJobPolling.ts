@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { getJob } from '../api/jobs'
+import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import type { Job } from '../types'
 
 interface Options {
@@ -37,6 +38,7 @@ export function useJobPolling({
   useEffect(() => {
     activeJobRef.current = jobId
     stopPolling()
+    let consecutiveErrors = 0
 
     if (!jobId) return
 
@@ -44,6 +46,7 @@ export function useJobPolling({
       if (activeJobRef.current !== jobId) return
       try {
         const job = await getJob(jobId)
+        consecutiveErrors = 0
         if (activeJobRef.current !== jobId) return
 
         if (job.status === 'COMPLETED') {
@@ -54,9 +57,12 @@ export function useJobPolling({
           onProgressRef.current?.(job)
           timerRef.current = setTimeout(poll, interval)
         }
-      } catch {
+      } catch (error) {
         if (activeJobRef.current === jobId) {
-          timerRef.current = setTimeout(poll, interval * 2)
+          consecutiveErrors += 1
+          if (!shouldStopJobPolling(error, consecutiveErrors)) {
+            timerRef.current = setTimeout(poll, nextJobPollDelayMs(consecutiveErrors, interval))
+          }
         }
       }
     }

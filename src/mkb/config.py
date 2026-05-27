@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     # ── UI ──────────────────────────────────────────────────────
     ui_port: int = 8501
 
+    # ── Logging ─────────────────────────────────────────────────
+    # "DEBUG" → verbose, includes agent dialogs/tool calls, full MinerU
+    # output, and third-party library traces. "INFO" → concise app-level
+    # messages only. Logs are written to ``log_dir`` (rotated) and the
+    # console.
+    log_level: str = "DEBUG"
+    log_dir: str = "logs"
+    # Max size of each rolling log file in MB before rotation.
+    log_file_max_mb: int = 20
+    log_file_backup_count: int = 5
+
     model_config = {"env_prefix": "MKB_", "env_file": ".env", "extra": "ignore"}
 
 

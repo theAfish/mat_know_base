@@ -23,6 +23,12 @@ from mkb import api
 from mkb.agents.orchestrator import create_orchestrator_runner, send_message
 from mkb.agents.tools.orchestrator_tools import get_pending_workflows
 from mkb.config import settings
+from mkb.logging_setup import setup_logging
+
+# Ensure logging is configured even when uvicorn imports this module
+# directly (e.g. ``uvicorn mkb.web.api_server:app``) without going
+# through ``mkb.cli``.
+setup_logging()
 
 
 _EVENT_LIMIT = 60

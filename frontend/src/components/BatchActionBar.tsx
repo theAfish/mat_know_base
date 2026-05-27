@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { extractProject, projectToSpace, processProject } from '../api/projects'
 import { getJob } from '../api/jobs'
+import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import type { Project, Space } from '../types'
 
 // Matches StatusBadge colour palette so pills look consistent
@@ -88,15 +89,22 @@ export default function BatchActionBar({
     let failed = startFailed
     await Promise.all(jobIds.map(async (jobId) => {
       let delay = 1500
+      let consecutiveErrors = 0
       while (true) {
         try {
           const job = await getJob(jobId)
+          consecutiveErrors = 0
           if (job.status === 'COMPLETED') { done++; break }
           if (job.status === 'FAILED') { failed++; break }
           await new Promise(r => setTimeout(r, delay))
           delay = Math.min(delay * 1.5, 6000)
-        } catch {
-          await new Promise(r => setTimeout(r, 2000))
+        } catch (error) {
+          consecutiveErrors += 1
+          if (shouldStopJobPolling(error, consecutiveErrors)) {
+            failed++
+            break
+          }
+          await new Promise(r => setTimeout(r, nextJobPollDelayMs(consecutiveErrors)))
         }
       }
       setRunStatus(s => s ? { ...s, done, failed } : null)

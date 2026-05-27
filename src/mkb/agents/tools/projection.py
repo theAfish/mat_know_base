@@ -12,12 +12,12 @@ import copy
 import json
 import logging
 import os
-import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
+from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Feedback,
@@ -32,7 +32,7 @@ from mkb.spaces.schema_utils import normalize_projection_data
 logger = logging.getLogger(__name__)
 
 _TRACE_DIR = Path(
-    os.getenv("MKB_AGENT_TRACE_DIR", str(Path(tempfile.gettempdir()) / "mkb_agent_logs"))
+    os.getenv("MKB_AGENT_TRACE_DIR", str(Path(settings.log_dir) / "agent_traces"))
 )
 
 DEFAULT_FRAME_CONTENT_MAX_CHARS = 30000
@@ -114,7 +114,7 @@ def write_projection_trace(
     frame_id: str | None = None,
     details: dict | None = None,
 ) -> None:
-    """Append projection-agent trace events to local JSONL in /tmp.
+    """Append projection-agent trace events to local JSONL under the log dir.
 
     One file per projection (`projection_<id>.jsonl`). If projection id is not
     available, events are grouped under frame (`frame_<id>.jsonl`).

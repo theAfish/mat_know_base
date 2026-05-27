@@ -3,6 +3,7 @@ import { Network, type Options } from 'vis-network'
 import { DataSet } from 'vis-data'
 import { getKnowledgeGraph, getReviewCounts, reviewGraph, clearGraph } from '../api/graph'
 import { getJob } from '../api/jobs'
+import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import JobProgress from '../components/JobProgress'
 import type { GraphConcept, GraphRelation, GraphPayload, Job } from '../types'
 
@@ -671,9 +672,11 @@ function ReviewPanel({ onReviewComplete }: ReviewPanelProps) {
   }
 
   const pollJob = (jobId: string) => {
+    let consecutiveErrors = 0
     const poll = async () => {
       try {
         const job = await getJob(jobId)
+        consecutiveErrors = 0
         setReviewJob(job)
         if (job.status === 'RUNNING' || job.status === 'PENDING') {
           setTimeout(poll, 1000)
@@ -681,7 +684,14 @@ function ReviewPanel({ onReviewComplete }: ReviewPanelProps) {
           setIsRunning(false)
           if (job.status === 'COMPLETED') onReviewComplete()
         }
-      } catch { setTimeout(poll, 2000) }
+      } catch (error) {
+        consecutiveErrors += 1
+        if (shouldStopJobPolling(error, consecutiveErrors)) {
+          setIsRunning(false)
+          return
+        }
+        setTimeout(poll, nextJobPollDelayMs(consecutiveErrors))
+      }
     }
     setTimeout(poll, 500)
   }
