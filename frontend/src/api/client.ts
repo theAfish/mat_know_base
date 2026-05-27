@@ -5,4 +5,15 @@ const client = axios.create({
   timeout: 60_000,
 })
 
+client.interceptors.response.use(
+  r => r,
+  err => {
+    const detail = err?.response?.data?.detail
+    if (detail) {
+      err.message = typeof detail === 'string' ? detail : JSON.stringify(detail)
+    }
+    return Promise.reject(err)
+  },
+)
+
 export default client
