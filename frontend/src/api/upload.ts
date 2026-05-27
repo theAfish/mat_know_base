@@ -1,5 +1,5 @@
 import client from './client'
-import type { UploadProject } from '../types'
+import type { UploadProject, UploadExpandResponse } from '../types'
 
 export const uploadInit = (): Promise<{ upload_id: string }> =>
   client.post('/upload/init').then(r => r.data)
@@ -27,6 +27,9 @@ export const uploadFile = (
 
 export const uploadComplete = (uploadId: string) =>
   client.post('/upload/complete', { upload_id: uploadId }).then(r => r.data)
+
+export const uploadExpand = (uploadId: string): Promise<UploadExpandResponse> =>
+  client.post('/upload/expand', { upload_id: uploadId }).then(r => r.data)
 
 export const uploadIngest = (payload: UploadProject[]): Promise<{ job_id: string }> =>
   client.post('/upload/ingest', payload).then(r => r.data)

@@ -49,6 +49,50 @@ def _validate_frame_content(content: dict) -> list[str]:
 # =====================================================================
 
 
+def _derive_project_label(content: dict) -> str | None:
+    """Pick a human-friendly project label from extracted frame content.
+
+    Prefers the paper title, falls back to the DOI, and returns ``None`` when
+    neither is present. The returned label is trimmed and length-capped so it
+    stays usable in lists and UI.
+    """
+    paper = (content or {}).get("paper") or {}
+    title = paper.get("title")
+    if isinstance(title, str):
+        candidate = title.strip()
+        if candidate:
+            return candidate[:200]
+    doi = paper.get("doi")
+    if isinstance(doi, str):
+        candidate = doi.strip()
+        if candidate:
+            return candidate[:200]
+    return None
+
+
+def _maybe_auto_rename_project(session, project: ResearchProject, content: dict) -> None:
+    """Auto-rename ``project`` based on extracted content, unless user-named.
+
+    No-ops when the project's ``metadata_["user_named"]`` flag is set, when no
+    usable label can be derived, or when the derived label matches the current
+    one.
+    """
+    meta = project.metadata_ or {}
+    if meta.get("user_named"):
+        return
+    new_label = _derive_project_label(content)
+    if not new_label or new_label == project.label:
+        return
+    previous = project.label
+    project.label = new_label
+    updated_meta = dict(meta)
+    updated_meta["auto_renamed_from"] = previous
+    project.metadata_ = updated_meta
+    logger.info(
+        "Auto-renamed project %s: %r -> %r", project.project_id, previous, new_label,
+    )
+
+
 def save_knowledge_frame(
     project_id: str,
     content: dict,
@@ -111,6 +155,7 @@ def save_knowledge_frame(
             existing.source_metadata = source_meta
             existing.times_checked = existing.times_checked + 1
             existing.extraction_version = (existing.extraction_version or 0) + 1
+            _maybe_auto_rename_project(session, project, content)
             session.commit()
             return {"frame_id": str(existing.frame_id), "status": "updated"}
 
@@ -126,6 +171,7 @@ def save_knowledge_frame(
             source_metadata=source_meta,
         )
         session.add(frame)
+        _maybe_auto_rename_project(session, project, content)
         session.commit()
         return {"frame_id": str(frame.frame_id), "status": "created"}
 

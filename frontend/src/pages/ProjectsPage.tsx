@@ -4,17 +4,34 @@ import {
   listAssets, listProcessedAssets,
 } from '../api/projects'
 import { listSpaces } from '../api/spaces'
-import { uploadInit, uploadFile, uploadComplete, uploadIngest, uploadProcessedAsset } from '../api/upload'
+import { uploadInit, uploadFile, uploadComplete, uploadExpand, uploadIngest, uploadProcessedAsset } from '../api/upload'
 import { getJob } from '../api/jobs'
 import StatusBadge from '../components/StatusBadge'
 import JobProgress from '../components/JobProgress'
 import BatchActionBar from '../components/BatchActionBar'
-import type { Project, Space, Job, UploadProject, UploadFileEntry, Asset, ProcessedAsset } from '../types'
+import type {
+  Project, Space, Job, UploadProject, UploadFileEntry, Asset, ProcessedAsset,
+  UploadExpandFile,
+} from '../types'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function slug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+}
+
+const ARCHIVE_SUFFIXES = [
+  '.tar.gz', '.tar.bz2', '.tar.xz',
+  '.tgz', '.tbz2', '.tbz', '.txz',
+  '.tar', '.zip',
+]
+
+function stripArchiveExt(name: string): string {
+  const lower = name.toLowerCase()
+  for (const ext of ARCHIVE_SUFFIXES) {
+    if (lower.endsWith(ext)) return name.slice(0, -ext.length)
+  }
+  return name
 }
 
 /** Recursively collect all File objects from a DataTransferItem entry. */
@@ -72,18 +89,148 @@ async function buildProjectList(
 
 // ─── Upload tab ───────────────────────────────────────────────────────────────
 
+type UploadStep =
+  | 'idle'
+  | 'uploading'   // streaming files to server temp
+  | 'expanding'   // extracting archives + listing tree
+  | 'reviewing'   // user assigns files to projects
+  | 'ingesting'   // backend job running
+  | 'done'
+  | 'error'
+
+type GroupingMode = 'top' | 'leaf' | 'single' | 'depth'
+
+interface ReviewFile {
+  id: string                    // = uploadPath (unique)
+  uploadPath: string
+  segments: string[]
+  name: string                  // basename
+  size: number
+  projectId: string | null      // null = excluded
+  relativePath: string          // within the assigned project
+}
+
+interface ReviewProject {
+  id: string
+  name: string
+  /** True once the user manually edits the name in the preview. */
+  nameEdited?: boolean
+}
+
 interface UploadState {
-  step: 'idle' | 'reviewing' | 'uploading' | 'ingesting' | 'done' | 'error'
-  pending: Array<{ name: string; editName: string; files: Array<{ file: File; relativePath: string }> }>
+  step: UploadStep
+  uploadId: string | null
   progress: string
   uploadJob: Job | null
   error: string | null
+  // review-step state:
+  files: ReviewFile[]
+  projects: ReviewProject[]
+  grouping: GroupingMode
+  depthN: number
+  extracted: Array<{ archive: string; count: number }>
+  failed: Array<{ archive: string; error: string }>
+}
+
+const INITIAL_UPLOAD_STATE: UploadState = {
+  step: 'idle',
+  uploadId: null,
+  progress: '',
+  uploadJob: null,
+  error: null,
+  files: [],
+  projects: [],
+  grouping: 'top',
+  depthN: 1,
+  extracted: [],
+  failed: [],
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+/** Compute project key + relativePath for a file under a grouping mode. */
+function deriveGrouping(
+  segments: string[],
+  mode: GroupingMode,
+  depthN: number,
+): { projectId: string; relativePath: string } {
+  const filename = segments[segments.length - 1] || 'file'
+  if (mode === 'single') {
+    return { projectId: '__all__', relativePath: segments.join('/') }
+  }
+  if (mode === 'leaf') {
+    const parent = segments.slice(0, -1).join('/')
+    return { projectId: parent || '__root__', relativePath: filename }
+  }
+  if (mode === 'depth') {
+    const n = Math.max(1, depthN)
+    // root segments = first n folder segments (capped so filename remains)
+    const rootLen = Math.min(n, segments.length - 1)
+    const rootSegs = segments.slice(0, rootLen)
+    return {
+      projectId: rootSegs.join('/') || '__root__',
+      relativePath: segments.slice(rootLen).join('/') || filename,
+    }
+  }
+  // 'top'
+  const rootLen = Math.min(1, segments.length - 1)
+  const rootSegs = segments.slice(0, rootLen)
+  return {
+    projectId: rootSegs.join('/') || '__root__',
+    relativePath: segments.slice(rootLen).join('/') || filename,
+  }
+}
+
+function defaultProjectName(projectId: string): string {
+  if (projectId === '__all__') return 'project'
+  if (projectId === '__root__') return 'project'
+  const last = projectId.split('/').pop() || 'project'
+  return slug(stripArchiveExt(last)) || 'project'
+}
+
+/** Apply a grouping mode to a flat file list, producing fresh project buckets. */
+function applyGrouping(
+  files: UploadExpandFile[],
+  mode: GroupingMode,
+  depthN: number,
+): { files: ReviewFile[]; projects: ReviewProject[] } {
+  const seen = new Map<string, ReviewProject>()
+  const out: ReviewFile[] = []
+  for (const f of files) {
+    const segments = f.uploadPath.split('/').filter(Boolean)
+    const { projectId, relativePath } = deriveGrouping(segments, mode, depthN)
+    if (!seen.has(projectId)) {
+      seen.set(projectId, { id: projectId, name: defaultProjectName(projectId) })
+    }
+    out.push({
+      id: f.uploadPath,
+      uploadPath: f.uploadPath,
+      segments,
+      name: segments[segments.length - 1] || f.uploadPath,
+      size: f.size,
+      projectId,
+      relativePath: relativePath || (segments[segments.length - 1] || 'file'),
+    })
+  }
+  // Dedupe project names (when two distinct ids derive same default name)
+  const counts = new Map<string, number>()
+  const projects: ReviewProject[] = []
+  for (const p of seen.values()) {
+    const c = counts.get(p.name) ?? 0
+    counts.set(p.name, c + 1)
+    projects.push(c === 0 ? p : { ...p, name: `${p.name}_${c + 1}` })
+  }
+  projects.sort((a, b) => a.name.localeCompare(b.name))
+  return { files: out, projects }
 }
 
 function UploadTab() {
-  const [state, setState] = useState<UploadState>({
-    step: 'idle', pending: [], progress: '', uploadJob: null, error: null,
-  })
+  const [state, setState] = useState<UploadState>(INITIAL_UPLOAD_STATE)
   const dropRef = useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = useState(false)
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -118,68 +265,157 @@ function UploadTab() {
 
   useEffect(() => stopPoll, [])
 
-  const onDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault()
-    setDragging(false)
-    const projects = await buildProjectList(e.dataTransfer.items)
-    if (projects.length === 0) return
-    setState(s => ({
-      ...s,
-      step: 'reviewing',
-      pending: projects.map(p => ({ ...p, editName: slug(p.name) || 'project' })),
-      error: null,
-    }))
-  }, [])
+  /** Upload dropped items to temp, expand archives, then go to review. */
+  const handleDroppedItems = useCallback(async (items: DataTransferItemList) => {
+    // Collect every dropped entry as a flat list, prefixed by its top-level name
+    // so we preserve user-visible structure on the server.
+    const topEntries: Array<{ entry: FileSystemEntry; name: string }> = []
+    for (let i = 0; i < items.length; i++) {
+      const entry = items[i].webkitGetAsEntry?.()
+      if (entry) topEntries.push({ entry, name: entry.name })
+    }
+    if (topEntries.length === 0) return
 
-  const startIngest = async () => {
-    const { pending } = state
-    setState(s => ({ ...s, step: 'uploading', progress: 'Initializing upload…', error: null }))
+    const all: Array<{ file: File; relativePath: string }> = []
+    for (const { entry, name } of topEntries) {
+      const collected = await collectFromEntry(entry, name)
+      all.push(...collected)
+    }
+    if (all.length === 0) return
+
+    setState({ ...INITIAL_UPLOAD_STATE, step: 'uploading', progress: 'Initializing upload…' })
 
     try {
       const { upload_id } = await uploadInit()
-      const payload: UploadProject[] = []
-
-      for (let pi = 0; pi < pending.length; pi++) {
-        const proj = pending[pi]
-        const projLabel = proj.editName
-        const fileEntries: UploadFileEntry[] = []
-
-        for (let fi = 0; fi < proj.files.length; fi++) {
-          const { file, relativePath } = proj.files[fi]
-          setState(s => ({
-            ...s,
-            progress: `Uploading ${projLabel} (${pi + 1}/${pending.length}) — file ${fi + 1}/${proj.files.length}: ${file.name}`,
-          }))
-          const uploadPath = `${projLabel}/${relativePath}`
-          // Retry up to 2 times on network errors
-          let lastErr: unknown
-          let uploaded = false
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              await uploadFile(upload_id, file, relativePath, uploadPath)
-              uploaded = true
-              break
-            } catch (err) {
-              lastErr = err
-              if (attempt < 2) {
-                setState(s => ({
-                  ...s,
-                  progress: `Retrying ${file.name} (attempt ${attempt + 2}/3)…`,
-                }))
-                await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
-              }
-            }
+      for (let i = 0; i < all.length; i++) {
+        const { file, relativePath } = all[i]
+        setState(s => ({
+          ...s,
+          uploadId: upload_id,
+          progress: `Uploading ${i + 1}/${all.length}: ${file.name}`,
+        }))
+        let uploaded = false
+        let lastErr: unknown
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await uploadFile(upload_id, file, relativePath, relativePath)
+            uploaded = true
+            break
+          } catch (err) {
+            lastErr = err
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
           }
-          if (!uploaded) throw lastErr
-          fileEntries.push({ name: file.name, relativePath, uploadPath })
         }
-
-        payload.push({ name: projLabel, upload_id, files: fileEntries })
+        if (!uploaded) throw lastErr
       }
-
       await uploadComplete(upload_id)
-      setState(s => ({ ...s, step: 'ingesting', progress: 'Ingesting files…' }))
 
+      setState(s => ({ ...s, step: 'expanding', progress: 'Extracting archives…' }))
+      const expanded = await uploadExpand(upload_id)
+
+      const { files, projects } = applyGrouping(expanded.files, 'top', 1)
+      setState(s => ({
+        ...s,
+        step: 'reviewing',
+        uploadId: upload_id,
+        files,
+        projects,
+        grouping: 'top',
+        depthN: 1,
+        extracted: expanded.extracted,
+        failed: expanded.failed,
+        progress: '',
+      }))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setState(s => ({ ...s, step: 'error', error: msg }))
+    }
+  }, [])
+
+  const onDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragging(false)
+    await handleDroppedItems(e.dataTransfer.items)
+  }, [handleDroppedItems])
+
+  /** Re-apply a grouping preset, discarding manual edits. */
+  const reapplyGrouping = (mode: GroupingMode, depthN: number) => {
+    setState(s => {
+      const flat: UploadExpandFile[] = s.files.map(f => ({ uploadPath: f.uploadPath, size: f.size }))
+      const { files, projects } = applyGrouping(flat, mode, depthN)
+      return { ...s, files, projects, grouping: mode, depthN }
+    })
+  }
+
+  const renameProject = (id: string, name: string) => {
+    setState(s => ({
+      ...s,
+      projects: s.projects.map(p =>
+        p.id === id ? { ...p, name, nameEdited: true } : p,
+      ),
+    }))
+  }
+
+  const removeProject = (id: string) => {
+    // Exclude every file in this project (does not delete the bucket so it can
+    // still be reused as a move target if desired — but with 0 files it will
+    // be hidden from the UI list).
+    setState(s => ({
+      ...s,
+      files: s.files.map(f => f.projectId === id ? { ...f, projectId: null } : f),
+    }))
+  }
+
+  const setFileProject = (fileId: string, projectId: string | null) => {
+    setState(s => ({
+      ...s,
+      files: s.files.map(f => {
+        if (f.id !== fileId) return f
+        // When moving to a different project, drop sub-path context and use
+        // just the filename — the file no longer belongs to the original tree.
+        return projectId === f.projectId
+          ? f
+          : { ...f, projectId, relativePath: projectId ? f.name : f.relativePath }
+      }),
+    }))
+  }
+
+  const addEmptyProject = () => {
+    setState(s => {
+      // pick a unique name
+      let i = s.projects.length + 1
+      const taken = new Set(s.projects.map(p => p.name))
+      let name = `project_${i}`
+      while (taken.has(name)) { i += 1; name = `project_${i}` }
+      const id = `new_${Date.now()}_${i}`
+      return { ...s, projects: [...s.projects, { id, name }] }
+    })
+  }
+
+  const startIngest = async () => {
+    if (!state.uploadId) return
+    const activeProjects = state.projects.filter(
+      p => state.files.some(f => f.projectId === p.id),
+    )
+    if (activeProjects.length === 0) {
+      setState(s => ({ ...s, step: 'error', error: 'No files selected for any project.' }))
+      return
+    }
+
+    const payload: UploadProject[] = activeProjects.map(p => {
+      const files: UploadFileEntry[] = state.files
+        .filter(f => f.projectId === p.id)
+        .map(f => ({ name: f.name, relativePath: f.relativePath, uploadPath: f.uploadPath }))
+      return {
+        name: p.name,
+        upload_id: state.uploadId!,
+        files,
+        name_auto: !p.nameEdited,
+      }
+    })
+
+    setState(s => ({ ...s, step: 'ingesting', progress: 'Ingesting files…' }))
+    try {
       const { job_id } = await uploadIngest(payload)
       pollJob(job_id)
     } catch (err) {
@@ -190,40 +426,168 @@ function UploadTab() {
 
   const reset = () => {
     stopPoll()
-    setState({ step: 'idle', pending: [], progress: '', uploadJob: null, error: null })
+    setState(INITIAL_UPLOAD_STATE)
   }
 
   // ── render ─────────────────────────────────────────────────────────────────
 
   if (state.step === 'reviewing') {
+    const excluded = state.files.filter(f => f.projectId === null)
+    const byProject = new Map<string, ReviewFile[]>()
+    for (const f of state.files) {
+      if (f.projectId === null) continue
+      const list = byProject.get(f.projectId) ?? []
+      list.push(f)
+      byProject.set(f.projectId, list)
+    }
+    const projectOptions = state.projects.map(p => ({ value: p.id, label: p.name }))
+
     return (
       <div className="space-y-4">
-        <p className="text-sm text-slate-400">
-          Review project names before ingesting:
-        </p>
-        <div className="space-y-2">
-          {state.pending.map((proj, i) => (
-            <div key={i} className="bg-slate-800 border border-slate-700 rounded-lg p-3 flex items-start gap-3">
-              <div className="flex-1 space-y-1">
-                <input
-                  className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200 focus:outline-none focus:border-teal-500"
-                  value={proj.editName}
-                  onChange={e => setState(s => ({
-                    ...s,
-                    pending: s.pending.map((p, j) => j === i ? { ...p, editName: e.target.value } : p),
-                  }))}
-                />
-                <p className="text-xs text-slate-500">{proj.files.length} file(s)</p>
-              </div>
-            </div>
-          ))}
+        {/* Grouping controls */}
+        <div className="bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-slate-300 font-medium mr-1">Group by:</span>
+            {([
+              ['top', 'Top-level folder'],
+              ['leaf', 'Leaf folder'],
+              ['single', 'Single project'],
+              ['depth', `Depth N`],
+            ] as Array<[GroupingMode, string]>).map(([mode, label]) => (
+              <button
+                key={mode}
+                onClick={() => reapplyGrouping(mode, state.depthN)}
+                className={`px-3 py-1 rounded text-xs border ${
+                  state.grouping === mode
+                    ? 'bg-teal-600 border-teal-500 text-white'
+                    : 'bg-slate-700 border-slate-600 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+            {state.grouping === 'depth' && (
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={state.depthN}
+                onChange={e => {
+                  const n = Math.max(1, parseInt(e.target.value || '1', 10))
+                  reapplyGrouping('depth', n)
+                }}
+                className="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200"
+              />
+            )}
+            <button
+              onClick={addEmptyProject}
+              className="ml-auto px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded border border-slate-600"
+            >
+              + New project
+            </button>
+          </div>
+          {state.extracted.length > 0 && (
+            <p className="text-xs text-slate-500">
+              Extracted {state.extracted.length} archive(s):{' '}
+              {state.extracted.map(a => `${a.archive} (${a.count})`).join(', ')}
+            </p>
+          )}
+          {state.failed.length > 0 && (
+            <p className="text-xs text-amber-400">
+              Failed to extract: {state.failed.map(a => `${a.archive} — ${a.error}`).join('; ')}
+            </p>
+          )}
         </div>
+
+        {/* Project buckets */}
+        <div className="space-y-3">
+          {state.projects.map(proj => {
+            const filesInProj = byProject.get(proj.id) ?? []
+            if (filesInProj.length === 0 && !proj.id.startsWith('new_')) return null
+            const totalSize = filesInProj.reduce((s, f) => s + f.size, 0)
+            return (
+              <div key={proj.id} className="bg-slate-800 border border-slate-700 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200 focus:outline-none focus:border-teal-500"
+                    value={proj.name}
+                    onChange={e => renameProject(proj.id, e.target.value)}
+                  />
+                  <span className="text-xs text-slate-500 whitespace-nowrap">
+                    {filesInProj.length} file(s) · {fmtBytes(totalSize)}
+                  </span>
+                  <button
+                    onClick={() => removeProject(proj.id)}
+                    className="px-2 py-1 text-xs bg-slate-700 hover:bg-red-700 text-slate-300 hover:text-white rounded border border-slate-600"
+                    title="Exclude all files in this project"
+                  >
+                    Exclude all
+                  </button>
+                </div>
+                <div className="max-h-60 overflow-y-auto divide-y divide-slate-700/60">
+                  {filesInProj.length === 0 && (
+                    <p className="text-xs text-slate-500 italic py-2">
+                      Empty — move files into this project using the dropdown on each file row.
+                    </p>
+                  )}
+                  {filesInProj.map(f => (
+                    <div key={f.id} className="flex items-center gap-2 py-1 text-xs">
+                      <span className="flex-1 truncate text-slate-300" title={f.uploadPath}>
+                        {f.relativePath}
+                        <span className="text-slate-600 ml-2">({f.uploadPath})</span>
+                      </span>
+                      <span className="text-slate-500 whitespace-nowrap">{fmtBytes(f.size)}</span>
+                      <select
+                        value={f.projectId ?? '__excl__'}
+                        onChange={e => setFileProject(f.id, e.target.value === '__excl__' ? null : e.target.value)}
+                        className="bg-slate-700 border border-slate-600 rounded px-1 py-0.5 text-xs text-slate-200"
+                      >
+                        {projectOptions.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                        <option value="__excl__">(Excluded)</option>
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Excluded section */}
+        {excluded.length > 0 && (
+          <details className="bg-slate-800/60 border border-slate-700 rounded-lg p-3">
+            <summary className="text-sm text-slate-400 cursor-pointer">
+              Excluded ({excluded.length})
+            </summary>
+            <div className="mt-2 max-h-60 overflow-y-auto divide-y divide-slate-700/60">
+              {excluded.map(f => (
+                <div key={f.id} className="flex items-center gap-2 py-1 text-xs">
+                  <span className="flex-1 truncate text-slate-500" title={f.uploadPath}>{f.uploadPath}</span>
+                  <span className="text-slate-500 whitespace-nowrap">{fmtBytes(f.size)}</span>
+                  <select
+                    value="__excl__"
+                    onChange={e => setFileProject(f.id, e.target.value === '__excl__' ? null : e.target.value)}
+                    className="bg-slate-700 border border-slate-600 rounded px-1 py-0.5 text-xs text-slate-200"
+                  >
+                    <option value="__excl__">(Excluded)</option>
+                    {projectOptions.map(o => (
+                      <option key={o.value} value={o.value}>Move to: {o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
         <div className="flex gap-2">
           <button
             onClick={startIngest}
             className="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded text-sm font-medium"
           >
-            Ingest
+            Ingest {state.files.filter(f => f.projectId !== null).length} file(s)
           </button>
           <button onClick={reset} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-sm">
             Cancel
@@ -233,7 +597,7 @@ function UploadTab() {
     )
   }
 
-  if (state.step === 'uploading' || state.step === 'ingesting') {
+  if (state.step === 'uploading' || state.step === 'expanding' || state.step === 'ingesting') {
     return (
       <div className="space-y-3">
         <div className="flex items-center gap-2 text-sm text-slate-300">
@@ -290,7 +654,8 @@ function UploadTab() {
       <p className="text-slate-300 font-medium">Drop files or folders here</p>
       <p className="text-slate-500 text-sm mt-1">
         PDFs, DOCX, CSV, XLSX, JSON, TXT, and images are supported.
-        <br />Each top-level folder or file becomes a separate project.
+        <br />Archives (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz) are extracted on the server.
+        <br />After upload you can review the file tree and choose how to group files into projects.
       </p>
     </div>
   )
@@ -360,6 +725,19 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
       pollJob(job_id)
     } catch (err) {
       console.error('Action failed', err)
+    }
+  }
+
+  const handleCancel = async () => {
+    if (!activeJobId) return
+    try {
+      await cancelJob(activeJobId)
+      setJobs(prev => prev.map(j =>
+        j.job_id === activeJobId ? { ...j, status: 'CANCELLED' as const, current_message: 'Cancelling…' } : j
+      ))
+      setActiveJobId(null)
+    } catch (err) {
+      console.error('Cancel failed', err)
     }
   }
 
@@ -459,7 +837,19 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
           )}
 
           {/* Active job progress */}
-          {activeJob && <JobProgress job={activeJob} />}
+          {activeJob && (
+            <div className="space-y-2">
+              <JobProgress job={activeJob} />
+              {(activeJob.status === 'RUNNING' || activeJob.status === 'QUEUED') && (
+                <button
+                  onClick={handleCancel}
+                  className="text-xs px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 text-red-300 hover:text-red-200 transition-colors"
+                >
+                  Cancel job
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Asset list with per-asset processed upload */}
           <ProjectAssetsPanel projectId={project.project_id} />

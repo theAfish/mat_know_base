@@ -9,11 +9,19 @@ import type { GraphConcept, GraphRelation, GraphPayload, Job } from '../types'
 // ─── Color helpers (matching original graph_viz.py) ──────────────────────────
 
 const EDGE_COLORS: Record<number, string> = {
-  1: '#22c55e', // causal
-  2: '#3b82f6', // direct observation
-  3: '#eab308', // correlative
-  4: '#f97316', // predicted
+  1: '#34d399', // causal      — emerald
+  2: '#60a5fa', // direct obs. — sky
+  3: '#fbbf24', // correlative — amber
+  4: '#f472b6', // predicted   — pink
 }
+
+function hashStr(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+// kept for alias-count seeding below
+void hashStr
 
 function lerpColor(c1: string, c2: string, t: number): string {
   const h = (s: string) => [parseInt(s.slice(1,3),16), parseInt(s.slice(3,5),16), parseInt(s.slice(5,7),16)] as [number,number,number]
@@ -30,37 +38,141 @@ function coverageColor(count: number, maxCount: number): string {
 
 // ─── vis-network graph component ─────────────────────────────────────────────
 
-const VIS_OPTIONS: Options = {
-  layout: { improvedLayout: false },
-  physics: {
-    solver: 'barnesHut',
-    barnesHut: {
-      gravitationalConstant: -6000,
-      centralGravity: 0.3,
-      springLength: 110,
-      springConstant: 0.05,
-      damping: 0.12,
-      avoidOverlap: 0.1,
+// Two solver presets. `barnesHut` looks great on small/medium graphs; for large
+// graphs we switch to `forceAtlas2Based`, which scales better and naturally
+// surfaces clusters by connectivity. In both cases we *always* run physics
+// during the initial stabilization pass (so nodes get a real force-directed
+// layout instead of vis-network's default ring), and then disable physics once
+// the layout has settled — making pan/zoom cheap on big graphs.
+function buildVisOptions(nodeCount: number, edgeCount: number): Options {
+  const isLarge = nodeCount > 400 || edgeCount > 1000
+  // Iteration budget scales with size but is capped so very large graphs stay
+  // responsive. forceAtlas2 is ~linear in nodes per iteration.
+  const iterations = Math.min(800, Math.max(150, Math.round(nodeCount * 1.5)))
+
+  const physics = isLarge
+    ? {
+        solver: 'forceAtlas2Based' as const,
+        forceAtlas2Based: {
+          gravitationalConstant: -55,
+          centralGravity: 0.008,
+          springLength: 120,
+          springConstant: 0.05,
+          damping: 0.5,
+          avoidOverlap: 0.6,
+        },
+        maxVelocity: 35,
+        minVelocity: 0.75,
+        timestep: 0.5,
+        stabilization: { enabled: true, iterations, updateInterval: 25, fit: true },
+      }
+    : {
+        solver: 'barnesHut' as const,
+        barnesHut: {
+          gravitationalConstant: -6000,
+          centralGravity: 0.3,
+          springLength: 110,
+          springConstant: 0.05,
+          damping: 0.12,
+          avoidOverlap: 0.5,
+        },
+        stabilization: { enabled: true, iterations, updateInterval: 25, fit: true },
+      }
+
+  return {
+    // `improvedLayout` runs an expensive O(n²) pre-pass — fine for small
+    // graphs (yields nicer initial positions), prohibitive for large ones.
+    layout: { improvedLayout: !isLarge, randomSeed: 42 },
+    physics,
+    nodes: {
+      font: { size: 0 },   // hidden by default, shown as tooltip on hover
+      borderWidth: 2,
+      borderWidthSelected: 3,
+      shape: 'dot',
+      shadow: {
+        enabled: true,
+        color: 'rgba(0, 0, 0, 0.45)',
+        size: 12,
+        x: 0,
+        y: 2,
+      },
+      scaling: {
+        min: 10,
+        max: 40,
+      },
+      chosen: {
+        node: ((values: { borderWidth: number; shadowSize: number; shadowColor: string }) => {
+          values.borderWidth = 3
+          values.shadowSize = 22
+          values.shadowColor = 'rgba(45, 212, 191, 0.55)'
+        }) as unknown as boolean,
+        label: false,
+      },
     },
-    stabilization: { enabled: true, iterations: 80, updateInterval: 25 },
-  },
-  nodes: {
-    font: { size: 0 },   // hidden by default, shown as tooltip on hover
-    borderWidth: 1,
-    shadow: false,
-    shape: 'dot',
-  },
-  edges: {
-    font: { size: 0 },
-    smooth: false,
-    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-  },
-  interaction: {
-    hover: true,
-    tooltipDelay: 80,
-    hideEdgesOnDrag: true,
-    hideNodesOnDrag: false,
-  },
+    edges: {
+      font: { size: 0 },
+      // Subtle curve makes parallel edges distinguishable and looks far nicer
+      // than straight segments, with negligible perf cost.
+      smooth: { enabled: !isLarge, type: 'continuous', roundness: 0.25, forceDirection: 'none' },
+      width: 1.2,
+      selectionWidth: 1.5,
+      arrows: { to: { enabled: true, scaleFactor: 0.45, type: 'arrow' } },
+      arrowStrikethrough: false,
+      hoverWidth: 0.6,
+    },
+    interaction: {
+      hover: true,
+      tooltipDelay: 80,
+      // IMPORTANT: keep these false — otherwise the canvas blanks out
+      // (turns black on a dark background) while panning or dragging nodes.
+      hideEdgesOnDrag: false,
+      hideNodesOnDrag: false,
+      navigationButtons: false,
+      multiselect: false,
+      dragView: true,
+      zoomView: true,
+    },
+  }
+}
+
+type NodeColor = { background: string; border: string; highlight: { background: string; border: string }; hover: { background: string; border: string } }
+
+// Dark fill + bright border: looks like glowing orbs on the dark canvas.
+// `bg` should be a very dark tinted colour; `border` is the vivid accent ring.
+function glowNode(bg: string, border: string): NodeColor {
+  return {
+    background: bg,
+    border,
+    highlight: { background: bg, border: '#f8fafc' },
+    hover:     { background: bg, border: border },
+  }
+}
+
+// Degree gradient: cold-blue (isolated) → teal (mid) → orange (hub).
+// Returns a glowNode whose hue encodes normalised degree t ∈ [0,1].
+function degreeGlow(t: number): NodeColor {
+  const bg     = t < 0.5
+    ? lerpColor('#0c1a2e', '#0a1f18', t * 2)
+    : lerpColor('#0a1f18', '#1f1005', (t - 0.5) * 2)
+  const border = t < 0.5
+    ? lerpColor('#3b82f6', '#10b981', t * 2)
+    : lerpColor('#10b981', '#f97316', (t - 0.5) * 2)
+  return glowNode(bg, border)
+}
+
+// Seed each node with a random scattered position so the force solver has
+// something to push against from the start — avoids the "everything stacked at
+// origin then snapped into a ring" artifact on large graphs.
+function seedPosition(index: number, total: number): { x: number; y: number } {
+  // Deterministic pseudo-random scatter on a square proportional to graph size.
+  const radius = Math.max(400, Math.sqrt(total) * 80)
+  // Cheap hash-based PRNG so re-renders place the same node in the same spot.
+  const a = Math.sin(index * 12.9898) * 43758.5453
+  const b = Math.sin(index * 78.233) * 43758.5453
+  return {
+    x: ((a - Math.floor(a)) * 2 - 1) * radius,
+    y: ((b - Math.floor(b)) * 2 - 1) * radius,
+  }
 }
 
 interface VisGraphProps {
@@ -84,10 +196,12 @@ interface HoverCardState {
 function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorMode }: VisGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const networkRef = useRef<Network | null>(null)
-  const nodesRef = useRef<DataSet<{ id: string; label: string; title: string; color: string; size: number }> | null>(null)
-  const edgesRef = useRef<DataSet<{ id: string; from: string; to: string; title: string; color: { color: string; opacity: number } }> | null>(null)
+  const nodesRef = useRef<DataSet<{ id: string; label: string; title: string; color: NodeColor; size: number; x: number; y: number }> | null>(null)
+  const edgesRef = useRef<DataSet<{ id: string; from: string; to: string; title: string; color: { color: string; opacity: number; highlight: string; hover: string } }> | null>(null)
   const [hoverCard, setHoverCard] = useState<HoverCardState | null>(null)
   const [selectedItem, setSelectedItem] = useState<GraphSelection | null>(null)
+  const [stabilizing, setStabilizing] = useState(false)
+  const [stabilizeProgress, setStabilizeProgress] = useState(0)
 
   // ── Pre-compute shared quantities ─────────────────────────────────────────
   const degree = useMemo<Record<string, number>>(() => {
@@ -109,48 +223,60 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
 
   const EV_LABELS: Record<number, string> = { 1: 'causal', 2: 'direct', 3: 'correlative', 4: 'predicted' }
 
-  const buildNode = useCallback((c: GraphConcept) => {
-    let color = '#34d399', size = 16
+  const buildNode = useCallback((c: GraphConcept, index: number, total: number) => {
+    const deg      = degree[c.label] ?? 0
+    const aliasN   = (c.aliases ?? []).length
+    const t        = Math.min(deg / maxDegree, 1)
+    // Default: degree → hue gradient; alias count adds a small size bonus.
+    let color: NodeColor = degreeGlow(t)
+    let size = 12 + Math.round(t * 18) + Math.min(aliasN, 5) * 1.2
     const lines = [c.label]
     const aliases = (c.aliases ?? []).join(', ')
     if (aliases) lines.push(`Aliases: ${aliases}`)
+    lines.push(`Connections: ${deg}`)
     if (nodeColorMode === 'review_coverage') {
       const n = rc[c.label] ?? 0
-      color = coverageColor(n, maxRc)
+      const accent = coverageColor(n, maxRc)
+      color = glowNode(lerpColor('#0a0f18', accent, 0.15), accent)
       lines.push(n > 0 ? `Reviewed: ${n}×` : 'Never reviewed')
     } else if (nodeColorMode === 'modification_heat') {
       const n = c.modification_count ?? 0
-      color = coverageColor(n, maxRc)
+      const accent = coverageColor(n, maxRc)
+      color = glowNode(lerpColor('#0a0f18', accent, 0.15), accent)
       lines.push(`Modified: ${n}×`)
     } else if (nodeColorMode === 'connectivity') {
-      const deg = degree[c.label] ?? 0
-      const t = Math.min(deg / maxDegree, 1)
-      color = lerpColor('#60a5fa', '#f97316', t)
-      size = 12 + Math.round(t * 18)
-      lines.push(`Connections: ${deg}`)
+      // Explicit connectivity mode: same gradient but larger size range.
+      color = degreeGlow(t)
+      size = 12 + Math.round(t * 26)
     }
-    return { id: c.label, label: '', title: lines.join('\n'), color, size }
+    const { x, y } = seedPosition(index, total)
+    return { id: c.label, label: '', title: lines.join('\n'), color, size, x, y }
   }, [nodeColorMode, rc, maxRc, degree, maxDegree])
 
   const buildEdge = useCallback((r: GraphRelation, i: number) => {
     const ev = typeof r.evidence_level === 'number' ? r.evidence_level : 3
-    let color = '#555'
+    let color = '#475569' // slate-600 — much more visible on dark bg than #555
     if (edgeColorMode === 'evidence_level') {
-      color = EDGE_COLORS[ev] ?? '#888'
+      color = EDGE_COLORS[ev] ?? '#94a3b8'
     } else if (edgeColorMode === 'review_coverage' || edgeColorMode === 'modification_heat') {
       const key = `${r.source}→${r.target}`
       color = coverageColor(rc[key] ?? 0, maxRc)
     }
-    return { id: `e${i}`, from: r.source, to: r.target, title: `${r.relation}\nEvidence: ${EV_LABELS[ev] ?? ev}`, color: { color, opacity: 0.8 } }
+    return {
+      id: `e${i}`,
+      from: r.source,
+      to: r.target,
+      title: `${r.relation}\nEvidence: ${EV_LABELS[ev] ?? ev}`,
+      color: { color, opacity: 0.55, highlight: color, hover: color },
+    }
   }, [edgeColorMode, rc, maxRc])
 
   // ── Effect 1: create the network when graph structure changes ─────────────
   useEffect(() => {
     if (!containerRef.current) return
 
-    const enablePhysics = concepts.length <= 500 && relations.length <= 1200
-
-    const visNodes = new DataSet(concepts.map(buildNode))
+    const total = concepts.length
+    const visNodes = new DataSet(concepts.map((c, i) => buildNode(c, i, total)))
     const visEdges = new DataSet(relations.map(buildEdge))
     nodesRef.current = visNodes
     edgesRef.current = visEdges
@@ -159,17 +285,26 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
     networkRef.current = new Network(
       containerRef.current,
       { nodes: visNodes, edges: visEdges },
-      {
-        ...VIS_OPTIONS,
-        physics: {
-          ...VIS_OPTIONS.physics,
-          enabled: enablePhysics,
-          stabilization: { enabled: enablePhysics, iterations: 80, updateInterval: 25 },
-        },
-      },
+      buildVisOptions(concepts.length, relations.length),
     )
 
     const network = networkRef.current
+
+    // Show a progress overlay while the force solver settles, then freeze the
+    // layout — gives us a clustered look without paying physics cost forever.
+    setStabilizing(concepts.length > 0)
+    setStabilizeProgress(0)
+    const handleProgress = (params: { iterations: number; total: number }) => {
+      if (params.total > 0) setStabilizeProgress(params.iterations / params.total)
+    }
+    const handleStabilized = () => {
+      setStabilizing(false)
+      setStabilizeProgress(1)
+      network.setOptions({ physics: { enabled: false } })
+      network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } })
+    }
+    network.on('stabilizationProgress', handleProgress)
+    network.on('stabilizationIterationsDone', handleStabilized)
 
     const getHoverPosition = (x: number, y: number) => {
       if (!containerRef.current) return { x, y }
@@ -212,11 +347,36 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
       setSelectedItem(null)
     }
 
+    // ── Local-physics-on-drag ────────────────────────────────────────────────
+    // Physics is off in the steady state for performance. When the user grabs
+    // a node, briefly turn physics back on so neighbors react in real time;
+    // turn it off again shortly after the drag ends. The dragged node itself
+    // is pinned by vis-network for the duration, so forces only propagate
+    // through springs to its connected neighborhood — local in effect even
+    // though the solver is global.
+    let dragSettleTimer: ReturnType<typeof setTimeout> | null = null
+    const handleDragStart = (params: { nodes: string[] }) => {
+      if (params.nodes.length === 0) return // panning the canvas — leave physics off
+      if (dragSettleTimer) { clearTimeout(dragSettleTimer); dragSettleTimer = null }
+      network.setOptions({ physics: { enabled: true } })
+    }
+    const handleDragEnd = (params: { nodes: string[] }) => {
+      if (params.nodes.length === 0) return
+      // Let the neighborhood settle for a beat, then freeze again.
+      if (dragSettleTimer) clearTimeout(dragSettleTimer)
+      dragSettleTimer = setTimeout(() => {
+        network.setOptions({ physics: { enabled: false } })
+        dragSettleTimer = null
+      }, 600)
+    }
+
     network.on('hoverNode', handleHoverNode)
     network.on('hoverEdge', handleHoverEdge)
     network.on('blurNode', clearHover)
     network.on('blurEdge', clearHover)
     network.on('click', handleClick)
+    network.on('dragStart', handleDragStart)
+    network.on('dragEnd', handleDragEnd)
 
     return () => {
       network.off('hoverNode', handleHoverNode)
@@ -224,6 +384,11 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
       network.off('blurNode', clearHover)
       network.off('blurEdge', clearHover)
       network.off('click', handleClick)
+      network.off('dragStart', handleDragStart)
+      network.off('dragEnd', handleDragEnd)
+      network.off('stabilizationProgress', handleProgress)
+      network.off('stabilizationIterationsDone', handleStabilized)
+      if (dragSettleTimer) clearTimeout(dragSettleTimer)
       networkRef.current?.destroy()
       networkRef.current = null
       nodesRef.current = null
@@ -234,7 +399,13 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
   // ── Effect 2: update colors in-place without destroying the network ───────
   useEffect(() => {
     if (!nodesRef.current || !edgesRef.current) return
-    nodesRef.current.update(concepts.map(buildNode))
+    const total = concepts.length
+    // Only push color/size updates here — omit x/y so we don't yank nodes back
+    // to their seed positions on every color-mode change.
+    nodesRef.current.update(concepts.map((c, i) => {
+      const n = buildNode(c, i, total)
+      return { id: n.id, label: n.label, title: n.title, color: n.color, size: n.size }
+    }))
     edgesRef.current.update(relations.map(buildEdge))
   }, [nodeColorMode, edgeColorMode, reviewCounts, buildNode, buildEdge, concepts, relations])
 
@@ -304,8 +475,8 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
     if (selectedItem.kind === 'node') {
       const concept = selectedItem.concept
       return (
-        <div className="absolute bottom-4 right-4 z-20 w-[24rem] rounded-xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur">
-          <div className="flex items-start justify-between gap-3">
+        <div className="absolute bottom-4 right-4 z-20 flex w-[24rem] flex-col rounded-xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur" style={{ maxHeight: 'calc(100% - 2rem)' }}>
+          <div className="flex shrink-0 items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-300">Node details</p>
               <h3 className="mt-1 text-lg font-semibold text-slate-100">{concept.label}</h3>
@@ -318,7 +489,7 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
               Close
             </button>
           </div>
-          <div className="mt-4 space-y-3 text-sm text-slate-200">
+          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto text-sm text-slate-200">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-400">Aliases</p>
               <p>{(concept.aliases ?? []).join(', ') || 'None'}</p>
@@ -356,8 +527,8 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
 
     const relation = selectedItem.relation
     return (
-      <div className="absolute bottom-4 right-4 z-20 w-[24rem] rounded-xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur">
-        <div className="flex items-start justify-between gap-3">
+      <div className="absolute bottom-4 right-4 z-20 flex w-[24rem] flex-col rounded-xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur" style={{ maxHeight: 'calc(100% - 2rem)' }}>
+        <div className="flex shrink-0 items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-300">Edge details</p>
             <h3 className="mt-1 text-lg font-semibold text-slate-100">{relation.relation}</h3>
@@ -370,7 +541,7 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
             Close
           </button>
         </div>
-        <div className="mt-4 space-y-3 text-sm text-slate-200">
+        <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto text-sm text-slate-200">
           <div>
             <p className="text-xs uppercase tracking-wide text-slate-400">Direction</p>
             <p>{`${relation.source} -> ${relation.target}`}</p>
@@ -405,11 +576,34 @@ function VisGraph({ concepts, relations, reviewCounts, nodeColorMode, edgeColorM
   }
 
   return (
-    <div className="relative h-full w-full" style={{ minHeight: '400px', background: '#0e1117' }}>
+    <div
+      className="relative h-full w-full overflow-hidden"
+      style={{
+        minHeight: '400px',
+        // Subtle radial vignette gives the graph some depth without distracting
+        // from the nodes. Pure black bg made dragged-with-hidden-edges visible.
+        background:
+          'radial-gradient(ellipse at center, #1a2030 0%, #0e1117 55%, #07090d 100%)',
+      }}
+    >
       <div
         ref={containerRef}
         style={{ width: '100%', height: '100%' }}
       />
+      {stabilizing && (
+        <div className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-slate-700 bg-slate-900/90 px-4 py-2 text-xs text-slate-200 shadow-lg backdrop-blur">
+          <div className="flex items-center gap-3">
+            <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-teal-400 border-t-transparent" />
+            <span>Computing layout… {Math.round(stabilizeProgress * 100)}%</span>
+            <div className="h-1 w-32 overflow-hidden rounded-full bg-slate-700">
+              <div
+                className="h-full bg-teal-400 transition-[width] duration-100"
+                style={{ width: `${Math.round(stabilizeProgress * 100)}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {renderHoverSummary()}
       {renderDetails()}
     </div>

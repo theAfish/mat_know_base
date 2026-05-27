@@ -7,6 +7,12 @@ export const listProjects = (limit = 100) =>
 export const getProject = (id: string) =>
   client.get<Project>(`/projects/${id}`).then(r => r.data)
 
+export const renameProject = (id: string, label: string) =>
+  client.patch<{ project_id: string; label: string; user_named: boolean }>(
+    `/projects/${id}`,
+    { label },
+  ).then(r => r.data)
+
 export const listAssets = (id: string) =>
   client.get<Asset[]>(`/projects/${id}/assets`).then(r => r.data)
 

@@ -123,7 +123,7 @@ export interface Job {
   job_id: string
   kind: string
   label: string
-  status: 'QUEUED' | 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  status: 'QUEUED' | 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
   project_id: string | null
   result: Record<string, unknown> | null
   error: string | null
@@ -180,6 +180,21 @@ export interface UploadProject {
   name: string
   upload_id: string
   files: UploadFileEntry[]
+  /** False when the user manually edited the name in the upload preview.
+   *  Defaults to true (auto-generated) so the backend can later auto-rename
+   *  the project from the extracted paper title. */
+  name_auto?: boolean
+}
+
+export interface UploadExpandFile {
+  uploadPath: string
+  size: number
+}
+
+export interface UploadExpandResponse {
+  files: UploadExpandFile[]
+  extracted: Array<{ archive: string; count: number }>
+  failed: Array<{ archive: string; error: string }>
 }
 
 // ─── UI ───────────────────────────────────────────────────────────────────────

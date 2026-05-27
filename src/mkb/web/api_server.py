@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import queue
 import shutil
+import tarfile
 import tempfile
 import threading
 import uuid
@@ -57,11 +59,17 @@ class AssistantSession:
     session_id: str
 
 
+class JobCancelled(BaseException):
+    """Raised in a worker thread to cancel a running job."""
+
+
 class JobManager:
     def __init__(self, max_concurrent: int | None = None) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._queues: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
+        self._cancelled: set[str] = set()
+        self._threads: dict[str, int] = {}  # job_id -> thread ident
         limit = max_concurrent if max_concurrent is not None else settings.max_concurrent_jobs
         self._semaphore = threading.Semaphore(max(1, limit))
 
@@ -111,14 +119,23 @@ class JobManager:
         def runner() -> None:
             self._semaphore.acquire()
             try:
+                if job_id in self._cancelled:
+                    q.put({"type": "cancelled"})
+                    return
+                with self._lock:
+                    self._threads[job_id] = threading.current_thread().ident  # type: ignore[assignment]
                 q.put({"type": "running"})
                 q.put({"type": "progress", "message": f"Started {label.lower()}"})
                 result = target(*worker_args, **worker_kwargs)
                 q.put({"type": "done", "result": result})
+            except JobCancelled:
+                q.put({"type": "cancelled"})
             except Exception as exc:  # noqa: BLE001
                 q.put({"type": "error", "error": str(exc)})
             finally:
                 self._semaphore.release()
+                with self._lock:
+                    self._threads.pop(job_id, None)
 
         threading.Thread(target=runner, daemon=True).start()
         return job_id
@@ -163,6 +180,10 @@ class JobManager:
                         job["error"] = event.get("error") or "Unknown error"
                         job["current_message"] = job["error"]
                         self._queues.pop(job_id, None)
+                    elif et == "cancelled":
+                        job["status"] = "CANCELLED"
+                        job["current_message"] = "Cancelled"
+                        self._queues.pop(job_id, None)
                     job["updated_at"] = _now_iso()
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -170,6 +191,39 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             return dict(job) if job else None
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a QUEUED or RUNNING job.
+
+        Returns True if the job was found and a cancellation was initiated.
+        QUEUED jobs are marked CANCELLED immediately; RUNNING jobs receive an
+        async exception via ctypes so the worker thread can clean up.
+        """
+        self._drain()
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return False
+            status = job.get("status")
+            if status not in ("QUEUED", "RUNNING"):
+                return False
+            self._cancelled.add(job_id)
+            if status == "QUEUED":
+                # Thread is blocked on semaphore — mark immediately so the UI
+                # sees the change; the runner will handle cleanup on start.
+                job["status"] = "CANCELLED"
+                job["current_message"] = "Cancelled"
+                job["updated_at"] = _now_iso()
+                self._queues.pop(job_id, None)
+            thread_id = self._threads.get(job_id)
+
+        if thread_id is not None:
+            # Best-effort: raise JobCancelled in the worker thread.
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(thread_id),
+                ctypes.py_object(JobCancelled),
+            )
+        return True
 
     def list_jobs(self, *, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         self._drain()
@@ -316,6 +370,21 @@ class UploadCompleteRequest(BaseModel):
     upload_id: str
 
 
+class UploadExpandRequest(BaseModel):
+    upload_id: str
+
+
+class UploadExpandFile(BaseModel):
+    uploadPath: str
+    size: int
+
+
+class UploadExpandResponse(BaseModel):
+    files: list[UploadExpandFile]
+    extracted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+
 class AssistantChatRequest(BaseModel):
     message: str
 
@@ -330,6 +399,11 @@ class UploadProject(BaseModel):
     name: str
     upload_id: str
     files: list[UploadFileItem]
+    # True (default) means ``name`` was auto-generated (e.g. folder basename
+    # from the upload-preview grouping) and may be overwritten later by an
+    # auto-rename from extraction. False means the user explicitly typed/edited
+    # the name and it should be preserved.
+    name_auto: bool = True
 
 
 def _normalize_project_name(name: str, fallback: str = "project") -> str:
@@ -368,6 +442,165 @@ def _next_available_path(path: Path) -> Path:
         idx += 1
 
 
+_ARCHIVE_SUFFIXES = (
+    ".zip",
+    ".tar",
+    ".tar.gz", ".tgz",
+    ".tar.bz2", ".tbz2", ".tbz",
+    ".tar.xz", ".txz",
+)
+
+
+def _is_archive(name: str) -> bool:
+    lower = name.lower()
+    return any(lower.endswith(ext) for ext in _ARCHIVE_SUFFIXES)
+
+
+def _strip_archive_ext(name: str) -> str:
+    lower = name.lower()
+    for ext in _ARCHIVE_SUFFIXES:
+        if lower.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def _safe_extract_archive(archive_path: Path, dest_dir: Path) -> int:
+    """Extract an archive into ``dest_dir`` safely.
+
+    - Rejects entries whose resolved path would escape ``dest_dir`` (zip-slip).
+    - Skips symlinks/hardlinks and non-regular entries.
+    - Resolves collisions via ``_next_available_path``.
+    Returns the number of regular files extracted.
+    """
+    dest_root = dest_dir.resolve()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    name = archive_path.name.lower()
+
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as zf:
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                member_name = member.filename.replace("\\", "/")
+                if not member_name or member_name.endswith("/"):
+                    continue
+                # Skip macOS metadata noise
+                if member_name.startswith("__MACOSX/") or "/.DS_Store" in member_name or member_name.endswith("/.DS_Store"):
+                    continue
+                target = (dest_dir / member_name).resolve()
+                try:
+                    target.relative_to(dest_root)
+                except ValueError:
+                    continue
+                target = _next_available_path(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, target.open("wb") as out:
+                    shutil.copyfileobj(src, out)
+                count += 1
+        return count
+
+    # tar family (auto-detects compression with "r:*")
+    with tarfile.open(archive_path, "r:*") as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                # skip directories, symlinks, hardlinks, devices, fifos
+                continue
+            member_name = member.name.replace("\\", "/").lstrip("/")
+            if not member_name:
+                continue
+            if member_name.startswith("__MACOSX/") or member_name.endswith("/.DS_Store"):
+                continue
+            target = (dest_dir / member_name).resolve()
+            try:
+                target.relative_to(dest_root)
+            except ValueError:
+                continue
+            src = tf.extractfile(member)
+            if src is None:
+                continue
+            target = _next_available_path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as out:
+                shutil.copyfileobj(src, out)
+            count += 1
+    return count
+
+
+def _expand_temp_dir(temp_root: Path, emit=None) -> dict[str, Any]:
+    """Expand archives in ``temp_root`` and return the resulting file tree.
+
+    For each archive found anywhere in ``temp_root`` we extract it into a
+    sibling directory (named after the archive without its suffix) and
+    delete the archive file. Returns a dict with::
+
+        {
+            "files": [{"uploadPath": str, "size": int}, ...],
+            "extracted": [{"archive": str, "count": int}, ...],
+            "failed":    [{"archive": str, "error": str}, ...],
+        }
+
+    ``uploadPath`` values are relative to ``temp_root`` and use forward
+    slashes so they can round-trip through the JSON API.
+    """
+    def _emit(msg: str) -> None:
+        if emit:
+            emit(msg)
+
+    extracted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    if not temp_root.is_dir():
+        return {"files": [], "extracted": extracted, "failed": failed}
+
+    # Repeatedly scan so nested archives (an archive that contains another
+    # archive) get expanded too. Bound the loop to a safe max depth.
+    for _ in range(8):
+        archives = [
+            p for p in temp_root.rglob("*")
+            if p.is_file() and _is_archive(p.name)
+        ]
+        if not archives:
+            break
+        for archive in archives:
+            extract_target = archive.parent / _strip_archive_ext(archive.name)
+            if extract_target.exists():
+                extract_target = _next_available_path(extract_target)
+            _emit(f"Extracting {archive.relative_to(temp_root)}")
+            try:
+                n = _safe_extract_archive(archive, extract_target)
+            except (zipfile.BadZipFile, tarfile.TarError, OSError) as exc:
+                failed.append({
+                    "archive": str(archive.relative_to(temp_root)),
+                    "error": str(exc),
+                })
+                continue
+            extracted.append({
+                "archive": str(archive.relative_to(temp_root)),
+                "count": n,
+            })
+            try:
+                archive.unlink()
+            except OSError:
+                pass
+
+    # Build the resulting file tree
+    files: list[dict[str, Any]] = []
+    root_resolved = temp_root.resolve()
+    for p in sorted(temp_root.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            rel = p.resolve().relative_to(root_resolved)
+        except ValueError:
+            continue
+        files.append({
+            "uploadPath": rel.as_posix(),
+            "size": p.stat().st_size,
+        })
+    return {"files": files, "extracted": extracted, "failed": failed}
+
+
 def _run_upload_ingest(payload: list[UploadProject], progress_callback=None) -> dict[str, Any]:
     def emit(msg: str) -> None:
         if progress_callback:
@@ -391,15 +624,20 @@ def _run_upload_ingest(payload: list[UploadProject], progress_callback=None) -> 
 
             for file_info in proj.files:
                 src = _safe_child(temp_root, file_info.uploadPath)
+                if not src.is_file():
+                    continue
                 rel_full = _safe_child(upload_dir, file_info.relativePath)
                 dest = upload_dir / rel_full.relative_to(upload_dir.resolve())
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest = _next_available_path(dest)
-                if src.is_file():
-                    shutil.move(str(src), str(dest))
+                shutil.move(str(src), str(dest))
 
             emit(f"Ingesting {upload_dir.name}")
-            result = api.ingest(upload_dir)
+            result = api.ingest(
+                upload_dir,
+                label=proj.name if not proj.name_auto else None,
+                user_named=not proj.name_auto,
+            )
             total_ingested += int(result.get("ingested", 0) or 0)
             total_dupes += int(result.get("duplicates", 0) or 0)
             created.append(upload_dir.name)
@@ -446,6 +684,19 @@ def get_project(project_id: str):
         if row["project_id"] == project_id:
             return row
     raise HTTPException(status_code=404, detail="Project not found")
+
+
+class ProjectUpdateRequest(BaseModel):
+    label: str
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, body: ProjectUpdateRequest):
+    _parse_uuid(project_id, "project_id")
+    result = api.rename_project(project_id, body.label, user_initiated=True)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
 
 
 @app.get("/api/projects/{project_id}/assets")
@@ -819,6 +1070,14 @@ def get_job(job_id: str):
     return row
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    ok = jobs.cancel_job(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Job not found or not cancellable")
+    return {"ok": True}
+
+
 @app.post("/api/upload/init", response_model=UploadInitResponse)
 def upload_init():
     upload_id = str(uuid.uuid4())
@@ -855,6 +1114,25 @@ def upload_complete(body: UploadCompleteRequest):
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("done")
     return {"ok": True}
+
+
+@app.post("/api/upload/expand", response_model=UploadExpandResponse)
+def upload_expand(body: UploadExpandRequest):
+    """Extract any archives in the session's temp dir and return the file tree.
+
+    Safe to call multiple times — archives that have already been removed
+    simply don't appear in the next pass. ``.complete`` and other dot files
+    are filtered out of the returned tree.
+    """
+    _parse_uuid(body.upload_id, "upload_id")
+    temp_root = _UPLOAD_TEMP / body.upload_id
+    result = _expand_temp_dir(temp_root)
+    # Hide internal marker files (e.g. ".complete") from the UI tree.
+    result["files"] = [
+        f for f in result["files"]
+        if not Path(f["uploadPath"]).name.startswith(".")
+    ]
+    return result
 
 
 @app.post("/api/upload/ingest")

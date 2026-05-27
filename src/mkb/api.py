@@ -153,17 +153,64 @@ def reset_db() -> None:
 # ── Ingestion / Sync ─────────────────────────────────────────────
 
 
-def ingest(directory: str | Path, label: str | None = None) -> dict:
+def ingest(
+    directory: str | Path,
+    label: str | None = None,
+    *,
+    user_named: bool = False,
+) -> dict:
     """Ingest a single project directory.
 
     Creates or updates a ResearchProject record keyed on the directory path,
     then ingests any new files found inside it.
 
+    ``user_named`` controls whether the provided label should be treated as a
+    user-given name (in which case the project will be marked as such and
+    excluded from later automatic renaming during extraction).
+
     Returns a summary dict with counts (total, ingested, duplicates, errors).
     """
     from mkb.ingest.worker import ingest_directory
 
-    return ingest_directory(directory, label=label)
+    return ingest_directory(directory, label=label, user_named=user_named)
+
+
+def rename_project(
+    project_id: str | uuid.UUID,
+    label: str,
+    *,
+    user_initiated: bool = True,
+) -> dict:
+    """Rename a research project.
+
+    When ``user_initiated`` is True (the default), records
+    ``metadata_["user_named"] = True`` so that the automatic post-extraction
+    rename will skip this project. Callers that want to perform an automatic
+    rename (e.g. from an extracted paper title) should pass
+    ``user_initiated=False`` to leave that flag alone.
+    """
+    from mkb.db.models import ResearchProject
+
+    pid = uuid.UUID(str(project_id))
+    cleaned = (label or "").strip()
+    if not cleaned:
+        return {"error": "label must not be empty"}
+
+    with SyncSessionLocal() as session:
+        project = session.query(ResearchProject).filter_by(project_id=pid).first()
+        if not project:
+            return {"error": f"Project {project_id} not found"}
+        project.label = cleaned
+        if user_initiated:
+            meta = dict(project.metadata_ or {})
+            meta["user_named"] = True
+            project.metadata_ = meta
+        session.commit()
+        return {
+            "project_id": str(project.project_id),
+            "label": project.label,
+            "user_named": bool((project.metadata_ or {}).get("user_named")),
+        }
 
 
 def sync(root_dir: str | Path) -> dict:

@@ -116,8 +116,18 @@ def _find_containing_project(
     return min(row.project_id for row in matching_projects)
 
 
-def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
-    """Ingest a directory as a research project. Creates or updates the project."""
+def ingest_directory(
+    directory: str | Path,
+    label: str | None = None,
+    *,
+    user_named: bool = False,
+) -> dict:
+    """Ingest a directory as a research project. Creates or updates the project.
+
+    ``user_named`` records whether the provided label came from the user (as
+    opposed to being auto-derived from the directory name). When True, the
+    project is marked so it is not auto-renamed from the extracted paper title.
+    """
     directory = Path(directory).resolve()
     if not directory.is_dir():
         raise FileNotFoundError(f"Not a directory: {directory}")
@@ -136,10 +146,16 @@ def ingest_directory(directory: str | Path, label: str | None = None) -> dict:
                 source_path=source_path,
                 file_count=0,
             )
+            if user_named and label:
+                project.metadata_ = {"user_named": True}
             session.add(project)
             session.flush()
         elif label:
             project.label = label
+            if user_named:
+                meta = dict(project.metadata_ or {})
+                meta["user_named"] = True
+                project.metadata_ = meta
 
         stats = {"total": len(files), "ingested": 0, "duplicates": 0, "errors": 0,
                  "project_id": str(project.project_id)}
