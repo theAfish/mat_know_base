@@ -30,14 +30,22 @@ function stringify(val: unknown): string {
 }
 
 // ID-like column heuristic
-function defaultColumns(cols: string[]): string[] {
+// schemaOrder: keys from item_schema (preserves the schema author's intended order)
+function defaultColumns(cols: string[], schemaOrder?: string[]): string[] {
   const idCols = new Set(cols.filter(c =>
     c.toLowerCase() === 'id' || c.toLowerCase().endsWith('_id') || c.toLowerCase().includes('_id_')
   ))
-  const priority = ['paper_name', 'source_paper_name', 'is_core_study_data', 'extracted_at']
+  const metaCols = ['paper_name', 'source_paper_name', 'is_core_study_data', 'extracted_at']
     .filter(c => cols.includes(c))
-  const rest = cols.filter(c => !priority.includes(c) && !idCols.has(c))
-  const visible = [...priority, ...rest]
+  if (schemaOrder && schemaOrder.length > 0) {
+    // schema-defined fields first (in schema order), then meta cols, then anything else
+    const schemaPresent = schemaOrder.filter(c => cols.includes(c))
+    const rest = cols.filter(c => !schemaPresent.includes(c) && !metaCols.includes(c) && !idCols.has(c))
+    const visible = [...schemaPresent, ...metaCols, ...rest]
+    return visible.length > 0 ? visible : cols
+  }
+  const rest = cols.filter(c => !metaCols.includes(c) && !idCols.has(c))
+  const visible = [...metaCols, ...rest]
   return visible.length > 0 ? visible : cols
 }
 
@@ -142,10 +150,12 @@ function saveColPrefs(name: string, prefs: ColPrefs) {
 function SectionTable({
   name,
   rows,
+  schemaOrder,
   onRequestDeleteProjection,
 }: {
   name: string
   rows: Array<Record<string, string>>
+  schemaOrder?: string[]
   onRequestDeleteProjection?: (projectionIds: string[]) => void
 }) {
   const [page, setPage] = useState(1)
@@ -163,7 +173,7 @@ function SectionTable({
   // Initial / merged column preferences
   const [prefs, setPrefs] = useState<ColPrefs>(() => {
     const saved = loadColPrefs(name)
-    const defaults = defaultColumns(allCols.length > 0 ? allCols : [])
+    const defaults = defaultColumns(allCols.length > 0 ? allCols : [], schemaOrder)
     if (!saved) return { visible: defaults, widths: {}, known: allCols }
     // Merge: keep saved ordering, append any newly discovered cols at end (hidden)
     const merged = { ...saved, known: Array.from(new Set([...saved.known, ...allCols])) }
@@ -303,7 +313,7 @@ function SectionTable({
     return { ...p, widths }
   })
   const resetPrefs = () => updatePrefs(() => ({
-    visible: defaultColumns(allCols),
+    visible: defaultColumns(allCols, schemaOrder),
     widths: {},
     known: allCols,
   }))
@@ -892,14 +902,20 @@ export default function ProjectionsPage() {
               <p className="text-sm text-slate-400">No completed projection data available yet.</p>
             ) : (
               <div className="space-y-6">
-                {Object.entries(sectionRows).map(([section, rows]) => (
-                  <SectionTable
-                    key={section}
-                    name={section}
-                    rows={rows}
-                    onRequestDeleteProjection={batchDeleteIds}
-                  />
-                ))}
+                {Object.entries(sectionRows).map(([section, rows]) => {
+                  const sectionSchema = spaceDetail?.extraction_schema?.[section] as Record<string, unknown> | undefined
+                  const itemSchema = sectionSchema?.item_schema as Record<string, unknown> | undefined
+                  const schemaOrder = itemSchema ? Object.keys(itemSchema) : undefined
+                  return (
+                    <SectionTable
+                      key={section}
+                      name={section}
+                      rows={rows}
+                      schemaOrder={schemaOrder}
+                      onRequestDeleteProjection={batchDeleteIds}
+                    />
+                  )
+                })}
               </div>
             )}
           </div>
