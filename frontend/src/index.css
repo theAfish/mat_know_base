@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+/* Remap slate → zinc to eliminate the blue cast from neutral surfaces */
+@theme {
+  --color-slate-50:  var(--color-zinc-50);
+  --color-slate-100: var(--color-zinc-100);
+  --color-slate-200: var(--color-zinc-200);
+  --color-slate-300: var(--color-zinc-300);
+  --color-slate-400: var(--color-zinc-400);
+  --color-slate-500: var(--color-zinc-500);
+  --color-slate-600: var(--color-zinc-600);
+  --color-slate-700: var(--color-zinc-700);
+  --color-slate-800: var(--color-zinc-800);
+  --color-slate-900: var(--color-zinc-900);
+  --color-slate-950: var(--color-zinc-950);
+}
+
 @layer base {
   * {
     box-sizing: border-box;
@@ -10,18 +25,18 @@
   }
 }
 
-/* ReactFlow dark theme overrides */
+/* ReactFlow dark theme overrides — zinc-* equivalents */
 .react-flow__background {
-  background-color: rgb(15 23 42);
+  background-color: rgb(24 24 27);    /* zinc-900 */
 }
 .react-flow__controls button {
-  background-color: rgb(30 41 59);
-  border-color: rgb(51 65 85);
-  color: rgb(148 163 184);
+  background-color: rgb(39 39 42);    /* zinc-800 */
+  border-color: rgb(63 63 70);        /* zinc-700 */
+  color: rgb(161 161 170);            /* zinc-400 */
 }
 .react-flow__controls button:hover {
-  background-color: rgb(51 65 85);
+  background-color: rgb(63 63 70);    /* zinc-700 */
 }
 .react-flow__minimap {
-  background-color: rgb(15 23 42);
+  background-color: rgb(24 24 27);    /* zinc-900 */
 }

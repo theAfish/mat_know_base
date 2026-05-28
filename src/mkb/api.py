@@ -691,8 +691,169 @@ def list_projects(limit: int = 50) -> list[dict]:
                 "frame_status": frame.status.value if frame else "NO_FRAME",
                 "created_at": p.created_at.isoformat() if p.created_at else None,
                 "duplicate_of": (p.metadata_ or {}).get("duplicate_of"),
+                "group_id": str(p.group_id) if p.group_id else None,
             })
         return result
+
+
+# ── Project groups ─────────────────────────────────────────────
+
+
+def _serialize_group(g, project_count: int) -> dict:
+    return {
+        "group_id": str(g.group_id),
+        "name": g.name,
+        "description": g.description,
+        "color": g.color,
+        "display_order": g.display_order,
+        "project_count": project_count,
+        "created_at": g.created_at.isoformat() if g.created_at else None,
+        "updated_at": g.updated_at.isoformat() if g.updated_at else None,
+    }
+
+
+def list_project_groups() -> list[dict]:
+    """List all project groups with project counts."""
+    from sqlalchemy import func as sa_func
+
+    from mkb.db.models import ProjectGroup, ResearchProject
+
+    init_db()
+    with SyncSessionLocal() as session:
+        groups = (
+            session.query(ProjectGroup)
+            .order_by(ProjectGroup.display_order, ProjectGroup.created_at)
+            .all()
+        )
+        counts = dict(
+            session.query(ResearchProject.group_id, sa_func.count())
+            .filter(ResearchProject.group_id.isnot(None))
+            .group_by(ResearchProject.group_id)
+            .all()
+        )
+        return [_serialize_group(g, counts.get(g.group_id, 0)) for g in groups]
+
+
+def create_project_group(
+    name: str,
+    *,
+    description: str | None = None,
+    color: str | None = None,
+    display_order: int | None = None,
+) -> dict:
+    from mkb.db.models import ProjectGroup
+
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return {"error": "name must not be empty"}
+
+    init_db()
+    with SyncSessionLocal() as session:
+        if display_order is None:
+            current_max = (
+                session.query(ProjectGroup)
+                .order_by(ProjectGroup.display_order.desc())
+                .first()
+            )
+            display_order = (current_max.display_order + 1) if current_max else 0
+        group = ProjectGroup(
+            name=cleaned,
+            description=(description or None),
+            color=(color or None),
+            display_order=int(display_order),
+        )
+        session.add(group)
+        session.commit()
+        session.refresh(group)
+        return _serialize_group(group, 0)
+
+
+def update_project_group(
+    group_id: str | uuid.UUID,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    color: str | None = None,
+    display_order: int | None = None,
+) -> dict:
+    from sqlalchemy import func as sa_func
+
+    from mkb.db.models import ProjectGroup, ResearchProject
+
+    gid = uuid.UUID(str(group_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        group = session.query(ProjectGroup).filter_by(group_id=gid).first()
+        if not group:
+            return {"error": f"Group {group_id} not found"}
+        if name is not None:
+            cleaned = name.strip()
+            if not cleaned:
+                return {"error": "name must not be empty"}
+            group.name = cleaned
+        if description is not None:
+            group.description = description.strip() or None
+        if color is not None:
+            group.color = color.strip() or None
+        if display_order is not None:
+            group.display_order = int(display_order)
+        session.commit()
+        session.refresh(group)
+        count = (
+            session.query(sa_func.count())
+            .select_from(ResearchProject)
+            .filter(ResearchProject.group_id == gid)
+            .scalar()
+        ) or 0
+        return _serialize_group(group, int(count))
+
+
+def delete_project_group(group_id: str | uuid.UUID) -> dict:
+    """Delete a group. Projects in it are unassigned (group_id set to NULL)."""
+    from mkb.db.models import ProjectGroup, ResearchProject
+
+    gid = uuid.UUID(str(group_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        group = session.query(ProjectGroup).filter_by(group_id=gid).first()
+        if not group:
+            return {"error": f"Group {group_id} not found"}
+        unassigned = (
+            session.query(ResearchProject)
+            .filter(ResearchProject.group_id == gid)
+            .update({ResearchProject.group_id: None}, synchronize_session=False)
+        )
+        session.delete(group)
+        session.commit()
+        return {"group_id": str(gid), "deleted": True, "unassigned_projects": int(unassigned)}
+
+
+def assign_projects_to_group(
+    project_ids: list[str | uuid.UUID],
+    group_id: str | uuid.UUID | None,
+) -> dict:
+    """Assign multiple projects to a group, or to no group when ``group_id`` is None."""
+    from mkb.db.models import ProjectGroup, ResearchProject
+
+    if not project_ids:
+        return {"updated": 0, "group_id": None}
+
+    pids = [uuid.UUID(str(p)) for p in project_ids]
+    gid = uuid.UUID(str(group_id)) if group_id else None
+
+    init_db()
+    with SyncSessionLocal() as session:
+        if gid is not None:
+            group = session.query(ProjectGroup).filter_by(group_id=gid).first()
+            if not group:
+                return {"error": f"Group {group_id} not found"}
+        updated = (
+            session.query(ResearchProject)
+            .filter(ResearchProject.project_id.in_(pids))
+            .update({ResearchProject.group_id: gid}, synchronize_session=False)
+        )
+        session.commit()
+        return {"updated": int(updated), "group_id": str(gid) if gid else None}
 
 
 def list_assets(project_id: str | uuid.UUID | None = None, limit: int = 100) -> list[dict]:

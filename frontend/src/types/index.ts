@@ -9,7 +9,28 @@ export interface Project {
   processing_status: string
   frame_status: string | null
   created_at: string
+  group_id?: string | null
 }
+
+export interface ProjectGroup {
+  group_id: string
+  name: string
+  description: string | null
+  color: string | null
+  display_order: number
+  project_count: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ProjectGroupCreatePayload {
+  name: string
+  description?: string | null
+  color?: string | null
+  display_order?: number | null
+}
+
+export type ProjectGroupUpdatePayload = Partial<ProjectGroupCreatePayload>
 
 export interface Asset {
   asset_id: string

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { listSpaces, getSpace, createSpace, updateSpace, deleteSpace } from '../api/spaces'
 import type { Space, SpaceCreatePayload } from '../types'
 
@@ -34,6 +34,7 @@ export default function SpacesPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const refresh = async () => {
     try {
@@ -150,16 +151,29 @@ export default function SpacesPage() {
             + New space
           </button>
           <button
-            onClick={() =>
-              openEditor({
-                mode: 'import',
-                jsonText: '',
-              })
-            }
+            onClick={() => importFileRef.current?.click()}
             className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-sm transition-colors"
           >
             Import JSON
           </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={e => {
+              const file = e.target.files?.[0]
+              if (!file) return
+              const reader = new FileReader()
+              reader.onload = evt => {
+                const text = evt.target?.result as string
+                openEditor({ mode: 'import', jsonText: text })
+              }
+              reader.readAsText(file)
+              // reset so the same file can be re-selected
+              e.target.value = ''
+            }}
+          />
         </div>
       </div>
 
