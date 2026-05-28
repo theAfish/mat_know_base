@@ -44,5 +44,8 @@ export const kgExtractProject = (id: string) =>
 export const getProjectJobs = (id: string) =>
   client.get<Job[]>(`/projects/${id}/jobs`).then(r => r.data)
 
+export const deleteProject = (id: string, deleteS3 = true) =>
+  client.delete<Record<string, unknown>>(`/projects/${id}`, { params: { delete_s3: deleteS3 } }).then(r => r.data)
+
 export const searchLibrary = (q: string, limit = 20) =>
   client.get('/search', { params: { q, limit } }).then(r => r.data)

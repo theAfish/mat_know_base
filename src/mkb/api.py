@@ -828,6 +828,177 @@ def delete_project_group(group_id: str | uuid.UUID) -> dict:
         return {"group_id": str(gid), "deleted": True, "unassigned_projects": int(unassigned)}
 
 
+def delete_project(
+    project_id: str | uuid.UUID,
+    *,
+    delete_s3_objects: bool = True,
+) -> dict:
+    """Hard-delete a research project and all data exclusively owned by it.
+
+    Cascade:
+    - ``ProjectAsset`` links for this project are removed.
+    - ``Asset`` / ``ProcessedAsset`` / ``ProcessingLog`` records are removed
+      only when the asset is **not** linked to any other project (i.e. not
+      shared).  When ``delete_s3_objects`` is True the corresponding S3
+      objects are removed before the DB records.
+    - ``KnowledgeFrame`` owned by this project is deleted, along with its
+      ``ExtractionPass``, all ``Projection`` rows (hard delete), and all
+      ``Feedback`` rows whose ``target_frame_id`` / ``target_project_id``
+      match.
+    - The ``ResearchProject`` record itself is deleted last.
+
+    Returns a summary dict or ``{"error": ...}`` when the project is not found.
+    """
+    from mkb.db.models import (
+        Asset,
+        ExtractionPass,
+        Feedback,
+        KnowledgeFrame,
+        ProcessedAsset,
+        ProcessingLog,
+        ProjectAsset,
+        Projection,
+        ResearchProject,
+    )
+    from mkb.storage.s3 import delete_object
+
+    pid = uuid.UUID(str(project_id))
+    init_db()
+
+    with SyncSessionLocal() as session:
+        project = session.query(ResearchProject).filter_by(project_id=pid).first()
+        if not project:
+            return {"error": f"Project {project_id} not found"}
+
+        # ── Collect asset IDs linked to this project ──────────────────────
+        own_links = session.query(ProjectAsset).filter_by(project_id=pid).all()
+        own_asset_ids = [lnk.asset_id for lnk in own_links]
+
+        # Determine which of those assets are shared with other projects
+        shared_asset_ids: set[uuid.UUID] = set()
+        if own_asset_ids:
+            other_links = (
+                session.query(ProjectAsset.asset_id)
+                .filter(
+                    ProjectAsset.asset_id.in_(own_asset_ids),
+                    ProjectAsset.project_id != pid,
+                )
+                .distinct()
+                .all()
+            )
+            shared_asset_ids = {row.asset_id for row in other_links}
+
+        exclusive_asset_ids = [a for a in own_asset_ids if a not in shared_asset_ids]
+
+        # ── Remove S3 objects and DB records for exclusive assets ─────────
+        deleted_assets = 0
+        deleted_processed = 0
+        deleted_s3_objects = 0
+
+        if exclusive_asset_ids:
+            # ProcessedAsset rows (and their S3 objects)
+            processed_rows = (
+                session.query(ProcessedAsset)
+                .filter(ProcessedAsset.asset_id.in_(exclusive_asset_ids))
+                .all()
+            )
+            for pa in processed_rows:
+                if delete_s3_objects:
+                    try:
+                        delete_object(pa.s3_bucket, pa.s3_key)
+                        deleted_s3_objects += 1
+                    except Exception:
+                        logger.warning(
+                            "Failed to delete S3 object %s/%s", pa.s3_bucket, pa.s3_key
+                        )
+                session.delete(pa)
+            deleted_processed = len(processed_rows)
+
+            # ProcessingLog rows
+            session.query(ProcessingLog).filter(
+                ProcessingLog.asset_id.in_(exclusive_asset_ids)
+            ).delete(synchronize_session=False)
+
+            # Raw asset S3 objects + Asset rows
+            raw_assets = (
+                session.query(Asset)
+                .filter(Asset.asset_id.in_(exclusive_asset_ids))
+                .all()
+            )
+            for asset in raw_assets:
+                if delete_s3_objects:
+                    try:
+                        delete_object(asset.s3_bucket, asset.s3_key)
+                        deleted_s3_objects += 1
+                    except Exception:
+                        logger.warning(
+                            "Failed to delete S3 object %s/%s", asset.s3_bucket, asset.s3_key
+                        )
+                session.delete(asset)
+            deleted_assets = len(raw_assets)
+
+        # ── Remove ProjectAsset links (including shared ones) ─────────────
+        for lnk in own_links:
+            session.delete(lnk)
+
+        # ── Knowledge frame + dependents ──────────────────────────────────
+        frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
+        deleted_projections = 0
+        deleted_passes = 0
+        deleted_feedback = 0
+
+        if frame:
+            fid = frame.frame_id
+
+            # Projections (hard delete)
+            deleted_projections = (
+                session.query(Projection)
+                .filter(Projection.frame_id == fid)
+                .delete(synchronize_session=False)
+            )
+
+            # ExtractionPass rows
+            deleted_passes = (
+                session.query(ExtractionPass)
+                .filter(ExtractionPass.frame_id == fid)
+                .delete(synchronize_session=False)
+            )
+
+            # Feedback rows tied to this frame
+            deleted_feedback = (
+                session.query(Feedback)
+                .filter(Feedback.target_frame_id == fid)
+                .delete(synchronize_session=False)
+            )
+
+            session.delete(frame)
+
+        # Also remove any feedback rows referencing the project but a different
+        # (or NULL) frame (defensive clean-up).
+        extra_feedback = (
+            session.query(Feedback)
+            .filter(Feedback.target_project_id == pid)
+            .delete(synchronize_session=False)
+        )
+        deleted_feedback += extra_feedback
+
+        # ── Delete the project itself ─────────────────────────────────────
+        session.delete(project)
+        session.commit()
+
+    return {
+        "project_id": str(pid),
+        "deleted": True,
+        "deleted_assets": deleted_assets,
+        "shared_assets_kept": len(shared_asset_ids),
+        "deleted_processed_assets": deleted_processed,
+        "deleted_s3_objects": deleted_s3_objects,
+        "deleted_projections": deleted_projections,
+        "deleted_extraction_passes": deleted_passes,
+        "deleted_feedback": deleted_feedback,
+    }
+
+
 def assign_projects_to_group(
     project_ids: list[str | uuid.UUID],
     group_id: str | uuid.UUID | None,

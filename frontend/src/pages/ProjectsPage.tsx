@@ -2,7 +2,7 @@ import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import {
   listProjects, processProject, extractProject, projectToSpace, kgExtractProject, getProjectJobs,
-  listAssets, listProcessedAssets,
+  listAssets, listProcessedAssets, deleteProject,
 } from '../api/projects'
 import { listSpaces } from '../api/spaces'
 import { uploadInit, uploadFile, uploadComplete, uploadExpand, uploadIngest, uploadProcessedAsset } from '../api/upload'
@@ -680,13 +680,17 @@ interface ProjectDetailProps {
   spaces: Space[]
   onClose: () => void
   onJobComplete?: () => void
+  onDeleted?: () => void
 }
 
-function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetailProps) {
+function ProjectDetail({ project, spaces, onClose, onJobComplete, onDeleted }: ProjectDetailProps) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [selectedSpace, setSelectedSpace] = useState<string>(spaces[0]?.space_id ?? '')
   const [selectedSourceType, setSelectedSourceType] = useState<'frame' | 'markdown'>('frame')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const userSpaces = spaces.filter(s => s.name !== '__global_kg__')
@@ -757,6 +761,19 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
       setActiveJobId(null)
     } catch (err) {
       console.error('Cancel failed', err)
+    }
+  }
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await deleteProject(project.project_id)
+      onDeleted?.()
+    } catch (err: any) {
+      setDeleteError(err?.response?.data?.detail ?? err?.message ?? 'Delete failed')
+      setDeleting(false)
+      setConfirmDelete(false)
     }
   }
 
@@ -891,6 +908,46 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete }: ProjectDetai
               </div>
             </div>
           )}
+
+          {/* Danger zone */}
+          <div className="border-t border-slate-700 pt-4 mt-2">
+            {!confirmDelete ? (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                disabled={!!activeJobId || deleting}
+                className="px-3 py-1.5 text-xs bg-transparent hover:bg-red-900/40 text-red-400 hover:text-red-300 rounded border border-red-900 hover:border-red-700 disabled:opacity-40 transition-colors"
+              >
+                Delete this project…
+              </button>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-red-300">
+                  This will permanently delete the project, all its assets, processed files, frame, and projections. This cannot be undone.
+                </p>
+                {deleteError && (
+                  <div className="px-3 py-2 rounded bg-red-900/40 border border-red-700 text-red-200 text-xs">
+                    {deleteError}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    className="px-3 py-1.5 text-xs bg-red-700 hover:bg-red-600 text-white rounded font-medium disabled:opacity-50"
+                  >
+                    {deleting ? 'Deleting…' : 'Yes, delete permanently'}
+                  </button>
+                  <button
+                    onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
+                    disabled={deleting}
+                    className="px-3 py-1.5 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 rounded"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1103,7 +1160,7 @@ function BrowseTab({ spaces }: { spaces: Space[] }) {
   const load = useCallback(async () => {
     try {
       setLoading(true)
-      const data = await listProjects(200)
+      const data = await listProjects(5000)
       setProjects(data)
     } finally {
       setLoading(false)
@@ -1154,6 +1211,7 @@ function BrowseTab({ spaces }: { spaces: Space[] }) {
           spaces={spaces}
           onClose={() => { setSelected(null); load() }}
           onJobComplete={load}
+          onDeleted={() => { setSelected(null); load() }}
         />
       )}
     </>

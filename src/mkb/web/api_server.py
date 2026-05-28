@@ -690,7 +690,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/projects")
-def list_projects(limit: int = 100):
+def list_projects(limit: int = 5000):
     return api.list_projects(limit=limit)
 
 
@@ -789,6 +789,15 @@ class ProjectUpdateRequest(BaseModel):
 def update_project(project_id: str, body: ProjectUpdateRequest):
     _parse_uuid(project_id, "project_id")
     result = api.rename_project(project_id, body.label, user_initiated=True)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str, delete_s3: bool = True):
+    _parse_uuid(project_id, "project_id")
+    result = api.delete_project(project_id, delete_s3_objects=delete_s3)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
