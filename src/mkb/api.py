@@ -1016,6 +1016,8 @@ def create_space(
     field_descriptions: dict,
     description: str | None = None,
     purpose: str = "tabular_database",
+    review_prompt: str | None = None,
+    review_trackable: bool = True,
 ) -> dict:
     """Create a new space (domain-specific extraction configuration)."""
     from mkb.spaces.registry import create_space as _create
@@ -1028,6 +1030,8 @@ def create_space(
         field_descriptions=field_descriptions,
         description=description,
         purpose=purpose,
+        review_prompt=review_prompt,
+        review_trackable=review_trackable,
     )
 
 
@@ -1035,7 +1039,7 @@ def update_space(space_id: str | uuid.UUID, **changes) -> dict:
     """Update fields on an existing space. Bumps version automatically.
 
     Accepted keys: name, description, extraction_schema, system_prompt,
-    field_descriptions, domain, purpose.
+    field_descriptions, domain, purpose, review_prompt.
     """
     from mkb.spaces.registry import update_space as _update
 
@@ -1202,8 +1206,16 @@ def list_projections(
     project_id: str | uuid.UUID | None = None,
     include_data: bool = False,
     newest_only: bool = False,
+    include_history: bool = False,
 ) -> list[dict]:
-    """List projections, optionally filtered by space, frame, or project."""
+    """List projections, optionally filtered by space, frame, or project.
+
+    Args:
+        include_history: When False (default), superseded projections (those
+            replaced by a tracked review) are hidden. When True, the full
+            history is returned, including ``superseded_by_id`` /
+            ``supersedes_ids`` pointers so callers can rebuild the chain.
+    """
     from mkb.db.models import KnowledgeFrame, Projection, Space
     from mkb.spaces.schema_utils import normalize_projection_data
 
@@ -1215,6 +1227,8 @@ def list_projections(
             .filter(Projection.deleted_at.is_(None))
             .order_by(Projection.created_at.desc(), Projection.extracted_at.desc())
         )
+        if not include_history:
+            q = q.filter(Projection.superseded_by_id.is_(None))
         if space_id:
             q = q.filter(Projection.space_id == uuid.UUID(str(space_id)))
         if frame_id:
@@ -1246,6 +1260,12 @@ def list_projections(
                 "times_reviewed": projection.times_reviewed,
                 "review_notes": projection.review_notes,
                 "reviewed_at": projection.reviewed_at.isoformat() if projection.reviewed_at else None,
+                "superseded_by_id": (
+                    str(projection.superseded_by_id)
+                    if getattr(projection, "superseded_by_id", None)
+                    else None
+                ),
+                "supersedes_ids": getattr(projection, "supersedes_ids", None),
             }
             if include_data:
                 space = session.query(Space).filter_by(space_id=projection.space_id).first()
@@ -1571,11 +1591,14 @@ def review_feedback(
     project_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run feedback review on a project — KB agent reviews and resolves open feedback."""
     from mkb.agents.feedback_reviewer import run_feedback_review
 
     pid = uuid.UUID(str(project_id))
+    if progress_callback:
+        progress_callback({"message": f"Reviewing feedback for project {str(pid)[:8]}"})
     return run_feedback_review(pid, model=model, verbose=verbose)
 
 
@@ -1584,6 +1607,7 @@ def review_projections(
     project_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection review — consolidate and correct all projections for a project.
 
@@ -1596,6 +1620,8 @@ def review_projections(
     init_db()
     sid = uuid.UUID(str(space_id))
     pid = uuid.UUID(str(project_id))
+    if progress_callback:
+        progress_callback({"message": f"Reviewing projections for project {str(pid)[:8]}"})
     return run_projection_review(sid, pid, model=model, verbose=verbose)
 
 
@@ -1603,13 +1629,56 @@ def review_projections_all(
     space_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
+    project_ids: list[str] | None = None,
 ) -> dict:
-    """Run projection review on all projects in a space."""
+    """Run projection review on projects in a space.
+
+    Args:
+        project_ids: Restrict to these projects (per-project, separate
+            sessions). When None, reviews every project that has at least
+            one completed projection in the space.
+    """
     from mkb.agents.projection_reviewer import run_projection_review_all
 
     init_db()
     sid = uuid.UUID(str(space_id))
-    return run_projection_review_all(sid, model=model, verbose=verbose)
+    pids = [uuid.UUID(str(p)) for p in project_ids] if project_ids else None
+    return run_projection_review_all(
+        sid,
+        model=model,
+        verbose=verbose,
+        progress_callback=progress_callback,
+        project_ids=pids,
+    )
+
+
+def review_projections_session(
+    space_id: str | uuid.UUID,
+    project_ids: list[str],
+    model: str | None = None,
+    verbose: bool = False,
+    progress_callback=None,
+) -> dict:
+    """Run a SINGLE reviewer session over multiple selected projects.
+
+    One agent context sees every selected project's projections in turn
+    and saves each reviewed result before moving on to the next.
+    """
+    from mkb.agents.projection_reviewer import run_projection_review_session
+
+    init_db()
+    sid = uuid.UUID(str(space_id))
+    pids = [uuid.UUID(str(p)) for p in project_ids]
+    if not pids:
+        return {"status": "error", "message": "project_ids is required for session mode"}
+    return run_projection_review_session(
+        sid,
+        pids,
+        model=model,
+        verbose=verbose,
+        progress_callback=progress_callback,
+    )
 
 
 def review_knowledge_graph(

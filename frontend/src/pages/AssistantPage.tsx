@@ -140,15 +140,22 @@ export default function AssistantPage() {
 
       {/* Input */}
       <div className="px-6 py-4 border-t border-slate-700 flex-shrink-0">
-        <div className="flex gap-3">
-          <input
-            type="text"
+        <div className="flex gap-3 items-end">
+          <textarea
+            rows={1}
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={e => {
+              setInput(e.target.value)
+              e.target.style.height = 'auto'
+              const next = Math.min(e.target.scrollHeight, 200)
+              e.target.style.height = next + 'px'
+              e.target.style.overflowY = e.target.scrollHeight > 200 ? 'auto' : 'hidden'
+            }}
             onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
             disabled={isThinking}
             placeholder={isThinking ? 'Thinking...' : 'Tell me what to do...'}
-            className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-teal-500 disabled:opacity-50 transition-colors"
+            className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-teal-500 disabled:opacity-50 transition-colors resize-none overflow-y-hidden"
+            style={{ minHeight: '40px', maxHeight: '200px' }}
           />
           <button
             onClick={handleSend}

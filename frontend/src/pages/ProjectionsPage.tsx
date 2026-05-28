@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo, useLayoutEffect } from 'react'
+import type { JSX } from 'react'
 import { listProjections, deleteProjection } from '../api/projections'
 import { listSpaces, getSpace } from '../api/spaces'
 import { listProjects } from '../api/projects'
@@ -30,14 +31,22 @@ function stringify(val: unknown): string {
 }
 
 // ID-like column heuristic
-function defaultColumns(cols: string[]): string[] {
+// schemaOrder: keys from item_schema (preserves the schema author's intended order)
+function defaultColumns(cols: string[], schemaOrder?: string[]): string[] {
   const idCols = new Set(cols.filter(c =>
     c.toLowerCase() === 'id' || c.toLowerCase().endsWith('_id') || c.toLowerCase().includes('_id_')
   ))
-  const priority = ['paper_name', 'source_paper_name', 'is_core_study_data', 'extracted_at']
+  const metaCols = ['paper_name', 'source_paper_name', 'is_core_study_data', 'extracted_at']
     .filter(c => cols.includes(c))
-  const rest = cols.filter(c => !priority.includes(c) && !idCols.has(c))
-  const visible = [...priority, ...rest]
+  if (schemaOrder && schemaOrder.length > 0) {
+    // schema-defined fields first (in schema order), then meta cols, then anything else
+    const schemaPresent = schemaOrder.filter(c => cols.includes(c))
+    const rest = cols.filter(c => !schemaPresent.includes(c) && !metaCols.includes(c) && !idCols.has(c))
+    const visible = [...schemaPresent, ...metaCols, ...rest]
+    return visible.length > 0 ? visible : cols
+  }
+  const rest = cols.filter(c => !metaCols.includes(c) && !idCols.has(c))
+  const visible = [...metaCols, ...rest]
   return visible.length > 0 ? visible : cols
 }
 
@@ -142,10 +151,12 @@ function saveColPrefs(name: string, prefs: ColPrefs) {
 function SectionTable({
   name,
   rows,
+  schemaOrder,
   onRequestDeleteProjection,
 }: {
   name: string
   rows: Array<Record<string, string>>
+  schemaOrder?: string[]
   onRequestDeleteProjection?: (projectionIds: string[]) => void
 }) {
   const [page, setPage] = useState(1)
@@ -163,7 +174,7 @@ function SectionTable({
   // Initial / merged column preferences
   const [prefs, setPrefs] = useState<ColPrefs>(() => {
     const saved = loadColPrefs(name)
-    const defaults = defaultColumns(allCols.length > 0 ? allCols : [])
+    const defaults = defaultColumns(allCols.length > 0 ? allCols : [], schemaOrder)
     if (!saved) return { visible: defaults, widths: {}, known: allCols }
     // Merge: keep saved ordering, append any newly discovered cols at end (hidden)
     const merged = { ...saved, known: Array.from(new Set([...saved.known, ...allCols])) }
@@ -303,7 +314,7 @@ function SectionTable({
     return { ...p, widths }
   })
   const resetPrefs = () => updatePrefs(() => ({
-    visible: defaultColumns(allCols),
+    visible: defaultColumns(allCols, schemaOrder),
     widths: {},
     known: allCols,
   }))
@@ -559,7 +570,13 @@ function ProjectionRow({
   const [deleting, setDeleting] = useState(false)
 
   return (
-    <div className={`border rounded-lg overflow-hidden ${selected ? 'bg-teal-900/20 border-teal-700/50' : 'bg-slate-800 border-slate-700'}`}>
+    <div className={`border rounded-lg overflow-hidden ${
+      proj.superseded_by_id
+        ? 'bg-slate-900/60 border-slate-700/40 opacity-70'
+        : selected
+          ? 'bg-teal-900/20 border-teal-700/50'
+          : 'bg-slate-800 border-slate-700'
+    }`}>
       <div className="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-slate-700/50">
         <input
           type="checkbox"
@@ -574,6 +591,11 @@ function ProjectionRow({
           className="flex-1 flex items-center gap-3 text-left"
         >
         <StatusBadge status={proj.status} />
+        {proj.superseded_by_id && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide font-medium bg-slate-700 text-slate-400 border border-slate-600">
+            superseded
+          </span>
+        )}
         <span className="flex-1 text-sm text-slate-300 truncate">
           {paperLookup[proj.project_id] ?? proj.project_id.slice(0, 12)}
         </span>
@@ -667,6 +689,7 @@ export default function ProjectionsPage() {
   const [sectionRows, setSectionRows] = useState<Record<string, Array<Record<string, string>>>>({})
   const [loading, setLoading] = useState(false)
   const [newestOnly, setNewestOnly] = useState(true)
+  const [showHistory, setShowHistory] = useState(false)
   const [reviewJob, setReviewJob] = useState<Job | null>(null)
   const [isReviewing, setIsReviewing] = useState(false)
   const [showSpaceDetail, setShowSpaceDetail] = useState(false)
@@ -723,7 +746,7 @@ export default function ProjectionsPage() {
     setLoading(true)
     try {
       const [projs, projects] = await Promise.all([
-        listProjections({ space_id: selectedSpaceId, include_data: true, newest_only: newestOnly, limit: 500 }),
+        listProjections({ space_id: selectedSpaceId, include_data: true, newest_only: newestOnly, include_history: showHistory, limit: 500 }),
         listProjects(500),
       ])
 
@@ -742,23 +765,38 @@ export default function ProjectionsPage() {
     } finally {
       setLoading(false)
     }
-  }, [selectedSpaceId, newestOnly])
+  }, [selectedSpaceId, newestOnly, showHistory])
 
   useEffect(() => { loadProjections() }, [loadProjections])
 
-  const { reviewProjections } = (() => {
-    // inline import to avoid circular dep
-    const reviewProjections = async () => {
-      const { reviewProjections: fn } = await import('../api/projections')
-      return fn({ space_id: selectedSpaceId })
+  // ── Review mode + selection-derived project_ids ───────────────────────
+  const [reviewMode, setReviewMode] = useState<'per_project' | 'session'>('per_project')
+
+  // Map selected projection_ids → distinct project_ids that own them
+  const selectedProjectIds = useMemo(() => {
+    if (selectedProjectionIds.size === 0) return [] as string[]
+    const pids = new Set<string>()
+    for (const proj of projections) {
+      if (selectedProjectionIds.has(proj.projection_id) && proj.project_id) {
+        pids.add(proj.project_id)
+      }
     }
-    return { reviewProjections }
-  })()
+    return Array.from(pids)
+  }, [selectedProjectionIds, projections])
 
   const startReview = async () => {
     try {
       setIsReviewing(true)
-      const { job_id } = await reviewProjections()
+      const { reviewProjections } = await import('../api/projections')
+      const params: {
+        space_id: string
+        project_ids?: string[]
+        mode: 'per_project' | 'session'
+      } = { space_id: selectedSpaceId, mode: reviewMode }
+      if (selectedProjectIds.length > 0) {
+        params.project_ids = selectedProjectIds
+      }
+      const { job_id } = await reviewProjections(params)
       pollJob(job_id)
     } catch { setIsReviewing(false) }
   }
@@ -799,13 +837,40 @@ export default function ProjectionsPage() {
           <h2 className="text-xl font-semibold">Projections</h2>
           <p className="text-sm text-slate-400">Aggregated extraction results per space.</p>
         </div>
-        <button
-          onClick={startReview}
-          disabled={isReviewing || !selectedSpaceId}
-          className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white rounded text-sm font-medium"
-        >
-          {isReviewing ? 'Reviewing…' : '▶ Run Review'}
-        </button>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-slate-400">Mode:</label>
+          <select
+            value={reviewMode}
+            onChange={e => setReviewMode(e.target.value as 'per_project' | 'session')}
+            disabled={isReviewing}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-teal-500"
+            title="per_project: separate reviewer session per project. session: one reviewer sees all selected projects."
+          >
+            <option value="per_project">Per project (default)</option>
+            <option value="session">Single shared session</option>
+          </select>
+          <span
+            className="text-xs text-slate-500"
+            title="When projections are selected, only those projects are reviewed. Otherwise all projects in this space are reviewed (per_project only)."
+          >
+            {selectedProjectIds.length > 0
+              ? `${selectedProjectIds.length} project(s) from selection`
+              : reviewMode === 'session'
+                ? 'select projections to enable'
+                : 'all projects'}
+          </span>
+          <button
+            onClick={startReview}
+            disabled={
+              isReviewing
+              || !selectedSpaceId
+              || (reviewMode === 'session' && selectedProjectIds.length === 0)
+            }
+            className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white rounded text-sm font-medium"
+          >
+            {isReviewing ? 'Reviewing…' : '▶ Run Review'}
+          </button>
+        </div>
       </div>
 
       {/* Space selector */}
@@ -831,6 +896,15 @@ export default function ProjectionsPage() {
               className="mr-1.5"
             />
             Newest only
+          </label>
+          <label className="text-sm text-slate-400">
+            <input
+              type="checkbox"
+              checked={showHistory}
+              onChange={e => setShowHistory(e.target.checked)}
+              className="mr-1.5"
+            />
+            Show history
           </label>
           <button onClick={loadProjections} className="text-xs text-teal-400 hover:text-teal-300">Refresh</button>
           <a
@@ -892,14 +966,20 @@ export default function ProjectionsPage() {
               <p className="text-sm text-slate-400">No completed projection data available yet.</p>
             ) : (
               <div className="space-y-6">
-                {Object.entries(sectionRows).map(([section, rows]) => (
-                  <SectionTable
-                    key={section}
-                    name={section}
-                    rows={rows}
-                    onRequestDeleteProjection={batchDeleteIds}
-                  />
-                ))}
+                {Object.entries(sectionRows).map(([section, rows]) => {
+                  const sectionSchema = spaceDetail?.extraction_schema?.[section] as Record<string, unknown> | undefined
+                  const itemSchema = sectionSchema?.item_schema as Record<string, unknown> | undefined
+                  const schemaOrder = itemSchema ? Object.keys(itemSchema) : undefined
+                  return (
+                    <SectionTable
+                      key={section}
+                      name={section}
+                      rows={rows}
+                      schemaOrder={schemaOrder}
+                      onRequestDeleteProjection={batchDeleteIds}
+                    />
+                  )
+                })}
               </div>
             )}
           </div>
@@ -938,23 +1018,80 @@ export default function ProjectionsPage() {
               )}
             </div>
             <div className="space-y-1">
-              {projections.map(p => (
-                <ProjectionRow
-                  key={p.projection_id}
-                  proj={p}
-                  paperLookup={paperLookup}
-                  selected={selectedProjectionIds.has(p.projection_id)}
-                  onToggleSelected={toggleProjectionSelected}
-                  onDeleted={id => {
-                    setProjections(prev => prev.filter(x => x.projection_id !== id))
-                    setSelectedProjectionIds(prev => {
-                      const next = new Set(prev)
-                      next.delete(id)
-                      return next
-                    })
-                  }}
-                />
-              ))}
+              {showHistory
+                ? /* ── History mode: group live rows with their superseded ancestors ── */
+                  (() => {
+                    // Index by projection_id for fast lookup
+                    const byId = new Map(projections.map(p => [p.projection_id, p]))
+                    // A row is "live" when it has no superseded_by_id
+                    const live = projections.filter(p => !p.superseded_by_id)
+                    // Build chains: for each live row, walk back through supersedes_ids
+                    const renderChain = (root: Projection): JSX.Element => {
+                      const ancestors: Projection[] = []
+                      const walk = (ids: string[] | null | undefined) => {
+                        if (!ids) return
+                        for (const id of ids) {
+                          const anc = byId.get(id)
+                          if (anc) {
+                            ancestors.push(anc)
+                            walk(anc.supersedes_ids)
+                          }
+                        }
+                      }
+                      walk(root.supersedes_ids)
+                      const onDeleted = (id: string) => {
+                        setProjections(prev => prev.filter(x => x.projection_id !== id))
+                        setSelectedProjectionIds(prev => { const n = new Set(prev); n.delete(id); return n })
+                      }
+                      return (
+                        <div key={root.projection_id} className="space-y-0.5">
+                          <ProjectionRow
+                            proj={root}
+                            paperLookup={paperLookup}
+                            selected={selectedProjectionIds.has(root.projection_id)}
+                            onToggleSelected={toggleProjectionSelected}
+                            onDeleted={onDeleted}
+                          />
+                          {ancestors.map((anc, i) => (
+                            <div key={anc.projection_id} className="ml-6 border-l-2 border-slate-600/50 pl-2">
+                              <div className="flex items-center gap-1 px-2 py-0.5">
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  {i === 0 ? '↳ supersedes' : '  ↳'}
+                                </span>
+                              </div>
+                              <ProjectionRow
+                                proj={anc}
+                                paperLookup={paperLookup}
+                                selected={selectedProjectionIds.has(anc.projection_id)}
+                                onToggleSelected={toggleProjectionSelected}
+                                onDeleted={onDeleted}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    }
+                    return live.map(renderChain)
+                  })()
+                : /* ── Normal mode: flat list ── */
+                  projections.map(p => (
+                    <ProjectionRow
+                      key={p.projection_id}
+                      proj={p}
+                      paperLookup={paperLookup}
+                      selected={selectedProjectionIds.has(p.projection_id)}
+                      onToggleSelected={toggleProjectionSelected}
+                      onDeleted={id => {
+                        setProjections(prev => prev.filter(x => x.projection_id !== id))
+                        setSelectedProjectionIds(prev => {
+                          const next = new Set(prev)
+                          next.delete(id)
+                          return next
+                        })
+                      }}
+                    />
+                  ))
+              }
             </div>
           </div>
         </div>

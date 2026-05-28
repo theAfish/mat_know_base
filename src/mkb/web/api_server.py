@@ -337,6 +337,8 @@ class SpaceCreateRequest(BaseModel):
     field_descriptions: dict
     description: str | None = None
     purpose: str = "tabular_database"
+    review_prompt: str | None = None
+    review_trackable: bool = True
 
 
 class SpaceUpdateRequest(BaseModel):
@@ -347,11 +349,20 @@ class SpaceUpdateRequest(BaseModel):
     extraction_schema: dict | None = None
     system_prompt: str | None = None
     field_descriptions: dict | None = None
+    review_prompt: str | None = None
+    review_trackable: bool | None = None
 
 
 class ProjectionReviewRequest(BaseModel):
     space_id: str
     project_id: str | None = None
+    # Restrict review to a subset of projects in the space. When None/empty,
+    # behaves as before (all projects with completed projections).
+    project_ids: list[str] | None = None
+    # Execution mode:
+    #   "per_project" — default. One reviewer session per project (legacy).
+    #   "session"     — one reviewer session sees ALL selected projects.
+    mode: str = "per_project"
 
 
 class FeedbackResolveRequest(BaseModel):
@@ -884,6 +895,18 @@ def list_spaces():
     return api.list_spaces()
 
 
+@app.get("/api/spaces/_defaults/review-prompt")
+def get_default_review_prompt(purpose: str = "tabular_database"):
+    """Return the built-in default reviewer prompt for a given space purpose.
+
+    Used by the UI to pre-fill the review-prompt editor with a sensible
+    starting point that the user can then customize.
+    """
+    from mkb.agents.prompts.projection_review import default_review_prompt_for
+
+    return {"purpose": purpose, "review_prompt": default_review_prompt_for(purpose)}
+
+
 @app.get("/api/spaces/{space_id_or_name}")
 def get_space(space_id_or_name: str):
     space = api.get_space(space_id_or_name)
@@ -902,6 +925,8 @@ def create_space(body: SpaceCreateRequest):
         field_descriptions=body.field_descriptions,
         description=body.description,
         purpose=body.purpose,
+        review_prompt=body.review_prompt,
+        review_trackable=body.review_trackable,
     )
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
@@ -936,12 +961,14 @@ def list_projections(
     project_id: str | None = None,
     include_data: bool = False,
     newest_only: bool = False,
+    include_history: bool = False,
 ):
     rows = api.list_projections(
         space_id=space_id,
         project_id=project_id,
         include_data=include_data,
         newest_only=newest_only,
+        include_history=include_history,
     )
     return rows[:limit]
 
@@ -1046,21 +1073,53 @@ def export_space_endpoint(space_id_or_name: str, format: str = "yaml"):
 @app.post("/api/projections/review")
 def review_projections(body: ProjectionReviewRequest):
     _parse_uuid(body.space_id, "space_id")
+
+    # Normalize the project selection
+    project_ids: list[str] = []
     if body.project_id:
         _parse_uuid(body.project_id, "project_id")
+        project_ids = [body.project_id]
+    elif body.project_ids:
+        for pid in body.project_ids:
+            _parse_uuid(pid, "project_id")
+        project_ids = list(body.project_ids)
+
+    mode = (body.mode or "per_project").strip().lower()
+    if mode not in {"per_project", "session"}:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {body.mode}")
+
+    if mode == "session":
+        if not project_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Session-mode review requires explicit project_ids (or project_id).",
+            )
+        job_id = jobs.start_job(
+            kind="projection_review",
+            label="Projection Review (session)",
+            target=api.review_projections_session,
+            kwargs={"space_id": body.space_id, "project_ids": project_ids},
+        )
+        return {"job_id": job_id}
+
+    # mode == "per_project"
+    if len(project_ids) == 1:
         job_id = jobs.start_job(
             kind="projection_review",
             label="Projection Review",
-            project_id=body.project_id,
+            project_id=project_ids[0],
             target=api.review_projections,
-            kwargs={"space_id": body.space_id, "project_id": body.project_id},
+            kwargs={"space_id": body.space_id, "project_id": project_ids[0]},
         )
     else:
         job_id = jobs.start_job(
             kind="projection_review",
             label="Projection Review",
             target=api.review_projections_all,
-            kwargs={"space_id": body.space_id},
+            kwargs={
+                "space_id": body.space_id,
+                "project_ids": project_ids or None,
+            },
         )
     return {"job_id": job_id}
 

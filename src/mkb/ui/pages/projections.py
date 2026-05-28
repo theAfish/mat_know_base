@@ -50,22 +50,26 @@ def _build_project_paper_lookup(projections: list[dict]) -> dict[str, str]:
     return lookup
 
 
-def _default_visible_columns(columns: list[str]) -> list[str]:
+def _default_visible_columns(columns: list[str], schema_order: list[str] | None = None) -> list[str]:
     id_like_columns = [
         column
         for column in columns
         if column.lower() == "id" or column.lower().endswith("_id") or "_id_" in column.lower()
     ]
-    priority_columns = [
-        "paper_name",
-        "source_paper_name",
-        "is_core_study_data",
-        "extracted_at",
-    ]
-    priority_present = [column for column in priority_columns if column in columns]
+    meta_columns = ["paper_name", "source_paper_name", "is_core_study_data", "extracted_at"]
+    meta_present = [column for column in meta_columns if column in columns]
 
-    visible = priority_present + [
-        column for column in columns if column not in set(priority_present + id_like_columns)
+    if schema_order:
+        schema_present = [c for c in schema_order if c in columns]
+        rest = [
+            column for column in columns
+            if column not in set(schema_present + meta_present + id_like_columns)
+        ]
+        visible = schema_present + meta_present + rest
+        return visible if visible else columns
+
+    visible = meta_present + [
+        column for column in columns if column not in set(meta_present + id_like_columns)
     ]
     return visible if visible else columns
 
@@ -157,7 +161,7 @@ def _paginate_table_rows(rows: list[dict[str, str]], page_size: int, page_number
     return rows[start:end], total_pages
 
 
-def _render_combined_projection_table(projections: list[dict]):
+def _render_combined_projection_table(projections: list[dict], space: dict | None = None):
     project_paper_lookup = _build_project_paper_lookup(projections)
     section_rows = _build_projection_section_rows(projections, project_paper_lookup)
 
@@ -176,8 +180,14 @@ def _render_combined_projection_table(projections: list[dict]):
         )
     )
 
+    extraction_schema = (space or {}).get("extraction_schema") or {}
+
     for section_name, rows in section_rows.items():
         st.markdown(f"#### {section_name.replace('_', ' ').title()}")
+
+        section_schema = extraction_schema.get(section_name) or {}
+        item_schema = section_schema.get("item_schema") or {}
+        schema_order = list(item_schema.keys()) if item_schema else None
 
         _, total_pages = _paginate_table_rows(rows, page_size=page_size, page_number=1)
         page_number = int(
@@ -199,7 +209,7 @@ def _render_combined_projection_table(projections: list[dict]):
         table = pd.DataFrame(page_rows)
         st.dataframe(
             table,
-            column_order=_default_visible_columns(table.columns.tolist()),
+            column_order=_default_visible_columns(table.columns.tolist(), schema_order),
             width="stretch",
             hide_index=True,
         )
@@ -210,7 +220,7 @@ def _render_mapping_table(mapping: dict):
     st.table(table)
 
 
-def _render_projection_section(name: str, value, source_project_id: str | None = None):
+def _render_projection_section(name: str, value, source_project_id: str | None = None, schema_order: list[str] | None = None):
     st.markdown(f"#### {name.replace('_', ' ').title()}")
 
     if isinstance(value, list):
@@ -228,7 +238,7 @@ def _render_projection_section(name: str, value, source_project_id: str | None =
             table = pd.DataFrame(rows)
             st.dataframe(
                 table,
-                column_order=_default_visible_columns(table.columns.tolist()),
+                column_order=_default_visible_columns(table.columns.tolist(), schema_order),
                 width="stretch",
                 hide_index=True,
             )
@@ -244,9 +254,12 @@ def _render_projection_section(name: str, value, source_project_id: str | None =
     st.write(value)
 
 
-def _render_projection_data(data: dict, source_project_id: str | None = None):
+def _render_projection_data(data: dict, source_project_id: str | None = None, extraction_schema: dict | None = None):
     for section_name, section_value in data.items():
-        _render_projection_section(section_name, section_value, source_project_id=source_project_id)
+        section_schema = (extraction_schema or {}).get(section_name) or {}
+        item_schema = section_schema.get("item_schema") or {}
+        schema_order = list(item_schema.keys()) if item_schema else None
+        _render_projection_section(section_name, section_value, source_project_id=source_project_id, schema_order=schema_order)
 
 
 def _review_badge(projection: dict) -> str:
@@ -303,7 +316,7 @@ def render():
         return
 
     st.caption(f"Showing {len(projections)} projection(s) for this space.")
-    _render_combined_projection_table(projections)
+    _render_combined_projection_table(projections, space=space)
     st.divider()
 
     # Status colors
@@ -354,7 +367,7 @@ def render():
             if proj.get("reviewed_at"):
                 st.write(f"**Last Reviewed:** {proj['reviewed_at']}")
             if proj.get("data"):
-                _render_projection_data(proj["data"], source_project_id=proj.get("project_id"))
+                _render_projection_data(proj["data"], source_project_id=proj.get("project_id"), extraction_schema=space.get("extraction_schema"))
             if proj.get("validation_result"):
                 with st.expander("Validation"):
                     if isinstance(proj["validation_result"], dict):

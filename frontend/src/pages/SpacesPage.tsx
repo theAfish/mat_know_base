@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { listSpaces, getSpace, createSpace, updateSpace, deleteSpace } from '../api/spaces'
+import {
+  listSpaces,
+  getSpace,
+  createSpace,
+  updateSpace,
+  deleteSpace,
+  getDefaultReviewPrompt,
+} from '../api/spaces'
 import type { Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
@@ -25,6 +32,8 @@ const EMPTY_DRAFT = {
   extraction_schema: {},
   system_prompt: '',
   field_descriptions: {},
+  review_prompt: '',
+  review_trackable: true,
 }
 
 export default function SpacesPage() {
@@ -89,6 +98,10 @@ export default function SpacesPage() {
           extraction_schema: obj.extraction_schema,
           system_prompt: obj.system_prompt,
           field_descriptions: obj.field_descriptions,
+          review_prompt:
+            typeof obj.review_prompt === 'string' ? obj.review_prompt : null,
+          review_trackable:
+            typeof obj.review_trackable === 'boolean' ? obj.review_trackable : true,
         })
         setInfo(`Updated. New version: ${res.version}`)
       } else {
@@ -100,6 +113,12 @@ export default function SpacesPage() {
           extraction_schema: obj.extraction_schema,
           system_prompt: obj.system_prompt ?? '',
           field_descriptions: obj.field_descriptions ?? {},
+          review_prompt:
+            typeof obj.review_prompt === 'string' && obj.review_prompt.length > 0
+              ? obj.review_prompt
+              : null,
+          review_trackable:
+            typeof obj.review_trackable === 'boolean' ? obj.review_trackable : true,
         }
         const res = await createSpace(payload)
         setInfo(`Created space ${res.name} (${res.space_id.slice(0, 8)}…)`)
@@ -277,8 +296,14 @@ export default function SpacesPage() {
               <p className="text-xs text-slate-500">
                 Required keys: <code>name</code>, <code>extraction_schema</code>. Recommended:{' '}
                 <code>domain</code>, <code>purpose</code> (one of {PURPOSE_OPTIONS.join(', ')}),{' '}
-                <code>system_prompt</code>, <code>field_descriptions</code>.
+                <code>system_prompt</code>, <code>field_descriptions</code>. Optional:{' '}
+                <code>review_prompt</code> — leave empty to use the default reviewer prompt for the
+                chosen <code>purpose</code>.
               </p>
+              <LoadDefaultReviewPromptButton
+                jsonText={editor.jsonText}
+                onApply={next => setEditor({ ...editor, jsonText: next })}
+              />
             </div>
           ) : selected ? (
             <SpaceDetail
@@ -296,6 +321,8 @@ export default function SpacesPage() {
                       extraction_schema: selected.extraction_schema,
                       system_prompt: selected.system_prompt ?? '',
                       field_descriptions: selected.field_descriptions ?? {},
+                      review_prompt: selected.review_prompt ?? '',
+                      review_trackable: selected.review_trackable ?? true,
                     },
                     null,
                     2,
@@ -303,6 +330,27 @@ export default function SpacesPage() {
                 })
               }
               onDelete={() => handleDelete(selected)}
+              onCustomizeReview={defaultPrompt =>
+                openEditor({
+                  mode: 'edit',
+                  space: selected,
+                  jsonText: JSON.stringify(
+                    {
+                      name: selected.name,
+                      domain: selected.domain,
+                      purpose: selected.purpose ?? 'tabular_database',
+                      description: selected.description,
+                      extraction_schema: selected.extraction_schema,
+                      system_prompt: selected.system_prompt ?? '',
+                      field_descriptions: selected.field_descriptions ?? {},
+                      review_prompt: defaultPrompt,
+                      review_trackable: selected.review_trackable ?? true,
+                    },
+                    null,
+                    2,
+                  ),
+                })
+              }
             />
           ) : (
             <p className="text-slate-500 text-sm text-center mt-12">
@@ -319,10 +367,12 @@ function SpaceDetail({
   space,
   onEdit,
   onDelete,
+  onCustomizeReview,
 }: {
   space: Space
   onEdit: () => void
   onDelete: () => void
+  onCustomizeReview: (defaultPrompt: string) => void
 }) {
   const purpose = space.purpose ?? 'tabular_database'
   return (
@@ -381,6 +431,26 @@ function SpaceDetail({
         </Section>
       )}
 
+      <Section title="Review prompt">
+        <ReviewPromptView
+          custom={space.review_prompt ?? null}
+          purpose={purpose}
+          onUseAsCustom={onCustomizeReview}
+        />
+      </Section>
+
+      <Section title="Review history (trackable)">
+        <p className="text-xs text-slate-400">
+          When <code>review_trackable</code> is enabled, each review produces a NEW projection
+          row that supersedes the prior versions instead of overwriting them. Older versions
+          remain queryable for audit and diff. Disable to revert to the legacy in-place
+          update behavior.
+        </p>
+        <p className="mt-2 text-xs text-slate-300">
+          Current setting: <code>review_trackable = {String(space.review_trackable ?? true)}</code>
+        </p>
+      </Section>
+
       <div className="text-xs text-slate-500">
         Created: {space.created_at ?? '—'} · Updated: {space.updated_at ?? '—'}
       </div>
@@ -399,6 +469,115 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {open ? '▾' : '▸'} {title}
       </button>
       {open && children}
+    </div>
+  )
+}
+
+function LoadDefaultReviewPromptButton({
+  jsonText,
+  onApply,
+}: {
+  jsonText: string
+  onApply: (next: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const handleClick = async () => {
+    setErr(null)
+    let obj: Record<string, unknown>
+    try {
+      obj = JSON.parse(jsonText)
+    } catch (e) {
+      setErr(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+      return
+    }
+    const purpose = (obj.purpose as string) || 'tabular_database'
+    setBusy(true)
+    try {
+      const res = await getDefaultReviewPrompt(purpose)
+      const next = { ...obj, review_prompt: res.review_prompt }
+      onApply(JSON.stringify(next, null, 2))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={handleClick}
+        className="px-2 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 rounded text-xs"
+      >
+        {busy ? 'Loading…' : 'Load default review prompt for purpose'}
+      </button>
+      {err && <span className="text-xs text-rose-300">{err}</span>}
+    </div>
+  )
+}
+
+function ReviewPromptView({
+  custom,
+  purpose,
+  onUseAsCustom,
+}: {
+  custom: string | null
+  purpose: string
+  onUseAsCustom: (defaultPrompt: string) => void
+}) {
+  const [defaultPrompt, setDefaultPrompt] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (custom) {
+      setDefaultPrompt(null)
+      return
+    }
+    let cancelled = false
+    setErr(null)
+    getDefaultReviewPrompt(purpose)
+      .then(res => { if (!cancelled) setDefaultPrompt(res.review_prompt) })
+      .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : String(e)) })
+    return () => { cancelled = true }
+  }, [custom, purpose])
+
+  if (custom) {
+    return (
+      <pre className="bg-slate-950 text-slate-200 text-xs font-mono p-3 rounded max-h-[30vh] overflow-auto whitespace-pre-wrap">
+{String(custom)}
+      </pre>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-slate-400 italic">
+          Using built-in default for <code>{purpose}</code>.
+        </span>
+        <button
+          type="button"
+          onClick={() => defaultPrompt && onUseAsCustom(defaultPrompt)}
+          disabled={!defaultPrompt}
+          className="px-2 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 rounded text-xs"
+          title="Open the editor with this default pre-filled as review_prompt"
+        >
+          Customize from this default
+        </button>
+      </div>
+      {err ? (
+        <p className="text-xs text-rose-300">{err}</p>
+      ) : defaultPrompt == null ? (
+        <p className="text-xs text-slate-500">Loading default prompt…</p>
+      ) : (
+        <pre className="bg-slate-950 text-slate-300 text-xs font-mono p-3 rounded max-h-[30vh] overflow-auto whitespace-pre-wrap border border-slate-800">
+{defaultPrompt}
+        </pre>
+      )}
     </div>
   )
 }

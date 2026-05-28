@@ -95,6 +95,10 @@ export interface Projection {
   review_notes: string | null
   reviewed_at: string | null
   data: Record<string, unknown>
+  /** Non-null when this projection has been superseded by a newer review. */
+  superseded_by_id: string | null
+  /** List of projection IDs this row consolidated (set on the NEW reviewed row). */
+  supersedes_ids: string[] | null
 }
 
 export interface Space {
@@ -106,6 +110,8 @@ export interface Space {
   extraction_schema: Record<string, unknown>
   system_prompt?: string
   field_descriptions?: Record<string, unknown>
+  review_prompt?: string | null
+  review_trackable?: boolean
   version?: number
   created_at?: string | null
   updated_at?: string | null
@@ -119,6 +125,8 @@ export interface SpaceCreatePayload {
   field_descriptions: Record<string, unknown>
   description?: string
   purpose?: string
+  review_prompt?: string | null
+  review_trackable?: boolean
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }

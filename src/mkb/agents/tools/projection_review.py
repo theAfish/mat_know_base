@@ -58,6 +58,7 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
             session.query(Projection)
             .filter_by(space_id=sid, frame_id=frame.frame_id)
             .filter(Projection.deleted_at.is_(None))
+            .filter(Projection.superseded_by_id.is_(None))
             .order_by(Projection.created_at.desc())
             .all()
         )
@@ -128,19 +129,26 @@ def save_reviewed_projection(
     data: dict,
     review_notes: str = "",
 ) -> dict:
-    """Save the reviewed projection by updating the winning projection in-place.
+    """Save the reviewed projection.
 
-    Updates the winning projection's data with the corrected/consolidated
-    version, increments its review count, and soft-deletes all other
-    projections for the same space+frame.
+    Behaviour depends on the owning space's ``review_trackable`` flag:
+
+    * **trackable=True (default)** — preserves history. The winner and all
+      other live projections for the same ``(space_id, frame_id)`` are
+      marked with ``superseded_by_id`` pointing to a NEW ``REVIEWED``
+      projection row that carries the corrected, consolidated data. The
+      new row records the ids it consolidated in ``supersedes_ids``.
+      Earlier projections remain queryable (e.g. ``include_history=true``).
+
+    * **trackable=False** — legacy behaviour. The winner is updated
+      in-place (status → REVIEWED), and every other live projection for
+      the same ``(space_id, frame_id)`` is soft-deleted via ``deleted_at``.
+      No history is kept.
 
     Args:
         winning_projection_id: The projection ID chosen as the winner.
         data: The corrected, consolidated projection data.
         review_notes: Reviewer's summary of corrections and decisions made.
-
-    Returns:
-        Dict with projection_id, status, and count of soft-deleted projections.
     """
     wid = parse_uuidish(winning_projection_id)
     if not wid:
@@ -171,32 +179,75 @@ def save_reviewed_projection(
                 normalized_data, str(frame.project_id)
             )
 
-        # Update the winner in-place
-        winner.data = normalized_data
-        winner.validation_result = validation_result or None
-        winner.review_notes = review_notes
-        winner.status = ProjectionStatus.REVIEWED
-        winner.times_reviewed = winner.times_reviewed + 1
-        winner.reviewed_at = now
+        trackable = bool(getattr(space, "review_trackable", True))
 
-        # Soft-delete all OTHER projections for the same space+frame
-        others = (
+        # All other live, non-superseded projections for the same space+frame
+        siblings = (
             session.query(Projection)
             .filter_by(space_id=winner.space_id, frame_id=winner.frame_id)
             .filter(Projection.projection_id != wid)
             .filter(Projection.deleted_at.is_(None))
+            .filter(Projection.superseded_by_id.is_(None))
             .all()
         )
-        for other in others:
-            other.deleted_at = now
+
+        if not trackable:
+            # ── Legacy: in-place update + soft-delete losers ──
+            winner.data = normalized_data
+            winner.validation_result = validation_result or None
+            winner.review_notes = review_notes
+            winner.status = ProjectionStatus.REVIEWED
+            winner.times_reviewed = winner.times_reviewed + 1
+            winner.reviewed_at = now
+
+            for other in siblings:
+                other.deleted_at = now
+
+            session.commit()
+            return {
+                "projection_id": str(winner.projection_id),
+                "status": "reviewed",
+                "trackable": False,
+                "times_reviewed": winner.times_reviewed,
+                "soft_deleted_count": len(siblings),
+            }
+
+        # ── Trackable: create a new REVIEWED projection that supersedes
+        #    the winner + every other live sibling. Older rows stay
+        #    visible via ``include_history``.
+        supersedes = [str(winner.projection_id)] + [str(s.projection_id) for s in siblings]
+        reviewed = Projection(
+            projection_id=uuid.uuid4(),
+            space_id=winner.space_id,
+            frame_id=winner.frame_id,
+            source_type=winner.source_type,
+            status=ProjectionStatus.REVIEWED,
+            data=normalized_data,
+            validation_result=validation_result or None,
+            agent_notes=None,
+            extracted_at=winner.extracted_at,
+            space_version=winner.space_version,
+            times_reviewed=(winner.times_reviewed or 0) + 1,
+            review_notes=review_notes,
+            reviewed_at=now,
+            supersedes_ids=supersedes,
+        )
+        session.add(reviewed)
+        # ``session.flush()`` so reviewed.projection_id is available for
+        # the supersession pointers (Postgres assigns from python default).
+        session.flush()
+
+        winner.superseded_by_id = reviewed.projection_id
+        for s in siblings:
+            s.superseded_by_id = reviewed.projection_id
 
         session.commit()
-
         return {
-            "projection_id": str(winner.projection_id),
+            "projection_id": str(reviewed.projection_id),
             "status": "reviewed",
-            "times_reviewed": winner.times_reviewed,
-            "soft_deleted_count": len(others),
+            "trackable": True,
+            "times_reviewed": reviewed.times_reviewed,
+            "supersedes_count": len(supersedes),
         }
 
 

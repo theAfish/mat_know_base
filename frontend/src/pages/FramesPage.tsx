@@ -780,7 +780,7 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
         )}
       </div>
 
-      <div className="px-6 pt-3 border-b border-slate-700 flex gap-1 flex-shrink-0 overflow-x-auto">
+      <div className="px-6 pt-3 border-b border-slate-700 flex flex-wrap gap-1 flex-shrink-0">
         {([
           ['assets', 'Assets'],
           ['frame', 'Knowledge Frame'],
