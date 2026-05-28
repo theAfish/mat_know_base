@@ -11,6 +11,12 @@ export interface RuntimeSettings {
   mineru_api_enable_formula: boolean
   mineru_api_enable_table: boolean
   mineru_api_timeout: number
+  // LLM / Agent
+  extraction_model: string
+  vision_model: string
+  // System
+  log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'
+  max_concurrent_jobs: number
 }
 
 export const getSettings = () =>

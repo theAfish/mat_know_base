@@ -10,7 +10,7 @@ import { getJob } from '../api/jobs'
 import { Network } from 'vis-network'
 import { DataSet } from 'vis-data'
 import StatusBadge from '../components/StatusBadge'
-import BatchActionBar from '../components/BatchActionBar'
+import ProjectGroupedList from '../components/ProjectGroupedList'
 import type { Frame, Project, Asset, ProcessedAsset, Projection, Space, FeedbackItem, ExtractionPass, Job, GraphConcept, GraphRelation } from '../types'
 
 // ─── Mini graph for per-project graph ────────────────────────────────────────
@@ -811,91 +811,35 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function FramesPage() {
-  const [rows, setRows] = useState<Array<{ project: Project; status: string; version: number; extracted_at: string }>>([])
+  const [projects, setProjects] = useState<Project[]>([])
+  const [frameMeta, setFrameMeta] = useState<Record<string, { version: number; extracted_at: string }>>({})
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Project | null>(null)
   const [spaces, setSpaces] = useState<Space[]>([])
-  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
-  const [filterProcessing, setFilterProcessing] = useState<string | null>(null)
-  const [filterFrame, setFilterFrame] = useState<string | null>(null)
-  const lastClickedIdx = useRef<number | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [projects, frames] = await Promise.all([listProjects(200), listFrames()])
-      const frameMap: Record<string, Frame> = {}
-      frames.forEach(f => { frameMap[f.project_id] = f })
-      setRows(projects.map(p => {
-        const f = frameMap[p.project_id]
-        return {
-          project: p,
-          status: f?.status ?? 'NO_FRAME',
-          version: f?.extraction_version ?? 0,
-          extracted_at: (f?.extracted_at ?? '').slice(0, 10) || '—',
+      const [pjs, frames] = await Promise.all([listProjects(200), listFrames()])
+      const meta: Record<string, { version: number; extracted_at: string }> = {}
+      for (const f of frames) {
+        meta[f.project_id] = {
+          version: f.extraction_version ?? 0,
+          extracted_at: (f.extracted_at ?? '').slice(0, 10) || '—',
         }
-      }))
+      }
+      setProjects(pjs)
+      setFrameMeta(meta)
     } finally { setLoading(false) }
   }, [])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { listSpaces().then(setSpaces).catch(() => {}) }, [])
 
-  const allProjectsList = useMemo(() => rows.map(r => r.project), [rows])
   const getStatus = useCallback(
-    (id: string) => rows.find(r => r.project.project_id === id)?.status ?? 'NO_FRAME',
-    [rows],
+    (id: string) => projects.find(p => p.project_id === id)?.frame_status ?? 'NO_FRAME',
+    [projects],
   )
-
-  const visibleRows = useMemo(() =>
-    rows.filter(r => {
-      if (filterProcessing && (r.project.processing_status ?? 'UNPROCESSED') !== filterProcessing) return false
-      if (filterFrame && r.status !== filterFrame) return false
-      return true
-    }),
-    [rows, filterProcessing, filterFrame],
-  )
-
-  const processingOptions = useMemo(() => {
-    const counts: Record<string, number> = {}
-    rows.forEach(r => { const s = r.project.processing_status ?? 'UNPROCESSED'; counts[s] = (counts[s] ?? 0) + 1 })
-    return Object.entries(counts).sort()
-  }, [rows])
-
-  const frameOptions = useMemo(() => {
-    const counts: Record<string, number> = {}
-    rows.forEach(r => { counts[r.status] = (counts[r.status] ?? 0) + 1 })
-    return Object.entries(counts).sort()
-  }, [rows])
-
-  const handleCheck = (idx: number, id: string, shift: boolean) => {
-    if (shift && lastClickedIdx.current !== null) {
-      const lo = Math.min(lastClickedIdx.current, idx)
-      const hi = Math.max(lastClickedIdx.current, idx)
-      setCheckedIds(prev => {
-        const next = new Set(prev)
-        const adding = !prev.has(id)
-        for (let i = lo; i <= hi; i++) {
-          if (i >= 0 && i < visibleRows.length) {
-            if (adding) next.add(visibleRows[i].project.project_id)
-            else next.delete(visibleRows[i].project.project_id)
-          }
-        }
-        return next
-      })
-    } else {
-      setCheckedIds(prev => {
-        const next = new Set(prev)
-        if (next.has(id)) next.delete(id); else next.add(id)
-        return next
-      })
-      lastClickedIdx.current = idx
-    }
-  }
-
-  const allChecked = visibleRows.length > 0 && visibleRows.every(r => checkedIds.has(r.project.project_id))
-  const toggleAll = () =>
-    setCheckedIds(allChecked ? new Set() : new Set(visibleRows.map(r => r.project.project_id)))
 
   if (selected) return <ProjectDetail project={selected} onBack={() => { setSelected(null); load() }} />
 
@@ -905,120 +849,33 @@ export default function FramesPage() {
       <p className="text-sm text-slate-400 mb-5">Browse and inspect extracted knowledge from each project.</p>
       {loading ? (
         <p className="text-slate-400 text-sm">Loading…</p>
-      ) : rows.length === 0 ? (
-        <p className="text-slate-400 text-sm">No projects yet — upload files in the Projects tab.</p>
       ) : (
-        <div className="space-y-4">
-          {checkedIds.size > 0 && (
-            <BatchActionBar
-              selectedIds={checkedIds}
-              allProjects={allProjectsList}
-              spaces={spaces}
-              getStatus={getStatus}
-              onSelectionChange={ids => setCheckedIds(ids)}
-              onRefresh={load}
-            />
+        <ProjectGroupedList
+          projects={projects}
+          onProjectsChange={setProjects}
+          onRefresh={load}
+          spaces={spaces}
+          getStatus={getStatus}
+          emptyMessage="No projects yet — upload files in the Projects tab."
+          columns={[
+            { header: 'Processed',
+              render: p => <StatusBadge status={p.processing_status ?? 'UNPROCESSED'} /> },
+            { header: 'Frame',
+              render: p => <StatusBadge status={p.frame_status ?? 'NO_FRAME'} /> },
+            { header: 'Assets', cellClassName: 'text-slate-400',
+              render: p => p.asset_count },
+            { header: 'Version', cellClassName: 'text-slate-400',
+              render: p => `v${frameMeta[p.project_id]?.version ?? 0}` },
+            { header: 'Extracted', cellClassName: 'text-slate-500 text-xs',
+              render: p => frameMeta[p.project_id]?.extracted_at ?? '—' },
+          ]}
+          rowAction={p => (
+            <button onClick={() => setSelected(p)}
+              className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs">
+              View
+            </button>
           )}
-
-          {/* Status filter pills */}
-          <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap text-xs">
-            <span className="text-slate-500 font-medium">Processed:</span>
-            {processingOptions.map(([s, count]) => (
-              <button
-                key={s}
-                onClick={() => setFilterProcessing(v => v === s ? null : s)}
-                className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors ${
-                  filterProcessing === s ? 'border-teal-500 bg-teal-900/30' : 'border-slate-600 hover:border-slate-500'
-                }`}
-              >
-                <StatusBadge status={s} />
-                <span className="text-slate-400">{count}</span>
-              </button>
-            ))}
-            <span className="text-slate-600 mx-1">·</span>
-            <span className="text-slate-500 font-medium">Frame:</span>
-            {frameOptions.map(([s, count]) => (
-              <button
-                key={s}
-                onClick={() => setFilterFrame(v => v === s ? null : s)}
-                className={`flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors ${
-                  filterFrame === s ? 'border-teal-500 bg-teal-900/30' : 'border-slate-600 hover:border-slate-500'
-                }`}
-              >
-                <StatusBadge status={s} />
-                <span className="text-slate-400">{count}</span>
-              </button>
-            ))}
-            {(filterProcessing || filterFrame) && (
-              <button
-                onClick={() => { setFilterProcessing(null); setFilterFrame(null) }}
-                className="text-slate-500 hover:text-slate-300 ml-1"
-              >✕ clear</button>
-            )}
-            {(filterProcessing || filterFrame) && (
-              <button
-                onClick={() => setCheckedIds(new Set(visibleRows.map(r => r.project.project_id)))}
-                className="text-teal-400 hover:text-teal-300 ml-1"
-              >select all {visibleRows.length}</button>
-            )}
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-slate-400 uppercase tracking-wide border-b border-slate-700">
-                  <th className="pb-2 pr-2 w-8">
-                    <input
-                      type="checkbox"
-                      checked={allChecked}
-                      onChange={toggleAll}
-                      className="accent-teal-500"
-                      title="Select all"
-                    />
-                  </th>
-                  <th className="pb-2 pr-3 font-medium">Processed</th>
-                  <th className="pb-2 pr-3 font-medium">Frame</th>
-                  <th className="pb-2 pr-3 font-medium">Label / Path</th>
-                  <th className="pb-2 pr-3 font-medium">Assets</th>
-                  <th className="pb-2 pr-3 font-medium">Version</th>
-                  <th className="pb-2 pr-3 font-medium">Extracted</th>
-                  <th className="pb-2 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {visibleRows.map((row, idx) => {
-                  const checked = checkedIds.has(row.project.project_id)
-                  return (
-                    <tr key={row.project.project_id} className={checked ? 'bg-teal-900/15' : 'hover:bg-slate-800/50'}>
-                      <td className="py-2 pr-2 w-8">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={e => handleCheck(idx, row.project.project_id, (e.nativeEvent as MouseEvent).shiftKey)}
-                          className="accent-teal-500"
-                        />
-                      </td>
-                      <td className="py-2 pr-3"><StatusBadge status={row.project.processing_status ?? 'UNPROCESSED'} /></td>
-                      <td className="py-2 pr-3"><StatusBadge status={row.status} /></td>
-                      <td className="py-2 pr-3 text-slate-200 max-w-sm truncate">
-                        {row.project.label ?? row.project.source_path ?? row.project.project_id.slice(0, 12)}
-                      </td>
-                      <td className="py-2 pr-3 text-slate-400">{row.project.asset_count}</td>
-                      <td className="py-2 pr-3 text-slate-400">v{row.version}</td>
-                      <td className="py-2 pr-3 text-slate-500 text-xs">{row.extracted_at}</td>
-                      <td className="py-2">
-                        <button onClick={() => setSelected(row.project)}
-                          className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded text-xs">
-                          View
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        />
       )}
     </div>
   )

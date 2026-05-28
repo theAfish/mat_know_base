@@ -683,6 +683,84 @@ def list_projects(limit: int = 100):
     return api.list_projects(limit=limit)
 
 
+# ── Project groups ─────────────────────────────────────────────
+
+
+class ProjectGroupCreate(BaseModel):
+    name: str
+    description: str | None = None
+    color: str | None = None
+    display_order: int | None = None
+
+
+class ProjectGroupUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    color: str | None = None
+    display_order: int | None = None
+
+
+class ProjectGroupAssign(BaseModel):
+    project_ids: list[str]
+    group_id: str | None = None  # None ungroups
+
+
+@app.get("/api/project-groups")
+def list_project_groups_endpoint():
+    return api.list_project_groups()
+
+
+@app.post("/api/project-groups")
+def create_project_group_endpoint(body: ProjectGroupCreate):
+    result = api.create_project_group(
+        body.name,
+        description=body.description,
+        color=body.color,
+        display_order=body.display_order,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.patch("/api/project-groups/{group_id}")
+def update_project_group_endpoint(group_id: str, body: ProjectGroupUpdate):
+    _parse_uuid(group_id, "group_id")
+    result = api.update_project_group(
+        group_id,
+        name=body.name,
+        description=body.description,
+        color=body.color,
+        display_order=body.display_order,
+    )
+    if "error" in result:
+        status = 404 if "not found" in result["error"] else 400
+        raise HTTPException(status_code=status, detail=result["error"])
+    return result
+
+
+@app.delete("/api/project-groups/{group_id}")
+def delete_project_group_endpoint(group_id: str):
+    _parse_uuid(group_id, "group_id")
+    result = api.delete_project_group(group_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.post("/api/project-groups/assign")
+def assign_project_group_endpoint(body: ProjectGroupAssign):
+    for pid in body.project_ids:
+        _parse_uuid(pid, "project_id")
+    if body.group_id:
+        _parse_uuid(body.group_id, "group_id")
+    result = api.assign_projects_to_group(body.project_ids, body.group_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str):
     rows = api.list_projects(limit=500)
@@ -1193,6 +1271,10 @@ class SettingsUpdateRequest(BaseModel):
     mineru_api_enable_formula: bool | None = None
     mineru_api_enable_table: bool | None = None
     mineru_api_timeout: int | None = None
+    extraction_model: str | None = None
+    vision_model: str | None = None
+    log_level: str | None = None
+    max_concurrent_jobs: int | None = None
 
 
 @app.get("/api/settings")
@@ -1211,6 +1293,11 @@ def update_settings_endpoint(body: SettingsUpdateRequest):
         result = runtime_settings.update_settings(updates)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Apply log level change immediately without a server restart.
+    if "log_level" in updates:
+        setup_logging(level=result.get("log_level"), force=True)
+
     return runtime_settings.public_view(result)
 
 

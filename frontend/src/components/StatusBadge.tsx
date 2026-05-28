@@ -13,7 +13,7 @@ const STATUS_COLORS: Record<string, string> = {
   RESOLVED:    'bg-green-800 text-green-100',
   DISMISSED:   'bg-slate-700 text-slate-400',
   // Processing pipeline statuses
-  PROCESSED:   'bg-blue-800 text-blue-100',
+  PROCESSED:   'bg-blue-900 text-blue-200',
   UNPROCESSED: 'bg-slate-700 text-slate-400',
   PARTIAL:     'bg-amber-800 text-amber-100',
   NO_ASSETS:   'bg-slate-700 text-slate-500',

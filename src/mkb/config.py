@@ -1,7 +1,22 @@
-"""Central configuration loaded from environment / .env file."""
+"""Central configuration loaded from environment / .env / config.yaml.
+
+Priority order (highest → lowest):
+1. Environment variables (``MKB_*``)
+2. ``.env`` file (infrastructure secrets)
+3. ``config.yaml`` (user-tunable settings)
+4. Built-in defaults below
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
 
 from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, YamlConfigSettingsSource
+
+# Allow the YAML file location to be overridden via env for testing.
+_CONFIG_YAML = Path(__file__).parent.parent.parent / "config.yaml"
 
 
 class Settings(BaseSettings):
@@ -90,6 +105,21 @@ class Settings(BaseSettings):
     log_file_backup_count: int = 5
 
     model_config = {"env_prefix": "MKB_", "env_file": ".env", "extra": "ignore"}
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        **kwargs: Any,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        yaml_file = _CONFIG_YAML if _CONFIG_YAML.is_file() else None
+        sources: list[Any] = [init_settings, env_settings, dotenv_settings]
+        if yaml_file:
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file))
+        return tuple(sources)
 
 
 settings = Settings()

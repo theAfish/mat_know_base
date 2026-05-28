@@ -1,0 +1,27 @@
+# ── MKB User Configuration ───────────────────────────────────────────────────
+# Settings here are loaded below environment variables but above built-in
+# defaults. Infrastructure secrets (database, S3, API keys) should remain in
+# .env; this file is for runtime-tunable parameters.
+
+# ── LLM / Agent ──────────────────────────────────────────────────────────────
+# LiteLLM model string used for extraction and projection agents.
+# Format: "provider/model-name"  e.g. "openai/gpt-4o", "openai/glm-5.1"
+extraction_model: openai/glm-5.1
+
+# Multimodal model for vision tools (list_project_images / read_image_with_vision).
+# Leave blank to fall back to extraction_model.
+vision_model: ""
+
+# ── Job Concurrency ───────────────────────────────────────────────────────────
+# Maximum number of background agent jobs (extract/project/etc.) that run at
+# the same time.  Extra jobs are queued and start as slots free up.
+# Requires server restart to take effect.
+max_concurrent_jobs: 5
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# DEBUG → verbose (agent dialogs, tool calls, LiteLLM traces).
+# INFO  → concise app-level messages only.
+log_level: DEBUG
+
+# Directory where rotating log files are written (relative to project root).
+log_dir: logs

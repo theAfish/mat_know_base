@@ -124,7 +124,7 @@ export default function JobQueuePanel() {
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 transition-colors"
       >
-        <span className="text-sm leading-none">⚙️</span>
+        <span className="text-sm leading-none">🔧</span>
         <span className="flex-1 text-left font-medium">Jobs</span>
         {totalActive > 0 && (
           <span className="flex items-center gap-1">
