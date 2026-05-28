@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -311,6 +311,15 @@ class Space(Base):
     # ``purpose`` (see ``mkb.agents.projection_reviewer``).
     review_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # When true (default), running review on this space PRESERVES the prior
+    # projection rows by creating a new ``REVIEWED`` projection that
+    # supersedes them (history visible via ``include_history``). When false,
+    # the legacy behaviour applies: the winner is updated in-place and the
+    # losers are soft-deleted (history is lost).
+    review_trackable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -363,6 +372,18 @@ class Projection(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # When non-NULL, this projection has been replaced by another (the
+    # reviewed version when the space is ``review_trackable``). The pointer
+    # is to the newer ``Projection.projection_id``. We do NOT add a FK
+    # constraint to keep deletes/migrations simple.
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    # Reverse pointer: when this projection is the result of a tracked
+    # review, ``supersedes_ids`` is the list of older projection_ids it
+    # consolidated. Stored as JSONB list-of-strings for simplicity.
+    supersedes_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -374,6 +395,7 @@ class Projection(Base):
     __table_args__ = (
         Index("ix_projection_space_frame", "space_id", "frame_id"),
         Index("ix_projection_deleted_at", "deleted_at"),
+        Index("ix_projection_superseded_by", "superseded_by_id"),
     )
 
 

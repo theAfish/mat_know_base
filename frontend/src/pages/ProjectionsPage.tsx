@@ -756,19 +756,34 @@ export default function ProjectionsPage() {
 
   useEffect(() => { loadProjections() }, [loadProjections])
 
-  const { reviewProjections } = (() => {
-    // inline import to avoid circular dep
-    const reviewProjections = async () => {
-      const { reviewProjections: fn } = await import('../api/projections')
-      return fn({ space_id: selectedSpaceId })
+  // ── Review mode + selection-derived project_ids ───────────────────────
+  const [reviewMode, setReviewMode] = useState<'per_project' | 'session'>('per_project')
+
+  // Map selected projection_ids → distinct project_ids that own them
+  const selectedProjectIds = useMemo(() => {
+    if (selectedProjectionIds.size === 0) return [] as string[]
+    const pids = new Set<string>()
+    for (const proj of projections) {
+      if (selectedProjectionIds.has(proj.projection_id) && proj.project_id) {
+        pids.add(proj.project_id)
+      }
     }
-    return { reviewProjections }
-  })()
+    return Array.from(pids)
+  }, [selectedProjectionIds, projections])
 
   const startReview = async () => {
     try {
       setIsReviewing(true)
-      const { job_id } = await reviewProjections()
+      const { reviewProjections } = await import('../api/projections')
+      const params: {
+        space_id: string
+        project_ids?: string[]
+        mode: 'per_project' | 'session'
+      } = { space_id: selectedSpaceId, mode: reviewMode }
+      if (selectedProjectIds.length > 0) {
+        params.project_ids = selectedProjectIds
+      }
+      const { job_id } = await reviewProjections(params)
       pollJob(job_id)
     } catch { setIsReviewing(false) }
   }
@@ -809,13 +824,40 @@ export default function ProjectionsPage() {
           <h2 className="text-xl font-semibold">Projections</h2>
           <p className="text-sm text-slate-400">Aggregated extraction results per space.</p>
         </div>
-        <button
-          onClick={startReview}
-          disabled={isReviewing || !selectedSpaceId}
-          className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white rounded text-sm font-medium"
-        >
-          {isReviewing ? 'Reviewing…' : '▶ Run Review'}
-        </button>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-slate-400">Mode:</label>
+          <select
+            value={reviewMode}
+            onChange={e => setReviewMode(e.target.value as 'per_project' | 'session')}
+            disabled={isReviewing}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-teal-500"
+            title="per_project: separate reviewer session per project. session: one reviewer sees all selected projects."
+          >
+            <option value="per_project">Per project (default)</option>
+            <option value="session">Single shared session</option>
+          </select>
+          <span
+            className="text-xs text-slate-500"
+            title="When projections are selected, only those projects are reviewed. Otherwise all projects in this space are reviewed (per_project only)."
+          >
+            {selectedProjectIds.length > 0
+              ? `${selectedProjectIds.length} project(s) from selection`
+              : reviewMode === 'session'
+                ? 'select projections to enable'
+                : 'all projects'}
+          </span>
+          <button
+            onClick={startReview}
+            disabled={
+              isReviewing
+              || !selectedSpaceId
+              || (reviewMode === 'session' && selectedProjectIds.length === 0)
+            }
+            className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white rounded text-sm font-medium"
+          >
+            {isReviewing ? 'Reviewing…' : '▶ Run Review'}
+          </button>
+        </div>
       </div>
 
       {/* Space selector */}

@@ -107,6 +107,7 @@ export interface Space {
   system_prompt?: string
   field_descriptions?: Record<string, unknown>
   review_prompt?: string | null
+  review_trackable?: boolean
   version?: number
   created_at?: string | null
   updated_at?: string | null
@@ -121,6 +122,7 @@ export interface SpaceCreatePayload {
   description?: string
   purpose?: string
   review_prompt?: string | null
+  review_trackable?: boolean
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }
