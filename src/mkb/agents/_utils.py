@@ -25,7 +25,10 @@ def ensure_llm_env() -> None:
 def create_llm(model: str | None = None) -> LiteLlm:
     """Create a LiteLlm instance with env setup."""
     ensure_llm_env()
-    return LiteLlm(model=model or settings.extraction_model)
+    if model is None:
+        from mkb.runtime_settings import get_setting
+        model = get_setting("extraction_model")
+    return LiteLlm(model=model)
 
 
 _loop_lock = threading.Lock()

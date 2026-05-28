@@ -29,6 +29,12 @@ ALLOWED_KEYS: set[str] = {
     "mineru_api_enable_formula",
     "mineru_api_enable_table",
     "mineru_api_timeout",
+    # LLM / Agent
+    "extraction_model",
+    "vision_model",
+    # System
+    "log_level",
+    "max_concurrent_jobs",
 }
 
 # Keys that should be masked when sent to the frontend.
@@ -91,6 +97,14 @@ def update_settings(updates: dict[str, Any]) -> dict[str, Any]:
     backend = updates.get("pdf_backend")
     if backend is not None and backend not in {"local", "mineru_api"}:
         raise ValueError(f"Invalid pdf_backend: {backend!r}")
+
+    log_level = updates.get("log_level")
+    if log_level is not None and log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        raise ValueError(f"Invalid log_level: {log_level!r}")
+
+    max_jobs = updates.get("max_concurrent_jobs")
+    if max_jobs is not None and (not isinstance(max_jobs, int) or max_jobs < 1):
+        raise ValueError(f"max_concurrent_jobs must be a positive integer, got {max_jobs!r}")
 
     with _lock:
         current = _load_raw()

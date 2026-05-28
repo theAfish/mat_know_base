@@ -39,6 +39,10 @@ export default function SettingsPage() {
         mineru_api_enable_formula: data.mineru_api_enable_formula,
         mineru_api_enable_table: data.mineru_api_enable_table,
         mineru_api_timeout: data.mineru_api_timeout,
+        extraction_model: data.extraction_model,
+        vision_model: data.vision_model,
+        log_level: data.log_level,
+        max_concurrent_jobs: data.max_concurrent_jobs,
       }
       // Only send token when user typed something new (avoid wiping with masked value)
       if (tokenInput.trim() !== '') {
@@ -236,6 +240,71 @@ export default function SettingsPage() {
           </Field>
         </section>
       )}
+
+      {/* Agent / LLM */}
+      <section className="bg-slate-800 border border-slate-700 rounded-lg p-5 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-100">Agent / LLM</h2>
+          <p className="text-xs text-slate-400 mt-1">
+            Model used for knowledge extraction and projection. Changes take effect for the next job.
+          </p>
+        </div>
+
+        <Field label="Extraction Model" hint='LiteLLM model string, e.g. "openai/gpt-4o" or "openai/glm-5.1".'>
+          <input
+            type="text"
+            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100 font-mono"
+            value={data.extraction_model}
+            onChange={e => setData({ ...data, extraction_model: e.target.value })}
+          />
+        </Field>
+
+        <Field label="Vision Model" hint='Multimodal model for image tools. Leave blank to use the extraction model.'>
+          <input
+            type="text"
+            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100 font-mono"
+            placeholder="(same as extraction model)"
+            value={data.vision_model}
+            onChange={e => setData({ ...data, vision_model: e.target.value })}
+          />
+        </Field>
+      </section>
+
+      {/* System */}
+      <section className="bg-slate-800 border border-slate-700 rounded-lg p-5 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-100">System</h2>
+          <p className="text-xs text-slate-400 mt-1">
+            Log verbosity and job concurrency. <span className="text-amber-400">Max concurrent jobs requires a server restart.</span>
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Log Level">
+            <select
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100"
+              value={data.log_level}
+              onChange={e => setData({ ...data, log_level: e.target.value as RuntimeSettings['log_level'] })}
+            >
+              <option value="DEBUG">DEBUG – verbose (agent dialogs, traces)</option>
+              <option value="INFO">INFO – concise app messages</option>
+              <option value="WARNING">WARNING – warnings and errors only</option>
+              <option value="ERROR">ERROR – errors only</option>
+            </select>
+          </Field>
+
+          <Field label="Max Concurrent Jobs" hint="Requires server restart.">
+            <input
+              type="number"
+              min={1}
+              max={32}
+              className="w-32 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100"
+              value={data.max_concurrent_jobs}
+              onChange={e => setData({ ...data, max_concurrent_jobs: Math.max(1, Number(e.target.value) || 1) })}
+            />
+          </Field>
+        </div>
+      </section>
 
       <div className="flex gap-3">
         <button

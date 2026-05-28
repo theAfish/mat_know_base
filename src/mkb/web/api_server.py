@@ -1193,6 +1193,10 @@ class SettingsUpdateRequest(BaseModel):
     mineru_api_enable_formula: bool | None = None
     mineru_api_enable_table: bool | None = None
     mineru_api_timeout: int | None = None
+    extraction_model: str | None = None
+    vision_model: str | None = None
+    log_level: str | None = None
+    max_concurrent_jobs: int | None = None
 
 
 @app.get("/api/settings")
@@ -1211,6 +1215,11 @@ def update_settings_endpoint(body: SettingsUpdateRequest):
         result = runtime_settings.update_settings(updates)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Apply log level change immediately without a server restart.
+    if "log_level" in updates:
+        setup_logging(level=result.get("log_level"), force=True)
+
     return runtime_settings.public_view(result)
 
 
