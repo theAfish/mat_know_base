@@ -21,6 +21,12 @@ function slug(name: string) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
 }
 
+/** Strip the last file extension (e.g. "paper.pdf" → "paper"). */
+function stemName(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(0, dot) : name
+}
+
 const ARCHIVE_SUFFIXES = [
   '.tar.gz', '.tar.bz2', '.tar.xz',
   '.tgz', '.tbz2', '.tbz', '.txz',
@@ -169,7 +175,11 @@ function deriveGrouping(
     return { projectId: parent || '__root__', relativePath: filename }
   }
   if (mode === 'depth') {
-    const n = Math.max(1, depthN)
+    const n = Math.max(0, depthN)
+    if (n === 0) {
+      // Depth 0: each file becomes its own project, keyed by full path
+      return { projectId: segments.join('/'), relativePath: filename }
+    }
     // root segments = first n folder segments (capped so filename remains)
     const rootLen = Math.min(n, segments.length - 1)
     const rootSegs = segments.slice(0, rootLen)
@@ -191,7 +201,11 @@ function defaultProjectName(projectId: string): string {
   if (projectId === '__all__') return 'project'
   if (projectId === '__root__') return 'project'
   const last = projectId.split('/').pop() || 'project'
-  return slug(stripArchiveExt(last)) || 'project'
+  const stripped = stripArchiveExt(last)
+  // For non-archive filenames (e.g. depth-0 mode where projectId ends in .pdf)
+  // also strip the regular file extension so we get a clean project name.
+  const base = stripped !== last ? stripped : stemName(stripped)
+  return slug(base) || 'project'
 }
 
 /** Apply a grouping mode to a flat file list, producing fresh project buckets. */
@@ -481,11 +495,11 @@ function UploadTab() {
             {state.grouping === 'depth' && (
               <input
                 type="number"
-                min={1}
+                min={0}
                 max={10}
                 value={state.depthN}
                 onChange={e => {
-                  const n = Math.max(1, parseInt(e.target.value || '1', 10))
+                  const n = Math.max(0, parseInt(e.target.value || '0', 10))
                   reapplyGrouping('depth', n)
                 }}
                 className="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200"
