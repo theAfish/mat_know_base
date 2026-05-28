@@ -95,6 +95,10 @@ export interface Projection {
   review_notes: string | null
   reviewed_at: string | null
   data: Record<string, unknown>
+  /** Non-null when this projection has been superseded by a newer review. */
+  superseded_by_id: string | null
+  /** List of projection IDs this row consolidated (set on the NEW reviewed row). */
+  supersedes_ids: string[] | null
 }
 
 export interface Space {

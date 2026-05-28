@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo, useLayoutEffect } from 'react'
+import type { JSX } from 'react'
 import { listProjections, deleteProjection } from '../api/projections'
 import { listSpaces, getSpace } from '../api/spaces'
 import { listProjects } from '../api/projects'
@@ -569,7 +570,13 @@ function ProjectionRow({
   const [deleting, setDeleting] = useState(false)
 
   return (
-    <div className={`border rounded-lg overflow-hidden ${selected ? 'bg-teal-900/20 border-teal-700/50' : 'bg-slate-800 border-slate-700'}`}>
+    <div className={`border rounded-lg overflow-hidden ${
+      proj.superseded_by_id
+        ? 'bg-slate-900/60 border-slate-700/40 opacity-70'
+        : selected
+          ? 'bg-teal-900/20 border-teal-700/50'
+          : 'bg-slate-800 border-slate-700'
+    }`}>
       <div className="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-slate-700/50">
         <input
           type="checkbox"
@@ -584,6 +591,11 @@ function ProjectionRow({
           className="flex-1 flex items-center gap-3 text-left"
         >
         <StatusBadge status={proj.status} />
+        {proj.superseded_by_id && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide font-medium bg-slate-700 text-slate-400 border border-slate-600">
+            superseded
+          </span>
+        )}
         <span className="flex-1 text-sm text-slate-300 truncate">
           {paperLookup[proj.project_id] ?? proj.project_id.slice(0, 12)}
         </span>
@@ -677,6 +689,7 @@ export default function ProjectionsPage() {
   const [sectionRows, setSectionRows] = useState<Record<string, Array<Record<string, string>>>>({})
   const [loading, setLoading] = useState(false)
   const [newestOnly, setNewestOnly] = useState(true)
+  const [showHistory, setShowHistory] = useState(false)
   const [reviewJob, setReviewJob] = useState<Job | null>(null)
   const [isReviewing, setIsReviewing] = useState(false)
   const [showSpaceDetail, setShowSpaceDetail] = useState(false)
@@ -733,7 +746,7 @@ export default function ProjectionsPage() {
     setLoading(true)
     try {
       const [projs, projects] = await Promise.all([
-        listProjections({ space_id: selectedSpaceId, include_data: true, newest_only: newestOnly, limit: 500 }),
+        listProjections({ space_id: selectedSpaceId, include_data: true, newest_only: newestOnly, include_history: showHistory, limit: 500 }),
         listProjects(500),
       ])
 
@@ -752,7 +765,7 @@ export default function ProjectionsPage() {
     } finally {
       setLoading(false)
     }
-  }, [selectedSpaceId, newestOnly])
+  }, [selectedSpaceId, newestOnly, showHistory])
 
   useEffect(() => { loadProjections() }, [loadProjections])
 
@@ -884,6 +897,15 @@ export default function ProjectionsPage() {
             />
             Newest only
           </label>
+          <label className="text-sm text-slate-400">
+            <input
+              type="checkbox"
+              checked={showHistory}
+              onChange={e => setShowHistory(e.target.checked)}
+              className="mr-1.5"
+            />
+            Show history
+          </label>
           <button onClick={loadProjections} className="text-xs text-teal-400 hover:text-teal-300">Refresh</button>
           <a
             href={selectedSpaceId ? `/api/spaces/${selectedSpaceId}/export?format=yaml` : '#'}
@@ -996,23 +1018,80 @@ export default function ProjectionsPage() {
               )}
             </div>
             <div className="space-y-1">
-              {projections.map(p => (
-                <ProjectionRow
-                  key={p.projection_id}
-                  proj={p}
-                  paperLookup={paperLookup}
-                  selected={selectedProjectionIds.has(p.projection_id)}
-                  onToggleSelected={toggleProjectionSelected}
-                  onDeleted={id => {
-                    setProjections(prev => prev.filter(x => x.projection_id !== id))
-                    setSelectedProjectionIds(prev => {
-                      const next = new Set(prev)
-                      next.delete(id)
-                      return next
-                    })
-                  }}
-                />
-              ))}
+              {showHistory
+                ? /* ── History mode: group live rows with their superseded ancestors ── */
+                  (() => {
+                    // Index by projection_id for fast lookup
+                    const byId = new Map(projections.map(p => [p.projection_id, p]))
+                    // A row is "live" when it has no superseded_by_id
+                    const live = projections.filter(p => !p.superseded_by_id)
+                    // Build chains: for each live row, walk back through supersedes_ids
+                    const renderChain = (root: Projection): JSX.Element => {
+                      const ancestors: Projection[] = []
+                      const walk = (ids: string[] | null | undefined) => {
+                        if (!ids) return
+                        for (const id of ids) {
+                          const anc = byId.get(id)
+                          if (anc) {
+                            ancestors.push(anc)
+                            walk(anc.supersedes_ids)
+                          }
+                        }
+                      }
+                      walk(root.supersedes_ids)
+                      const onDeleted = (id: string) => {
+                        setProjections(prev => prev.filter(x => x.projection_id !== id))
+                        setSelectedProjectionIds(prev => { const n = new Set(prev); n.delete(id); return n })
+                      }
+                      return (
+                        <div key={root.projection_id} className="space-y-0.5">
+                          <ProjectionRow
+                            proj={root}
+                            paperLookup={paperLookup}
+                            selected={selectedProjectionIds.has(root.projection_id)}
+                            onToggleSelected={toggleProjectionSelected}
+                            onDeleted={onDeleted}
+                          />
+                          {ancestors.map((anc, i) => (
+                            <div key={anc.projection_id} className="ml-6 border-l-2 border-slate-600/50 pl-2">
+                              <div className="flex items-center gap-1 px-2 py-0.5">
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  {i === 0 ? '↳ supersedes' : '  ↳'}
+                                </span>
+                              </div>
+                              <ProjectionRow
+                                proj={anc}
+                                paperLookup={paperLookup}
+                                selected={selectedProjectionIds.has(anc.projection_id)}
+                                onToggleSelected={toggleProjectionSelected}
+                                onDeleted={onDeleted}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    }
+                    return live.map(renderChain)
+                  })()
+                : /* ── Normal mode: flat list ── */
+                  projections.map(p => (
+                    <ProjectionRow
+                      key={p.projection_id}
+                      proj={p}
+                      paperLookup={paperLookup}
+                      selected={selectedProjectionIds.has(p.projection_id)}
+                      onToggleSelected={toggleProjectionSelected}
+                      onDeleted={id => {
+                        setProjections(prev => prev.filter(x => x.projection_id !== id))
+                        setSelectedProjectionIds(prev => {
+                          const next = new Set(prev)
+                          next.delete(id)
+                          return next
+                        })
+                      }}
+                    />
+                  ))
+              }
             </div>
           </div>
         </div>
