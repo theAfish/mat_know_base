@@ -337,6 +337,7 @@ class SpaceCreateRequest(BaseModel):
     field_descriptions: dict
     description: str | None = None
     purpose: str = "tabular_database"
+    review_prompt: str | None = None
 
 
 class SpaceUpdateRequest(BaseModel):
@@ -347,6 +348,7 @@ class SpaceUpdateRequest(BaseModel):
     extraction_schema: dict | None = None
     system_prompt: str | None = None
     field_descriptions: dict | None = None
+    review_prompt: str | None = None
 
 
 class ProjectionReviewRequest(BaseModel):
@@ -884,6 +886,18 @@ def list_spaces():
     return api.list_spaces()
 
 
+@app.get("/api/spaces/_defaults/review-prompt")
+def get_default_review_prompt(purpose: str = "tabular_database"):
+    """Return the built-in default reviewer prompt for a given space purpose.
+
+    Used by the UI to pre-fill the review-prompt editor with a sensible
+    starting point that the user can then customize.
+    """
+    from mkb.agents.prompts.projection_review import default_review_prompt_for
+
+    return {"purpose": purpose, "review_prompt": default_review_prompt_for(purpose)}
+
+
 @app.get("/api/spaces/{space_id_or_name}")
 def get_space(space_id_or_name: str):
     space = api.get_space(space_id_or_name)
@@ -902,6 +916,7 @@ def create_space(body: SpaceCreateRequest):
         field_descriptions=body.field_descriptions,
         description=body.description,
         purpose=body.purpose,
+        review_prompt=body.review_prompt,
     )
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])

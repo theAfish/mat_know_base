@@ -212,3 +212,93 @@ Document:
   rewrote the prompt.
 - Any items flagged for re-extraction and why.
 """
+
+
+PROJECTION_REVIEW_SKILL_PROMPT = """\
+You are a strict reviewer of *skill cards* — procedural recipes extracted
+from research papers. Each card describes a technique, its conditions,
+required inputs, and success criteria. You are NOT reviewing a tabular
+database or a QA benchmark.
+
+You are reviewing one or more projection runs whose payload looks like:
+
+    {"skills": [ {id, name, technique, preconditions, inputs, steps,
+                  parameters, success_criteria, failure_modes,
+                  source_evidence}, ... ]}
+
+---
+
+# Your Standards (apply per-card)
+
+1. **Self-contained**: A card must be executable without referencing other
+   cards. All preconditions and inputs must be listed explicitly.
+
+2. **Concrete steps**: `steps` must be ordered, actionable instructions.
+   Reject vague phrasing ("optimize the parameters") in favor of measurable
+   actions ("anneal at 800 °C for 2 h in Ar").
+
+3. **Verifiable success criteria**: `success_criteria` must be checkable
+   from observable outputs (a measurement, a phase, a yield). Reject
+   tautological criteria ("the synthesis succeeds when it works").
+
+4. **Realistic parameters**: Each parameter must include units, a value or
+   range, and (when relevant) the tolerance. Numerical values must match
+   the source exactly — no rounding.
+
+5. **Failure modes**: Where the source mentions side reactions, unstable
+   regimes, or common mistakes, capture them in `failure_modes`.
+
+6. **Grounding**: `source_evidence` must point to a real method / figure /
+   table of the source paper. If you cannot locate the evidence with the
+   reading tools, treat the card as ungrounded and remove it.
+
+7. **No duplicates**: Merge cards that target the same technique under the
+   same conditions. Keep the most complete one and union the parameters.
+
+---
+
+# Workflow
+
+1. `get_all_projections_for_review` — load every projection run.
+2. `get_frame_for_review` — load the knowledge frame for grounding checks.
+3. Use the reading tools to verify steps and parameters against the source.
+4. Build the consolidated `skills` list:
+   a. Start from the most complete run as the seed.
+   b. Merge unique cards from other runs; remove duplicates.
+   c. Tighten vague steps, add missing units, capture failure modes.
+   d. Drop ungrounded cards.
+5. Use `request_re_extraction` only when a card is salvageable but you
+   need the fixer to re-read the source for a missing parameter or step.
+6. `save_reviewed_projection(winning_projection_id, {"skills": [...]},
+   review_notes)`.
+
+---
+
+# Output Quality Requirements
+
+- Shape must match the space schema (typically `{"skills": [...]}`).
+- Every surviving card is self-contained, concrete, and grounded.
+- Empty (`{"skills": []}`) is preferable to keeping low-quality cards.
+
+# Review Notes
+
+Document the merge / delete / rewrite counts, any cards flagged for
+re-extraction, and per-card calibration notes.
+"""
+
+
+# Mapping from space ``purpose`` to its default reviewer prompt. Used when
+# the space does not provide its own ``review_prompt`` override.
+DEFAULT_REVIEW_PROMPTS: dict[str, str] = {
+    "tabular_database": PROJECTION_REVIEW_PROMPT,
+    "qa_benchmark": PROJECTION_REVIEW_QA_PROMPT,
+    "skill_cards": PROJECTION_REVIEW_SKILL_PROMPT,
+    "freeform": PROJECTION_REVIEW_PROMPT,
+}
+
+
+def default_review_prompt_for(purpose: str | None) -> str:
+    """Return the default reviewer prompt for a given space ``purpose``."""
+    key = (purpose or "tabular_database").lower()
+    return DEFAULT_REVIEW_PROMPTS.get(key, PROJECTION_REVIEW_PROMPT)
+

@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { listSpaces, getSpace, createSpace, updateSpace, deleteSpace } from '../api/spaces'
+import {
+  listSpaces,
+  getSpace,
+  createSpace,
+  updateSpace,
+  deleteSpace,
+  getDefaultReviewPrompt,
+} from '../api/spaces'
 import type { Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
@@ -25,6 +32,7 @@ const EMPTY_DRAFT = {
   extraction_schema: {},
   system_prompt: '',
   field_descriptions: {},
+  review_prompt: '',
 }
 
 export default function SpacesPage() {
@@ -89,6 +97,8 @@ export default function SpacesPage() {
           extraction_schema: obj.extraction_schema,
           system_prompt: obj.system_prompt,
           field_descriptions: obj.field_descriptions,
+          review_prompt:
+            typeof obj.review_prompt === 'string' ? obj.review_prompt : null,
         })
         setInfo(`Updated. New version: ${res.version}`)
       } else {
@@ -100,6 +110,10 @@ export default function SpacesPage() {
           extraction_schema: obj.extraction_schema,
           system_prompt: obj.system_prompt ?? '',
           field_descriptions: obj.field_descriptions ?? {},
+          review_prompt:
+            typeof obj.review_prompt === 'string' && obj.review_prompt.length > 0
+              ? obj.review_prompt
+              : null,
         }
         const res = await createSpace(payload)
         setInfo(`Created space ${res.name} (${res.space_id.slice(0, 8)}…)`)
@@ -277,8 +291,14 @@ export default function SpacesPage() {
               <p className="text-xs text-slate-500">
                 Required keys: <code>name</code>, <code>extraction_schema</code>. Recommended:{' '}
                 <code>domain</code>, <code>purpose</code> (one of {PURPOSE_OPTIONS.join(', ')}),{' '}
-                <code>system_prompt</code>, <code>field_descriptions</code>.
+                <code>system_prompt</code>, <code>field_descriptions</code>. Optional:{' '}
+                <code>review_prompt</code> — leave empty to use the default reviewer prompt for the
+                chosen <code>purpose</code>.
               </p>
+              <LoadDefaultReviewPromptButton
+                jsonText={editor.jsonText}
+                onApply={next => setEditor({ ...editor, jsonText: next })}
+              />
             </div>
           ) : selected ? (
             <SpaceDetail
@@ -296,6 +316,7 @@ export default function SpacesPage() {
                       extraction_schema: selected.extraction_schema,
                       system_prompt: selected.system_prompt ?? '',
                       field_descriptions: selected.field_descriptions ?? {},
+                      review_prompt: selected.review_prompt ?? '',
                     },
                     null,
                     2,
@@ -381,6 +402,19 @@ function SpaceDetail({
         </Section>
       )}
 
+      <Section title="Review prompt">
+        {space.review_prompt ? (
+          <pre className="bg-slate-950 text-slate-200 text-xs font-mono p-3 rounded max-h-[30vh] overflow-auto whitespace-pre-wrap">
+{String(space.review_prompt)}
+          </pre>
+        ) : (
+          <p className="text-xs text-slate-500 italic">
+            No custom review prompt set — the projection reviewer will use the
+            default prompt for <code>{purpose}</code>.
+          </p>
+        )}
+      </Section>
+
       <div className="text-xs text-slate-500">
         Created: {space.created_at ?? '—'} · Updated: {space.updated_at ?? '—'}
       </div>
@@ -399,6 +433,53 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {open ? '▾' : '▸'} {title}
       </button>
       {open && children}
+    </div>
+  )
+}
+
+function LoadDefaultReviewPromptButton({
+  jsonText,
+  onApply,
+}: {
+  jsonText: string
+  onApply: (next: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const handleClick = async () => {
+    setErr(null)
+    let obj: Record<string, unknown>
+    try {
+      obj = JSON.parse(jsonText)
+    } catch (e) {
+      setErr(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+      return
+    }
+    const purpose = (obj.purpose as string) || 'tabular_database'
+    setBusy(true)
+    try {
+      const res = await getDefaultReviewPrompt(purpose)
+      const next = { ...obj, review_prompt: res.review_prompt }
+      onApply(JSON.stringify(next, null, 2))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={handleClick}
+        className="px-2 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 rounded text-xs"
+      >
+        {busy ? 'Loading…' : 'Load default review prompt for purpose'}
+      </button>
+      {err && <span className="text-xs text-rose-300">{err}</span>}
     </div>
   )
 }

@@ -15,3 +15,10 @@ export const updateSpace = (spaceId: string, changes: SpaceUpdatePayload) =>
 
 export const deleteSpace = (spaceId: string) =>
   client.delete<{ ok: boolean; deleted?: string }>(`/spaces/${spaceId}`).then(r => r.data)
+
+export const getDefaultReviewPrompt = (purpose: string) =>
+  client
+    .get<{ purpose: string; review_prompt: string }>('/spaces/_defaults/review-prompt', {
+      params: { purpose },
+    })
+    .then(r => r.data)

@@ -19,6 +19,7 @@ from mkb.agents._utils import create_llm, sync_agent_run
 from mkb.agents.prompts.projection_review import (
     PROJECTION_REVIEW_PROMPT,
     PROJECTION_REVIEW_QA_PROMPT,
+    default_review_prompt_for,
 )
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
@@ -42,21 +43,29 @@ REVIEWER_TOOLS = READING_TOOLS + PROJECTION_REVIEW_TOOLS
 def build_projection_reviewer_agent(
     model: str | None = None,
     purpose: str | None = None,
+    custom_prompt: str | None = None,
 ) -> Agent:
     """Create a projection reviewer agent.
 
-    The instruction prompt is selected from the space ``purpose``:
-    ``qa_benchmark`` spaces use a question-bank-specific reviewer that
-    deduplicates, scrubs answer leakage, and calibrates difficulty;
-    everything else uses the generic strict-data-auditor prompt.
+    Prompt selection order:
+    1. ``custom_prompt`` — a per-space override from ``Space.review_prompt``.
+    2. The default prompt for the space ``purpose`` (tabular / qa / skill /
+       freeform), via :func:`default_review_prompt_for`.
     """
     llm = create_llm(model)
-    if (purpose or "").lower() == "qa_benchmark":
-        instruction = PROJECTION_REVIEW_QA_PROMPT
-        agent_name = "projection_reviewer_qa"
+    purpose_key = (purpose or "tabular_database").lower()
+    if custom_prompt and custom_prompt.strip():
+        instruction = custom_prompt
+        agent_name = f"projection_reviewer_{purpose_key}_custom"
     else:
-        instruction = PROJECTION_REVIEW_PROMPT
-        agent_name = "projection_reviewer"
+        instruction = default_review_prompt_for(purpose_key)
+        agent_name = (
+            "projection_reviewer_qa"
+            if purpose_key == "qa_benchmark"
+            else f"projection_reviewer_{purpose_key}"
+            if purpose_key in {"skill_cards", "freeform"}
+            else "projection_reviewer"
+        )
     return Agent(
         name=agent_name,
         model=llm,
@@ -98,8 +107,13 @@ async def _run_review_async(
 
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
+        space_review_prompt = getattr(space, "review_prompt", None)
 
-    agent = build_projection_reviewer_agent(model, purpose=space_purpose)
+    agent = build_projection_reviewer_agent(
+        model,
+        purpose=space_purpose,
+        custom_prompt=space_review_prompt,
+    )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"review_proj_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"
@@ -168,6 +182,7 @@ async def run_projection_review_all(
     space_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection review on all projects that have projections in a space."""
     sid = space_id
@@ -198,8 +213,13 @@ async def run_projection_review_all(
         project_ids = [f.project_id for f in frames]
 
     results = []
-    for pid in project_ids:
+    total = len(project_ids)
+    for idx, pid in enumerate(project_ids, start=1):
         logger.info("Reviewing projections for project %s in space %s ...", pid, sid)
+        if progress_callback:
+            progress_callback({
+                "message": f"Reviewing project {idx}/{total} ({str(pid)[:8]})",
+            })
         result = await _run_review_async(sid, pid, model=model, verbose=verbose)
         results.append(result)
         logger.info("  -> %s", result.get("status", "unknown"))

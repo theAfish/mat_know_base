@@ -38,6 +38,7 @@ def create_space(
     field_descriptions: dict,
     description: str | None = None,
     purpose: str = "tabular_database",
+    review_prompt: str | None = None,
 ) -> dict:
     """Create a new space definition.
 
@@ -49,6 +50,8 @@ def create_space(
         field_descriptions: Per-field extraction guidance.
         description: Optional human-readable description.
         purpose: Kind of projection (tabular_database | qa_benchmark | skill_cards | freeform).
+        review_prompt: Optional override for the projection reviewer prompt.
+            When None, the reviewer uses the default prompt for ``purpose``.
 
     Returns:
         Dict with space_id and name.
@@ -72,6 +75,7 @@ def create_space(
             extraction_schema=normalized_schema,
             system_prompt=system_prompt,
             field_descriptions=field_descriptions,
+            review_prompt=(review_prompt or None),
             version=1,
         )
         session.add(space)
@@ -119,6 +123,7 @@ def update_space(
         "domain",
         "purpose",
         "name",
+        "review_prompt",
     }
 
     with SyncSessionLocal() as session:
@@ -137,6 +142,9 @@ def update_space(
 
             if key == "extraction_schema":
                 value = _maybe_normalize_schema(value, new_purpose)
+            if key == "review_prompt":
+                # Normalize empty string to NULL so the default prompt is used.
+                value = value if (value and str(value).strip()) else None
             setattr(space, key, value)
 
         space.version = space.version + 1
@@ -180,6 +188,7 @@ def load_space_from_file(filepath: str | Path) -> dict:
         field_descriptions=data["field_descriptions"],
         description=data.get("description"),
         purpose=data.get("purpose", "tabular_database"),
+        review_prompt=data.get("review_prompt"),
     )
 
 
@@ -197,6 +206,7 @@ def _space_to_dict(space: Space) -> dict:
         "extraction_schema": schema,
         "system_prompt": space.system_prompt,
         "field_descriptions": space.field_descriptions,
+        "review_prompt": getattr(space, "review_prompt", None),
         "version": space.version,
         "created_at": space.created_at.isoformat() if space.created_at else None,
         "updated_at": space.updated_at.isoformat() if space.updated_at else None,

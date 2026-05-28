@@ -106,6 +106,7 @@ export interface Space {
   extraction_schema: Record<string, unknown>
   system_prompt?: string
   field_descriptions?: Record<string, unknown>
+  review_prompt?: string | null
   version?: number
   created_at?: string | null
   updated_at?: string | null
@@ -119,6 +120,7 @@ export interface SpaceCreatePayload {
   field_descriptions: Record<string, unknown>
   description?: string
   purpose?: string
+  review_prompt?: string | null
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }

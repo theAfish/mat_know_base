@@ -306,6 +306,11 @@ class Space(Base):
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     field_descriptions: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
+    # Optional per-space override of the projection-reviewer prompt.
+    # When NULL, the reviewer falls back to a default prompt selected by
+    # ``purpose`` (see ``mkb.agents.projection_reviewer``).
+    review_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(

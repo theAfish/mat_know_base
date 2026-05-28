@@ -1016,6 +1016,7 @@ def create_space(
     field_descriptions: dict,
     description: str | None = None,
     purpose: str = "tabular_database",
+    review_prompt: str | None = None,
 ) -> dict:
     """Create a new space (domain-specific extraction configuration)."""
     from mkb.spaces.registry import create_space as _create
@@ -1028,6 +1029,7 @@ def create_space(
         field_descriptions=field_descriptions,
         description=description,
         purpose=purpose,
+        review_prompt=review_prompt,
     )
 
 
@@ -1035,7 +1037,7 @@ def update_space(space_id: str | uuid.UUID, **changes) -> dict:
     """Update fields on an existing space. Bumps version automatically.
 
     Accepted keys: name, description, extraction_schema, system_prompt,
-    field_descriptions, domain, purpose.
+    field_descriptions, domain, purpose, review_prompt.
     """
     from mkb.spaces.registry import update_space as _update
 
@@ -1571,11 +1573,14 @@ def review_feedback(
     project_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run feedback review on a project — KB agent reviews and resolves open feedback."""
     from mkb.agents.feedback_reviewer import run_feedback_review
 
     pid = uuid.UUID(str(project_id))
+    if progress_callback:
+        progress_callback({"message": f"Reviewing feedback for project {str(pid)[:8]}"})
     return run_feedback_review(pid, model=model, verbose=verbose)
 
 
@@ -1584,6 +1589,7 @@ def review_projections(
     project_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection review — consolidate and correct all projections for a project.
 
@@ -1596,6 +1602,8 @@ def review_projections(
     init_db()
     sid = uuid.UUID(str(space_id))
     pid = uuid.UUID(str(project_id))
+    if progress_callback:
+        progress_callback({"message": f"Reviewing projections for project {str(pid)[:8]}"})
     return run_projection_review(sid, pid, model=model, verbose=verbose)
 
 
@@ -1603,13 +1611,16 @@ def review_projections_all(
     space_id: str | uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection review on all projects in a space."""
     from mkb.agents.projection_reviewer import run_projection_review_all
 
     init_db()
     sid = uuid.UUID(str(space_id))
-    return run_projection_review_all(sid, model=model, verbose=verbose)
+    return run_projection_review_all(
+        sid, model=model, verbose=verbose, progress_callback=progress_callback
+    )
 
 
 def review_knowledge_graph(
