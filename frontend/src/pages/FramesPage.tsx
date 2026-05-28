@@ -820,7 +820,7 @@ export default function FramesPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [pjs, frames] = await Promise.all([listProjects(200), listFrames()])
+      const [pjs, frames] = await Promise.all([listProjects(5000), listFrames()])
       const meta: Record<string, { version: number; extracted_at: string }> = {}
       for (const f of frames) {
         meta[f.project_id] = {
