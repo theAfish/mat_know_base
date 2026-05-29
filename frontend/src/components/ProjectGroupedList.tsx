@@ -162,8 +162,9 @@ export default function ProjectGroupedList({
     try {
       const gs = await listProjectGroups()
       setGroups(gs)
-    } catch (e: any) {
-      setGroupErr(e?.message ?? String(e))
+    } catch (e: unknown) {
+      const err = e as { message?: string }
+      setGroupErr(err?.message ?? String(e))
     } finally {
       setGroupsLoaded(true)
     }
@@ -288,8 +289,9 @@ export default function ProjectGroupedList({
       setGroups(gs => [...gs, g])
       setNewGroupName('')
       setNewGroupOpen(false)
-    } catch (e: any) {
-      setGroupErr(`Failed to create group: ${e?.message ?? e}`)
+    } catch (e: unknown) {
+      const err = e as { message?: string }
+      setGroupErr(`Failed to create group: ${err?.message ?? e}`)
     }
   }
 
@@ -305,8 +307,9 @@ export default function ProjectGroupedList({
       onProjectsChange(
         projects.map(p => p.group_id === g.group_id ? { ...p, group_id: null } : p),
       )
-    } catch (e: any) {
-      setGroupErr(`Failed to delete group: ${e?.message ?? e}`)
+    } catch (e: unknown) {
+      const err = e as { message?: string }
+      setGroupErr(`Failed to delete group: ${err?.message ?? e}`)
     }
   }
 
@@ -324,8 +327,9 @@ export default function ProjectGroupedList({
     try {
       const updated = await updateProjectGroup(editingGroupId, { name })
       setGroups(gs => gs.map(g => g.group_id === editingGroupId ? updated : g))
-    } catch (e: any) {
-      setGroupErr(`Failed to rename group: ${e?.message ?? e}`)
+    } catch (e: unknown) {
+      const err = e as { message?: string }
+      setGroupErr(`Failed to rename group: ${err?.message ?? e}`)
     }
   }
 
@@ -338,8 +342,9 @@ export default function ProjectGroupedList({
     )
     try {
       await assignProjectsToGroup(projectIds, groupId)
-    } catch (e: any) {
-      setGroupErr(`Failed to move project(s): ${e?.message ?? e}`)
+    } catch (e: unknown) {
+      const err = e as { message?: string }
+      setGroupErr(`Failed to move project(s): ${err?.message ?? e}`)
       onRefresh()
     }
   }
@@ -392,14 +397,16 @@ export default function ProjectGroupedList({
   return (
     <div className="space-y-4">
       {checkedIds.size > 0 && (
-        <BatchActionBar
-          selectedIds={checkedIds}
-          allProjects={projects}
-          spaces={spaces}
-          getStatus={getStatus}
-          onSelectionChange={ids => setCheckedIds(ids)}
-          onRefresh={onRefresh}
-        />
+        <div className="sticky top-0 z-20 -mt-2 pt-2 bg-slate-900/95 backdrop-blur supports-[backdrop-filter]:bg-slate-900/80 shadow-lg shadow-slate-950/40">
+          <BatchActionBar
+            selectedIds={checkedIds}
+            allProjects={projects}
+            spaces={spaces}
+            getStatus={getStatus}
+            onSelectionChange={ids => setCheckedIds(ids)}
+            onRefresh={onRefresh}
+          />
+        </div>
       )}
 
       {/* Toolbar */}

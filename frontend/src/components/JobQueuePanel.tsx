@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
-import { listJobs, cancelJob, cancelAllJobs } from '../api/jobs'
-import { nextJobPollDelayMs } from '../api/jobPolling'
+import { useState, useEffect } from 'react'
+import { cancelJob, cancelAllJobs } from '../api/jobs'
 import { JOB_STARTED_EVENT } from '../api/client'
+import { useActiveJobs, useRecentJobs, useJobsStore } from '../store/jobsStore'
 import type { Job } from '../types'
 
 const STATUS_DOT: Record<string, string> = {
@@ -59,49 +59,32 @@ function JobRow({ job, onCancel }: { job: Job; onCancel?: (id: string) => void }
 }
 
 export default function JobQueuePanel() {
-  const [jobs, setJobs] = useState<Job[]>([])
   const [open, setOpen] = useState(false)
   const [confirmCancelAll, setConfirmCancelAll] = useState(false)
   const [cancellingAll, setCancellingAll] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const errorsRef = useRef(0)
-  // fetchJobsRef lets the event listener trigger a poll without a stale closure
-  const fetchJobsRef = useRef<() => void>(() => {})
 
-  const activeJobs = jobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
-  const recentJobs = jobs.filter(j => j.status === 'COMPLETED' || j.status === 'FAILED' || j.status === 'CANCELLED').slice(0, 5)
-
-  const fetchJobs = async () => {
-    try {
-      const data = await listJobs({ limit: 200 })
-      errorsRef.current = 0
-      setJobs(data)
-      return data
-    } catch {
-      errorsRef.current += 1
-      return jobs
-    }
-  }
+  const activeJobs = useActiveJobs()
+  const recentJobs = useRecentJobs(5)
 
   const handleCancel = async (jobId: string) => {
     try {
       await cancelJob(jobId)
-      // Optimistically update local state while the next poll confirms
-      setJobs(prev => prev.map(j => j.job_id === jobId ? { ...j, status: 'CANCELLED' as const, current_message: 'Cancelling…' } : j))
-    } catch { /* ignore — next poll will reflect the real state */ }
+      // Optimistically update local state while the next poll confirms.
+      useJobsStore.getState().patchJob(jobId, { status: 'CANCELLED', current_message: 'Cancelling…' })
+    } catch { /* next poll reconciles */ }
   }
 
   const handleCancelAll = async () => {
     setCancellingAll(true)
     try {
       await cancelAllJobs()
-      setJobs(prev => prev.map(j =>
-        (j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
-          ? { ...j, status: 'CANCELLED' as const, current_message: 'Cancelling…' }
-          : j
-      ))
-      // Force an immediate refresh so the UI reflects real backend state quickly
-      fetchJobs()
+      // Optimistic local patch — global poller will reconcile shortly.
+      const { jobs, patchJob } = useJobsStore.getState()
+      for (const job of Object.values(jobs)) {
+        if (job.status === 'RUNNING' || job.status === 'QUEUED' || job.status === 'PENDING') {
+          patchJob(job.job_id, { status: 'CANCELLED', current_message: 'Cancelling…' })
+        }
+      }
     } catch { /* next poll reconciles */ }
     finally {
       setCancellingAll(false)
@@ -109,50 +92,19 @@ export default function JobQueuePanel() {
     }
   }
 
-  useEffect(() => {
-    let cancelled = false
-    let fetching = false  // guard against concurrent schedule() chains
-
-    const schedule = async () => {
-      if (cancelled || fetching) return
-      fetching = true
-      const data = await fetchJobs()
-      fetching = false
-      if (cancelled) return
-      if (errorsRef.current > 0) {
-        timerRef.current = setTimeout(schedule, nextJobPollDelayMs(errorsRef.current, 2000, 15000))
-        return
-      }
-      const hasActive = data.some(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
-      timerRef.current = setTimeout(schedule, hasActive ? 1500 : 8000)
-    }
-
-    const reschedule = () => {
-      // If a fetch is already in-flight it will schedule the next one; skip.
-      if (fetching) return
-      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
-      schedule()
-    }
-    fetchJobsRef.current = reschedule
-
-    const onJobStarted = () => { setOpen(true); reschedule() }
-    window.addEventListener(JOB_STARTED_EVENT, onJobStarted)
-
-    schedule()
-
-    return () => {
-      cancelled = true
-      if (timerRef.current) clearTimeout(timerRef.current)
-      window.removeEventListener(JOB_STARTED_EVENT, onJobStarted)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   // Auto-open when a job becomes active
   useEffect(() => {
     if (activeJobs.length > 0) setOpen(true)
     else setConfirmCancelAll(false)
   }, [activeJobs.length])
+
+  // Also auto-open the moment a job is dispatched, even before the
+  // global poller has observed it.
+  useEffect(() => {
+    const onJobStarted = () => setOpen(true)
+    window.addEventListener(JOB_STARTED_EVENT, onJobStarted)
+    return () => window.removeEventListener(JOB_STARTED_EVENT, onJobStarted)
+  }, [])
 
   const totalActive = activeJobs.length
 

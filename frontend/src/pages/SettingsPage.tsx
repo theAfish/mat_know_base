@@ -16,8 +16,9 @@ export default function SettingsPage() {
       const s = await getSettings()
       setData(s)
       setTokenInput('')
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to load settings')
+    } catch (e: unknown) {
+      const err = e as { message?: string }
+      setError(err?.message ?? 'Failed to load settings')
     } finally {
       setLoading(false)
     }
@@ -52,8 +53,9 @@ export default function SettingsPage() {
       setData(updated)
       setTokenInput('')
       setSavedAt(Date.now())
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e?.message ?? 'Save failed')
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: string } }; message?: string }
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Save failed')
     } finally {
       setSaving(false)
     }
@@ -67,8 +69,9 @@ export default function SettingsPage() {
       setData(updated)
       setTokenInput('')
       setSavedAt(Date.now())
-    } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Failed to clear token')
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: string } } }
+      setError(err?.response?.data?.detail ?? 'Failed to clear token')
     } finally {
       setSaving(false)
     }
