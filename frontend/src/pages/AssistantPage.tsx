@@ -40,10 +40,10 @@ export default function AssistantPage() {
       setIsThinking(false)
       setCurrentMessage('')
     },
-    onFailed: (job: Job) => {
+    onFailed: (job: Job | null) => {
       addMessage({
         role: 'assistant',
-        content: `Sorry, an error occurred: ${job.error ?? 'Unknown error'}`,
+        content: `Sorry, an error occurred: ${job?.error ?? 'Unknown error'}`,
       })
       setJobId(null)
       setIsThinking(false)

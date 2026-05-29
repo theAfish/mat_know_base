@@ -1,4 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, UIEvent } from 'react'
+import {
+  flexRender,
+  functionalUpdate,
+  getCoreRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  useReactTable,
+} from '@tanstack/react-table'
+import type { ColumnDef, ColumnSizingState, PaginationState, SortingFn, SortingState } from '@tanstack/react-table'
 
 import {
   type ColPrefs,
@@ -8,6 +18,64 @@ import {
   saveColPrefs,
 } from './helpers'
 
+type ProjectionTableRow = Record<string, string>
+type ColumnDataType = 'boolean' | 'number' | 'date' | 'text'
+
+const SELECTION_COLUMN_ID = '__projection_selection__'
+
+function isBlank(value: unknown): boolean {
+  return String(value ?? '').trim() === ''
+}
+
+function parseBoolean(value: unknown): number | null {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (['true', 'yes', 'y', '1'].includes(normalized)) return 1
+  if (['false', 'no', 'n', '0'].includes(normalized)) return 0
+  return null
+}
+
+function parseNumber(value: unknown): number | null {
+  const normalized = String(value ?? '').trim().replace(/,/g, '')
+  if (!normalized) return null
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseDate(value: unknown): number | null {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return null
+  const parsed = Date.parse(normalized)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function inferColumnDataType(rows: ProjectionTableRow[], col: string): ColumnDataType {
+  const values = rows.map(row => row[col]).filter(value => !isBlank(value))
+  if (values.length === 0) return 'text'
+  if (values.every(value => parseBoolean(value) !== null)) return 'boolean'
+  if (values.every(value => parseNumber(value) !== null)) return 'number'
+  if (values.every(value => parseDate(value) !== null)) return 'date'
+  return 'text'
+}
+
+function compareText(left: unknown, right: unknown): number {
+  return String(left ?? '').localeCompare(String(right ?? ''), undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
+
+function sortLabel(type: ColumnDataType, sorted: false | 'asc' | 'desc'): string {
+  if (!sorted) return 'Click to sort'
+  if (type === 'boolean') return sorted === 'asc' ? 'False → True (click for True → False)' : 'True → False (click to clear)'
+  if (type === 'number') return sorted === 'asc' ? '0 → 9 (click for 9 → 0)' : '9 → 0 (click to clear)'
+  if (type === 'date') return sorted === 'asc' ? 'Old → New (click for New → Old)' : 'New → Old (click to clear)'
+  return sorted === 'asc' ? 'A → Z (click for Z → A)' : 'Z → A (click to clear)'
+}
+
+function sortArrow(sorted: false | 'asc' | 'desc'): string {
+  if (!sorted) return '⇅'
+  return sorted === 'asc' ? '↑' : '↓'
+}
 
 export default function SectionTable({
   name,
@@ -21,7 +89,7 @@ export default function SectionTable({
   reviewDisabled,
 }: {
   name: string
-  rows: Array<Record<string, string>>
+  rows: ProjectionTableRow[]
   schemaOrder?: string[]
   onRequestDeleteProjection?: (projectionIds: string[]) => void
   onRequestReview?: (projectionIds: string[]) => void
@@ -31,9 +99,13 @@ export default function SectionTable({
   reviewDisabled?: boolean
 }) {
   const [page, setPage] = useState(1)
+  const [sorting, setSorting] = useState<SortingState>([])
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
   const start = (page - 1) * PAGE_SIZE
-  const pageRows = rows.slice(start, start + PAGE_SIZE)
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   const allCols = useMemo(() => {
     const seen = new Set<string>()
@@ -70,8 +142,7 @@ export default function SectionTable({
 
   const [expandedCell, setExpandedCell] = useState<{ col: string; value: string } | null>(null)
 
-  const rowKey = (row: Record<string, string>) => row.projection_id || ''
-  const pageProjectionIds = Array.from(new Set(pageRows.map(rowKey).filter(Boolean)))
+  const rowKey = (row: ProjectionTableRow) => row.projection_id || ''
   const allPageProjectionIds = Array.from(new Set(rows.map(rowKey).filter(Boolean)))
   const allSectionSelected =
     allPageProjectionIds.length > 0 &&
@@ -91,6 +162,139 @@ export default function SectionTable({
     () => allPageProjectionIds.filter(id => selectedProjectionIds.has(id)),
     [allPageProjectionIds, selectedProjectionIds],
   )
+
+  const columnVisibility = useMemo(() => {
+    const state: Record<string, boolean> = { [SELECTION_COLUMN_ID]: true }
+    for (const col of prefs.known) state[col] = visibleCols.includes(col)
+    return state
+  }, [prefs.known, visibleCols])
+
+  const columnOrder = useMemo(
+    () => [
+      SELECTION_COLUMN_ID,
+      ...visibleCols,
+      ...prefs.known.filter(col => !visibleCols.includes(col)),
+    ],
+    [prefs.known, visibleCols],
+  )
+
+  const columnDataTypes = useMemo(() => {
+    const types: Record<string, ColumnDataType> = {}
+    for (const col of prefs.known) types[col] = inferColumnDataType(rows, col)
+    return types
+  }, [prefs.known, rows])
+
+  const typedSortingFn = useMemo<SortingFn<ProjectionTableRow>>(() => (leftRow, rightRow, columnId) => {
+    const left = leftRow.getValue(columnId)
+    const right = rightRow.getValue(columnId)
+    const leftBlank = isBlank(left)
+    const rightBlank = isBlank(right)
+    const currentSort = sorting.find(sort => sort.id === columnId)
+    if (leftBlank && rightBlank) return 0
+    if (leftBlank) return currentSort?.desc ? -1 : 1
+    if (rightBlank) return currentSort?.desc ? 1 : -1
+
+    const type = columnDataTypes[columnId] ?? 'text'
+    if (type === 'boolean') return (parseBoolean(left) ?? 0) - (parseBoolean(right) ?? 0)
+    if (type === 'number') return (parseNumber(left) ?? 0) - (parseNumber(right) ?? 0)
+    if (type === 'date') return (parseDate(left) ?? 0) - (parseDate(right) ?? 0)
+    return compareText(left, right)
+  }, [columnDataTypes, sorting])
+
+  const cycleSort = (columnId: string) => {
+    const current = sorting.find(sort => sort.id === columnId)
+    setPage(1)
+    if (!current) setSorting([{ id: columnId, desc: false }])
+    else if (!current.desc) setSorting([{ id: columnId, desc: true }])
+    else setSorting([])
+  }
+
+  const columns = useMemo<ColumnDef<ProjectionTableRow>[]>(() => [
+    {
+      id: SELECTION_COLUMN_ID,
+      size: 32,
+      minSize: 32,
+      maxSize: 32,
+      enableResizing: false,
+      enableSorting: false,
+      header: () => (
+        <input
+          type="checkbox"
+          checked={allSectionSelected}
+          ref={el => { if (el) el.indeterminate = someSectionSelected }}
+          onChange={toggleSectionAll}
+          className="accent-teal-500"
+          title={allSectionSelected ? 'Deselect all rows in this section' : `Select all ${allPageProjectionIds.length} rows in this section (across all pages)`}
+        />
+      ),
+      cell: ({ row }) => {
+        const projectionId = rowKey(row.original)
+        if (!projectionId) return null
+        return (
+          <input
+            type="checkbox"
+            checked={selectedProjectionIds.has(projectionId)}
+            onChange={() => onToggleProjection(projectionId)}
+            className="accent-teal-500"
+          />
+        )
+      },
+    },
+    ...prefs.known.map(col => ({
+      accessorKey: col,
+      id: col,
+      size: prefs.widths[col] ?? 320,
+      minSize: 40,
+      maxSize: 1200,
+      header: () => col.replace(/_/g, ' '),
+      sortingFn: typedSortingFn,
+      cell: ({ getValue }: { getValue: () => unknown }) => {
+        const value = String(getValue() ?? '')
+        const long = value.length > 60 || value.includes('\n')
+        return (
+          <span className={long ? 'cursor-pointer underline decoration-dotted decoration-slate-600 hover:decoration-teal-400' : ''}>
+            {value}
+          </span>
+        )
+      },
+    })),
+  ], [allPageProjectionIds.length, allSectionSelected, onToggleProjection, prefs.known, prefs.widths, selectedProjectionIds, someSectionSelected, typedSortingFn])
+
+  const pagination = useMemo<PaginationState>(() => ({ pageIndex: page - 1, pageSize: PAGE_SIZE }), [page])
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    defaultColumn: {
+      minSize: 40,
+      maxSize: 1200,
+    },
+    state: {
+      columnOrder,
+      columnSizing: prefs.widths,
+      columnVisibility,
+      pagination,
+      sorting,
+    },
+    columnResizeMode: 'onChange',
+    onColumnSizingChange: updater => updatePrefs(p => ({
+      ...p,
+      widths: functionalUpdate(updater, p.widths) as ColumnSizingState,
+    })),
+    onPaginationChange: updater => {
+      const next = functionalUpdate(updater, pagination)
+      setPage(next.pageIndex + 1)
+    },
+    onSortingChange: updater => {
+      setPage(1)
+      setSorting(functionalUpdate(updater, sorting))
+    },
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+  })
+
+  const pageRows = table.getRowModel().rows
 
   const floatingScrollRef = useRef<HTMLDivElement>(null)
   const bodyScrollRef = useRef<HTMLDivElement>(null)
@@ -136,11 +340,11 @@ export default function SectionTable({
     }
   }, [innerWidth])
 
-  const onFloatingScroll = (e: React.UIEvent<HTMLDivElement>) => {
+  const onFloatingScroll = (e: UIEvent<HTMLDivElement>) => {
     if (bodyScrollRef.current && bodyScrollRef.current.scrollLeft !== e.currentTarget.scrollLeft)
       bodyScrollRef.current.scrollLeft = e.currentTarget.scrollLeft
   }
-  const onBodyScroll = (e: React.UIEvent<HTMLDivElement>) => {
+  const onBodyScroll = (e: UIEvent<HTMLDivElement>) => {
     if (floatingScrollRef.current && floatingScrollRef.current.scrollLeft !== e.currentTarget.scrollLeft)
       floatingScrollRef.current.scrollLeft = e.currentTarget.scrollLeft
   }
@@ -152,34 +356,11 @@ export default function SectionTable({
   const [dragOverCol, setDragOverCol] = useState<string | null>(null)
   const dragColRef = useRef<string | null>(null)
 
-  // Drag-to-resize column state
-  const resizingRef = useRef<{ col: string; startX: number; startWidth: number } | null>(null)
-  const prefsRef = useRef(prefs)
-  prefsRef.current = prefs
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      const r = resizingRef.current
-      if (!r) return
-      const delta = e.clientX - r.startX
-      const newWidth = Math.max(40, Math.min(1200, Math.round(r.startWidth + delta)))
-      setPrefs(p => ({ ...p, widths: { ...p.widths, [r.col]: newWidth } }))
-    }
-    const onMouseUp = () => {
-      if (!resizingRef.current) return
-      resizingRef.current = null
-      saveColPrefs(name, prefsRef.current)
-    }
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
-  }, [name])
-
   const toggleColVisible = (col: string) => updatePrefs(p => {
-    if (p.visible.includes(col)) return { ...p, visible: p.visible.filter(c => c !== col) }
+    if (p.visible.includes(col)) {
+      setSorting(current => current.filter(sort => sort.id !== col))
+      return { ...p, visible: p.visible.filter(c => c !== col) }
+    }
     return { ...p, visible: [...p.visible, col] }
   })
   const resetPrefs = () => updatePrefs(() => ({
@@ -188,10 +369,11 @@ export default function SectionTable({
     known: allCols,
   }))
 
-  const colStyle = (col: string): React.CSSProperties => {
-    const w = prefs.widths[col]
-    if (!w) return { maxWidth: '20rem' }
-    return { width: w, minWidth: w, maxWidth: w }
+  const colStyle = (col: string): CSSProperties => {
+    const column = table.getColumn(col)
+    if (!column) return { maxWidth: '20rem' }
+    const width = column.getSize()
+    return { width, minWidth: width, maxWidth: width }
   }
 
   return (
@@ -271,20 +453,20 @@ export default function SectionTable({
       <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-x-auto">
         <table className="text-xs border-collapse" style={{ minWidth: '100%' }}>
           <thead>
-            <tr className="border-b border-slate-700">
-              <th className="px-2 py-1.5 w-8">
-                <input
-                  type="checkbox"
-                  checked={allSectionSelected}
-                  ref={el => { if (el) el.indeterminate = someSectionSelected }}
-                  onChange={toggleSectionAll}
-                  className="accent-teal-500"
-                  title={allSectionSelected ? 'Deselect all rows in this section' : `Select all ${allPageProjectionIds.length} rows in this section (across all pages)`}
-                />
-              </th>
-              {visibleCols.map(col => (
+            {table.getHeaderGroups().map(headerGroup => (
+              <tr key={headerGroup.id} className="border-b border-slate-700">
+              {headerGroup.headers.map(header => {
+                const col = header.column.id
+                if (col === SELECTION_COLUMN_ID) {
+                  return (
+                    <th key={header.id} className="px-2 py-1.5 w-8" style={colStyle(col)}>
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                    </th>
+                  )
+                }
+                return (
                 <th
-                  key={col}
+                  key={header.id}
                   draggable
                   onDragStart={() => { dragColRef.current = col; setDraggingCol(col) }}
                   onDragOver={e => { e.preventDefault(); if (dragOverCol !== col) setDragOverCol(col) }}
@@ -307,46 +489,70 @@ export default function SectionTable({
                   className={`text-left px-2 py-1.5 text-slate-400 font-medium whitespace-nowrap select-none cursor-grab${draggingCol === col ? ' opacity-40' : ''}${dragOverCol === col && draggingCol !== col ? ' border-l-2 border-teal-400' : ''}`}
                   style={{ ...colStyle(col), position: 'relative' }}
                 >
-                  {col.replace(/_/g, ' ')}
+                  <div className="flex items-center gap-1.5 pr-2">
+                    <span className="truncate">{flexRender(header.column.columnDef.header, header.getContext())}</span>
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        cycleSort(col)
+                      }}
+                      onMouseDown={e => e.stopPropagation()}
+                      className={`shrink-0 px-0.5 text-[13px] leading-none transition-colors ${
+                        header.column.getIsSorted()
+                          ? 'text-teal-300'
+                          : 'text-slate-600 hover:text-slate-300'
+                      }`}
+                      title={sortLabel(columnDataTypes[col] ?? 'text', header.column.getIsSorted())}
+                    >
+                      {sortArrow(header.column.getIsSorted())}
+                    </button>
+                  </div>
                   <div
                     onMouseDown={e => {
                       e.preventDefault()
                       e.stopPropagation()
-                      const th = e.currentTarget.parentElement as HTMLElement
-                      resizingRef.current = { col, startX: e.clientX, startWidth: th.getBoundingClientRect().width }
+                      header.getResizeHandler()(e)
+                    }}
+                    onTouchStart={e => {
+                      e.stopPropagation()
+                      header.getResizeHandler()(e)
                     }}
                     style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 5, cursor: 'col-resize' }}
                   />
                 </th>
-              ))}
+              )})}
             </tr>
+            ))}
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {pageRows.map((row, i) => {
-              const k = rowKey(row)
+            {pageRows.map(row => {
+              const k = rowKey(row.original)
               const selectable = !!k
               const selected = selectable && selectedProjectionIds.has(k)
               return (
-                <tr key={start + i} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
-                  <td className="px-2 py-1.5 w-8 align-top">
-                    {selectable && (
-                      <input type="checkbox" checked={selected} onChange={() => onToggleProjection(k)} className="accent-teal-500" />
-                    )}
-                  </td>
-                  {visibleCols.map(col => {
-                    const v = row[col] ?? ''
-                    const long = v.length > 60 || v.includes('\n')
+                <tr key={row.id} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
+                  {row.getVisibleCells().map(cell => {
+                    const col = cell.column.id
+                    if (col === SELECTION_COLUMN_ID) {
+                      return (
+                        <td key={cell.id} className="px-2 py-1.5 w-8 align-top" style={colStyle(col)}>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      )
+                    }
+                    const value = String(cell.getValue() ?? '')
+                    const long = value.length > 60 || value.includes('\n')
                     return (
                       <td
-                        key={col}
+                        key={cell.id}
                         className="px-2 py-1.5 text-slate-300 truncate align-top"
                         style={colStyle(col)}
-                        title={long ? 'Click to view full value' : v}
-                        onClick={() => { if (v) setExpandedCell({ col, value: v }) }}
+                        title={long ? 'Click to view full value' : value}
+                        onClick={() => { if (value) setExpandedCell({ col, value }) }}
                       >
-                        <span className={long ? 'cursor-pointer underline decoration-dotted decoration-slate-600 hover:decoration-teal-400' : ''}>
-                          {v}
-                        </span>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     )
                   })}
@@ -377,10 +583,31 @@ export default function SectionTable({
       {totalPages > 1 && (
         <div className="flex items-center gap-2 text-xs text-slate-400">
           <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-            className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 rounded">‹</button>
-          <span>Page {page} / {totalPages}</span>
+            className="hover:text-slate-200 disabled:opacity-30 transition-colors select-none">‹</button>
+          {(() => {
+            let pages: (number | '...')[]
+            if (totalPages <= 7) {
+              pages = Array.from({ length: totalPages }, (_, i) => i + 1)
+            } else if (page <= 4) {
+              pages = [1, 2, 3, 4, 5, '...', totalPages]
+            } else if (page >= totalPages - 3) {
+              pages = [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
+            } else {
+              pages = [1, '...', page - 1, page, page + 1, '...', totalPages]
+            }
+            return pages.map((p, idx) =>
+              p === '...'
+                ? <span key={`ellipsis-${idx}`} className="select-none">…</span>
+                : <button key={p} onClick={() => setPage(p as number)}
+                    className={`transition-colors ${p === page
+                      ? 'text-blue-400 font-bold'
+                      : 'hover:text-slate-200'}`}>
+                    {p}
+                  </button>
+            )
+          })()}
           <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-            className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 rounded">›</button>
+            className="hover:text-slate-200 disabled:opacity-30 transition-colors select-none">›</button>
           <span className="ml-1 text-slate-500">
             (rows {start + 1}–{Math.min(rows.length, start + PAGE_SIZE)} of {rows.length})
           </span>
