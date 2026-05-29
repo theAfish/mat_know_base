@@ -2,6 +2,14 @@ import axios from 'axios'
 
 const MAX_CONSECUTIVE_ERRORS = 6
 
+/** Statuses that mean the job is still running and we should keep polling. */
+export const ACTIVE_JOB_STATUSES = new Set(['QUEUED', 'PENDING', 'RUNNING'])
+
+/** Returns true when the job has reached a terminal state and polling should stop. */
+export function isJobTerminal(status: string): boolean {
+  return !ACTIVE_JOB_STATUSES.has(status)
+}
+
 /**
  * Returns true when polling should stop for this error.
  * - 404 means the job is gone (server restart or stale id).

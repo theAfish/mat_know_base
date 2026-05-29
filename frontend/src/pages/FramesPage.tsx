@@ -1,4 +1,4 @@
-import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
+import { nextJobPollDelayMs, shouldStopJobPolling, isJobTerminal } from '../api/jobPolling'
 import { Fragment, useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { listFrames, getFrame, getFrameHistory } from '../api/frames'
 import { listProjects, listAssets, listProcessedAssets, processProject, extractProject, projectToSpace, kgExtractProject } from '../api/projects'
@@ -694,7 +694,7 @@ function ProjectDetail({ project, onBack }: { project: Project; onBack: () => vo
         const j = await getJob(jobId)
         consecutiveErrors = 0
         setActiveJob(j)
-        if (j.status === 'RUNNING' || j.status === 'PENDING') {
+        if (!isJobTerminal(j.status)) {
           setTimeout(poll, 1000)
         } else {
           setActiveJobId(null)

@@ -65,8 +65,7 @@ class AssistantSession:
     session_id: str
 
 
-class JobCancelled(BaseException):
-    """Raised in a worker thread to cancel a running job."""
+from mkb.agents._utils import JobCancelled
 
 
 class JobManager:
@@ -112,6 +111,10 @@ class JobManager:
         worker_kwargs = dict(kwargs or {})
 
         def progress_callback(event: dict[str, Any] | str) -> None:
+            # Cooperative cancellation: raise before queuing any more work so
+            # the worker unwinds at the next inter-step boundary.
+            if job_id in self._cancelled:
+                raise JobCancelled()
             if isinstance(event, str):
                 q.put({"type": "progress", "message": event})
             elif isinstance(event, dict):
@@ -160,6 +163,14 @@ class JobManager:
                 with self._lock:
                     job = self._jobs.get(job_id)
                     if job is None:
+                        continue
+
+                    # Don't let late events resurrect a job the user already
+                    # cancelled. We still drain the queue so it can be GC'd.
+                    if job.get("status") == "CANCELLED":
+                        et_terminal = event.get("type") in ("done", "error", "cancelled")
+                        if et_terminal:
+                            self._queues.pop(job_id, None)
                         continue
 
                     et = event.get("type")
@@ -214,12 +225,16 @@ class JobManager:
             if status not in ("QUEUED", "RUNNING"):
                 return False
             self._cancelled.add(job_id)
+            # Mark the job as CANCELLED right away so listings/polls reflect
+            # the user's intent immediately. The worker thread will still
+            # unwind asynchronously; the drain loop ignores late events for
+            # jobs already in a terminal state.
+            job["status"] = "CANCELLED"
+            job["current_message"] = "Cancelled"
+            job["updated_at"] = _now_iso()
             if status == "QUEUED":
-                # Thread is blocked on semaphore — mark immediately so the UI
-                # sees the change; the runner will handle cleanup on start.
-                job["status"] = "CANCELLED"
-                job["current_message"] = "Cancelled"
-                job["updated_at"] = _now_iso()
+                # Thread is blocked on semaphore — the runner will see the
+                # cancellation flag when it wakes up and exit cleanly.
                 self._queues.pop(job_id, None)
             thread_id = self._threads.get(job_id)
 
@@ -230,6 +245,24 @@ class JobManager:
                 ctypes.py_object(JobCancelled),
             )
         return True
+
+    def cancel_all_active(self, *, project_id: str | None = None) -> list[str]:
+        """Cancel every QUEUED or RUNNING job (optionally scoped by project).
+
+        Returns the list of job_ids that received a cancellation request.
+        """
+        self._drain()
+        with self._lock:
+            candidates = [
+                jid for jid, j in self._jobs.items()
+                if j.get("status") in ("QUEUED", "RUNNING")
+                and (project_id is None or j.get("project_id") == project_id)
+            ]
+        cancelled: list[str] = []
+        for jid in candidates:
+            if self.cancel_job(jid):
+                cancelled.append(jid)
+        return cancelled
 
     def list_jobs(self, *, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         self._drain()
@@ -1228,6 +1261,12 @@ def cancel_job(job_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Job not found or not cancellable")
     return {"ok": True}
+
+
+@app.post("/api/jobs/cancel-all")
+def cancel_all_jobs(project_id: str | None = None):
+    cancelled = jobs.cancel_all_active(project_id=project_id)
+    return {"ok": True, "cancelled": cancelled, "count": len(cancelled)}
 
 
 @app.post("/api/upload/init", response_model=UploadInitResponse)

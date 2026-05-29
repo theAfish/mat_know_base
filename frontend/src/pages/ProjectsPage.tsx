@@ -1,4 +1,4 @@
-import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
+import { nextJobPollDelayMs, shouldStopJobPolling, isJobTerminal } from '../api/jobPolling'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import {
   listProjects, processProject, extractProject, projectToSpace, kgExtractProject, getProjectJobs,
@@ -261,7 +261,7 @@ function UploadTab() {
         const job = await getJob(jobId)
         consecutiveErrors = 0
         setState(s => ({ ...s, uploadJob: job }))
-        if (job.status === 'RUNNING' || job.status === 'PENDING') {
+        if (!isJobTerminal(job.status)) {
           pollRef.current = setTimeout(poll, 1000)
         } else if (job.status === 'COMPLETED') {
           setState(s => ({ ...s, step: 'done', uploadJob: job }))
@@ -733,7 +733,7 @@ function ProjectDetail({ project, spaces, onClose, onJobComplete, onDeleted }: P
           if (idx === -1) return [job, ...prev]
           return prev.map(j => j.job_id === jobId ? job : j)
         })
-        if (job.status === 'RUNNING' || job.status === 'PENDING') {
+        if (!isJobTerminal(job.status)) {
           pollRef.current = setTimeout(poll, 1000)
         } else {
           setActiveJobId(null)

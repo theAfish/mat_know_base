@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { getJob } from '../api/jobs'
-import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
+import { nextJobPollDelayMs, shouldStopJobPolling, isJobTerminal } from '../api/jobPolling'
 import type { Job } from '../types'
 
 interface Options {
@@ -52,6 +52,9 @@ export function useJobPolling({
         if (job.status === 'COMPLETED') {
           onCompleteRef.current?.(job)
         } else if (job.status === 'FAILED') {
+          onFailedRef.current?.(job)
+        } else if (isJobTerminal(job.status)) {
+          // CANCELLED or any other future terminal state — stop polling
           onFailedRef.current?.(job)
         } else {
           onProgressRef.current?.(job)

@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { listFeedback, resolveFeedback, reviewFeedback } from '../api/feedback'
 import { getJob } from '../api/jobs'
-import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
+import { nextJobPollDelayMs, shouldStopJobPolling, isJobTerminal } from '../api/jobPolling'
 import StatusBadge from '../components/StatusBadge'
 import JobProgress from '../components/JobProgress'
 import type { FeedbackItem, Job } from '../types'
@@ -148,7 +148,7 @@ export default function FeedbackPage() {
         const job = await getJob(jobId)
         consecutiveErrors = 0
         setReviewJob(job)
-        if (job.status === 'RUNNING' || job.status === 'PENDING') {
+        if (!isJobTerminal(job.status)) {
           setTimeout(poll, 1000)
         } else {
           setIsReviewing(false)

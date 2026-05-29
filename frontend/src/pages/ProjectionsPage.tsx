@@ -4,7 +4,7 @@ import { listProjections, deleteProjection } from '../api/projections'
 import { listSpaces, getSpace } from '../api/spaces'
 import { listProjects } from '../api/projects'
 import { getJob } from '../api/jobs'
-import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
+import { nextJobPollDelayMs, shouldStopJobPolling, isJobTerminal } from '../api/jobPolling'
 import StatusBadge from '../components/StatusBadge'
 import type { Projection, Space, Project, Job } from '../types'
 
@@ -808,7 +808,7 @@ export default function ProjectionsPage() {
         const job = await getJob(jobId)
         consecutiveErrors = 0
         setReviewJob(job)
-        if (job.status === 'RUNNING' || job.status === 'PENDING') {
+        if (!isJobTerminal(job.status)) {
           setTimeout(poll, 1000)
         } else {
           setIsReviewing(false)
