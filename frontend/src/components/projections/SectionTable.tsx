@@ -73,12 +73,19 @@ export default function SectionTable({
   const rowKey = (row: Record<string, string>) => row.projection_id || ''
   const pageProjectionIds = Array.from(new Set(pageRows.map(rowKey).filter(Boolean)))
   const allPageProjectionIds = Array.from(new Set(rows.map(rowKey).filter(Boolean)))
-  const allPageSelected =
-    pageProjectionIds.length > 0 &&
-    pageProjectionIds.every(id => selectedProjectionIds.has(id))
-  const togglePageAll = () => {
-    if (allPageSelected) pageProjectionIds.forEach(id => onToggleProjection(id))
-    else pageProjectionIds.filter(id => !selectedProjectionIds.has(id)).forEach(id => onToggleProjection(id))
+  const allSectionSelected =
+    allPageProjectionIds.length > 0 &&
+    allPageProjectionIds.every(id => selectedProjectionIds.has(id))
+  const someSectionSelected =
+    !allSectionSelected &&
+    allPageProjectionIds.some(id => selectedProjectionIds.has(id))
+  // If any are selected (partial or all) → deselect all; if none → select all.
+  const toggleSectionAll = () => {
+    if (allSectionSelected || someSectionSelected) {
+      allPageProjectionIds.filter(id => selectedProjectionIds.has(id)).forEach(id => onToggleProjection(id))
+    } else {
+      allPageProjectionIds.forEach(id => onToggleProjection(id))
+    }
   }
   const sectionSelectedProjectionIds = useMemo(
     () => allPageProjectionIds.filter(id => selectedProjectionIds.has(id)),
@@ -268,10 +275,11 @@ export default function SectionTable({
               <th className="px-2 py-1.5 w-8">
                 <input
                   type="checkbox"
-                  checked={allPageSelected}
-                  onChange={togglePageAll}
+                  checked={allSectionSelected}
+                  ref={el => { if (el) el.indeterminate = someSectionSelected }}
+                  onChange={toggleSectionAll}
                   className="accent-teal-500"
-                  title="Select all rows on this page"
+                  title={allSectionSelected ? 'Deselect all rows in this section' : `Select all ${allPageProjectionIds.length} rows in this section (across all pages)`}
                 />
               </th>
               {visibleCols.map(col => (
@@ -319,7 +327,7 @@ export default function SectionTable({
               const selectable = !!k
               const selected = selectable && selectedProjectionIds.has(k)
               return (
-                <tr key={k || `row-${start + i}`} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
+                <tr key={start + i} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
                   <td className="px-2 py-1.5 w-8 align-top">
                     {selectable && (
                       <input type="checkbox" checked={selected} onChange={() => onToggleProjection(k)} className="accent-teal-500" />
