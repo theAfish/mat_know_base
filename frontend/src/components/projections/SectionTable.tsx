@@ -73,12 +73,19 @@ export default function SectionTable({
   const rowKey = (row: Record<string, string>) => row.projection_id || ''
   const pageProjectionIds = Array.from(new Set(pageRows.map(rowKey).filter(Boolean)))
   const allPageProjectionIds = Array.from(new Set(rows.map(rowKey).filter(Boolean)))
-  const allPageSelected =
-    pageProjectionIds.length > 0 &&
-    pageProjectionIds.every(id => selectedProjectionIds.has(id))
-  const togglePageAll = () => {
-    if (allPageSelected) pageProjectionIds.forEach(id => onToggleProjection(id))
-    else pageProjectionIds.filter(id => !selectedProjectionIds.has(id)).forEach(id => onToggleProjection(id))
+  const allSectionSelected =
+    allPageProjectionIds.length > 0 &&
+    allPageProjectionIds.every(id => selectedProjectionIds.has(id))
+  const someSectionSelected =
+    !allSectionSelected &&
+    allPageProjectionIds.some(id => selectedProjectionIds.has(id))
+  // If any are selected (partial or all) → deselect all; if none → select all.
+  const toggleSectionAll = () => {
+    if (allSectionSelected || someSectionSelected) {
+      allPageProjectionIds.filter(id => selectedProjectionIds.has(id)).forEach(id => onToggleProjection(id))
+    } else {
+      allPageProjectionIds.forEach(id => onToggleProjection(id))
+    }
   }
   const sectionSelectedProjectionIds = useMemo(
     () => allPageProjectionIds.filter(id => selectedProjectionIds.has(id)),
@@ -139,24 +146,41 @@ export default function SectionTable({
   }
 
   const [showPicker, setShowPicker] = useState(false)
-  const moveCol = (col: string, dir: -1 | 1) => updatePrefs(p => {
-    const idx = p.visible.indexOf(col)
-    if (idx < 0) return p
-    const swap = idx + dir
-    if (swap < 0 || swap >= p.visible.length) return p
-    const next = [...p.visible]
-    ;[next[idx], next[swap]] = [next[swap], next[idx]]
-    return { ...p, visible: next }
-  })
+
+  // Drag-to-reorder column state
+  const [draggingCol, setDraggingCol] = useState<string | null>(null)
+  const [dragOverCol, setDragOverCol] = useState<string | null>(null)
+  const dragColRef = useRef<string | null>(null)
+
+  // Drag-to-resize column state
+  const resizingRef = useRef<{ col: string; startX: number; startWidth: number } | null>(null)
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      const r = resizingRef.current
+      if (!r) return
+      const delta = e.clientX - r.startX
+      const newWidth = Math.max(40, Math.min(1200, Math.round(r.startWidth + delta)))
+      setPrefs(p => ({ ...p, widths: { ...p.widths, [r.col]: newWidth } }))
+    }
+    const onMouseUp = () => {
+      if (!resizingRef.current) return
+      resizingRef.current = null
+      saveColPrefs(name, prefsRef.current)
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [name])
+
   const toggleColVisible = (col: string) => updatePrefs(p => {
     if (p.visible.includes(col)) return { ...p, visible: p.visible.filter(c => c !== col) }
     return { ...p, visible: [...p.visible, col] }
-  })
-  const setColWidth = (col: string, w: number | null) => updatePrefs(p => {
-    const widths = { ...p.widths }
-    if (w == null || Number.isNaN(w) || w <= 0) delete widths[col]
-    else widths[col] = Math.max(40, Math.min(1200, Math.round(w)))
-    return { ...p, widths }
   })
   const resetPrefs = () => updatePrefs(() => ({
     visible: defaultColumns(allCols, schemaOrder),
@@ -220,7 +244,7 @@ export default function SectionTable({
       {showPicker && (
         <div className="bg-slate-900 border border-slate-700 rounded p-3 text-xs space-y-2 max-h-72 overflow-y-auto">
           <div className="flex items-center justify-between">
-            <span className="text-slate-400">Column controls</span>
+            <span className="text-slate-400">Column visibility</span>
             <button onClick={resetPrefs} className="text-teal-400 hover:text-teal-300">Reset defaults</button>
           </div>
           <div className="grid grid-cols-1 gap-1">
@@ -237,21 +261,6 @@ export default function SectionTable({
                   <span className={`flex-1 truncate ${isVisible ? 'text-slate-200' : 'text-slate-500'}`}>
                     {col.replace(/_/g, ' ')}
                   </span>
-                  {isVisible && (
-                    <>
-                      <button onClick={() => moveCol(col, -1)} className="px-1 text-slate-500 hover:text-slate-200" title="Move left">↑</button>
-                      <button onClick={() => moveCol(col, 1)} className="px-1 text-slate-500 hover:text-slate-200" title="Move right">↓</button>
-                      <input
-                        type="number"
-                        placeholder="auto"
-                        value={prefs.widths[col] ?? ''}
-                        onChange={e => setColWidth(col, e.target.value === '' ? null : Number(e.target.value))}
-                        className="w-16 bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-slate-200"
-                        title="Width in pixels (blank = auto)"
-                      />
-                      <span className="text-slate-600">px</span>
-                    </>
-                  )}
                 </div>
               )
             })}
@@ -266,15 +275,48 @@ export default function SectionTable({
               <th className="px-2 py-1.5 w-8">
                 <input
                   type="checkbox"
-                  checked={allPageSelected}
-                  onChange={togglePageAll}
+                  checked={allSectionSelected}
+                  ref={el => { if (el) el.indeterminate = someSectionSelected }}
+                  onChange={toggleSectionAll}
                   className="accent-teal-500"
-                  title="Select all rows on this page"
+                  title={allSectionSelected ? 'Deselect all rows in this section' : `Select all ${allPageProjectionIds.length} rows in this section (across all pages)`}
                 />
               </th>
               {visibleCols.map(col => (
-                <th key={col} className="text-left px-2 py-1.5 text-slate-400 font-medium whitespace-nowrap" style={colStyle(col)}>
+                <th
+                  key={col}
+                  draggable
+                  onDragStart={() => { dragColRef.current = col; setDraggingCol(col) }}
+                  onDragOver={e => { e.preventDefault(); if (dragOverCol !== col) setDragOverCol(col) }}
+                  onDrop={() => {
+                    const from = dragColRef.current
+                    if (from && from !== col) {
+                      updatePrefs(p => {
+                        const vis = [...p.visible]
+                        const fromIdx = vis.indexOf(from)
+                        const toIdx = vis.indexOf(col)
+                        if (fromIdx < 0 || toIdx < 0) return p
+                        vis.splice(fromIdx, 1)
+                        vis.splice(toIdx, 0, from)
+                        return { ...p, visible: vis }
+                      })
+                    }
+                    setDraggingCol(null); setDragOverCol(null); dragColRef.current = null
+                  }}
+                  onDragEnd={() => { setDraggingCol(null); setDragOverCol(null); dragColRef.current = null }}
+                  className={`text-left px-2 py-1.5 text-slate-400 font-medium whitespace-nowrap select-none cursor-grab${draggingCol === col ? ' opacity-40' : ''}${dragOverCol === col && draggingCol !== col ? ' border-l-2 border-teal-400' : ''}`}
+                  style={{ ...colStyle(col), position: 'relative' }}
+                >
                   {col.replace(/_/g, ' ')}
+                  <div
+                    onMouseDown={e => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const th = e.currentTarget.parentElement as HTMLElement
+                      resizingRef.current = { col, startX: e.clientX, startWidth: th.getBoundingClientRect().width }
+                    }}
+                    style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 5, cursor: 'col-resize' }}
+                  />
                 </th>
               ))}
             </tr>
@@ -285,7 +327,7 @@ export default function SectionTable({
               const selectable = !!k
               const selected = selectable && selectedProjectionIds.has(k)
               return (
-                <tr key={k || `row-${start + i}`} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
+                <tr key={start + i} className={selected ? 'bg-teal-900/20' : 'hover:bg-slate-800/40'}>
                   <td className="px-2 py-1.5 w-8 align-top">
                     {selectable && (
                       <input type="checkbox" checked={selected} onChange={() => onToggleProjection(k)} className="accent-teal-500" />
