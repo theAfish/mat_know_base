@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from google.adk.agents import Agent
 
-from mkb.agents._utils import create_llm, run_async_sync
+from mkb.agents._utils import JobCancelled, create_llm, run_async_sync
 from mkb.agents.prompts.kb_extraction import EXTRACTION_PROMPT
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools import ALL_TOOLS
@@ -65,6 +65,10 @@ async def _run_extraction_async(
     await runner.create_session(session_id)
     _emit("Preparing extraction run", stage="setup")
 
+    # Track whether we actually set the frame to IN_PROGRESS so we can
+    # revert it on cancellation.
+    frame_was_in_progress = False
+
     # Mark frame as in-progress
     with SyncSessionLocal() as db:
         from mkb.db.models import ResearchProject
@@ -84,68 +88,82 @@ async def _run_extraction_async(
         else:
             frame.status = FrameStatus.IN_PROGRESS
         db.commit()
-    _emit(f"Frame marked in progress for {project_label}", stage="setup")
+        frame_was_in_progress = True
 
-    # Pass 1: Initial extraction
-    message = (
-        f"Extract knowledge from project {project_id} "
-        f"(label: {project_label}). "
-        f"Follow the seed-then-incremental workflow: "
-        f"list files, inspect headings and total length, seed the frame "
-        f"once with save_knowledge_frame, then walk the paper section by "
-        f"section and append items via update_knowledge_frame. Make sure "
-        f"every section of every Markdown file is covered (page through "
-        f"truncated reads until no [TRUNCATED] banner remains)."
-    )
+    try:
+        _emit(f"Frame marked in progress for {project_label}", stage="setup")
 
-    result = await runner.run(
-        session_id=session_id,
-        message=message,
-        verbose=verbose,
-        progress_callback=progress_callback,
-    )
+        # Pass 1: Initial extraction
+        message = (
+            f"Extract knowledge from project {project_id} "
+            f"(label: {project_label}). "
+            f"Follow the seed-then-incremental workflow: "
+            f"list files, inspect headings and total length, seed the frame "
+            f"once with save_knowledge_frame, then walk the paper section by "
+            f"section and append items via update_knowledge_frame. Make sure "
+            f"every section of every Markdown file is covered (page through "
+            f"truncated reads until no [TRUNCATED] banner remains)."
+        )
 
-    if not result.success:
-        _emit("Extraction failed", stage="failed", status="FAILED")
-        _mark_frame_failed(project_id, result.error)
+        result = await runner.run(
+            session_id=session_id,
+            message=message,
+            verbose=verbose,
+            progress_callback=progress_callback,
+        )
+
+        if not result.success:
+            _emit("Extraction failed", stage="failed", status="FAILED")
+            _mark_frame_failed(project_id, result.error)
+            return {
+                "status": "error",
+                "project_id": str(project_id),
+                "message": result.error,
+            }
+
+        # Save initial extraction pass
+        _emit("Initial extraction pass completed", stage="initial_pass")
+        _save_extraction_pass(project_id, pass_number=1, pass_type="initial")
+
+        # Passes 2..N: Review passes
+        if max_passes > 1:
+            from mkb.agents.review import run_review_pass
+
+            for pass_num in range(2, max_passes + 1):
+                logger.info("Running review pass %d/%d for project %s", pass_num, max_passes, project_id)
+                _emit(f"Running review pass {pass_num}/{max_passes}", stage="review_pass")
+                review_result = await run_review_pass(project_id, model=model, verbose=verbose)
+
+                if review_result.get("no_changes"):
+                    logger.info("Review pass %d: no significant changes needed, stopping early", pass_num)
+                    _emit("Review pass found no further changes", stage="review_pass")
+                    break
+
+        # Check result
+        with SyncSessionLocal() as db:
+            frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
+            frame_status = frame.status.value if frame else "unknown"
+            content_keys = list((frame.content or {}).keys()) if frame else []
+
         return {
-            "status": "error",
+            "status": "completed" if frame_status == "COMPLETED" else frame_status,
             "project_id": str(project_id),
-            "message": result.error,
+            "frame_status": frame_status,
+            "content_sections": content_keys,
+            "agent_summary": result.final_text,
+            "total_events": len(result.events_collected),
         }
 
-    # Save initial extraction pass
-    _emit("Initial extraction pass completed", stage="initial_pass")
-    _save_extraction_pass(project_id, pass_number=1, pass_type="initial")
-
-    # Passes 2..N: Review passes
-    if max_passes > 1:
-        from mkb.agents.review import run_review_pass
-
-        for pass_num in range(2, max_passes + 1):
-            logger.info("Running review pass %d/%d for project %s", pass_num, max_passes, project_id)
-            _emit(f"Running review pass {pass_num}/{max_passes}", stage="review_pass")
-            review_result = await run_review_pass(project_id, model=model, verbose=verbose)
-
-            if review_result.get("no_changes"):
-                logger.info("Review pass %d: no significant changes needed, stopping early", pass_num)
-                _emit("Review pass found no further changes", stage="review_pass")
-                break
-
-    # Check result
-    with SyncSessionLocal() as db:
-        frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
-        frame_status = frame.status.value if frame else "unknown"
-        content_keys = list((frame.content or {}).keys()) if frame else []
-
-    return {
-        "status": "completed" if frame_status == "COMPLETED" else frame_status,
-        "project_id": str(project_id),
-        "frame_status": frame_status,
-        "content_sections": content_keys,
-        "agent_summary": result.final_text,
-        "total_events": len(result.events_collected),
-    }
+    except JobCancelled:
+        # Revert the frame to PENDING so it can be re-extracted cleanly.
+        if frame_was_in_progress:
+            with SyncSessionLocal() as db:
+                frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
+                if frame and frame.status == FrameStatus.IN_PROGRESS:
+                    frame.status = FrameStatus.PENDING
+                    db.commit()
+            logger.info("Extraction cancelled for project %s — frame reverted to PENDING", project_id)
+        raise
 
 
 def _mark_frame_failed(project_id: uuid.UUID, error: str | None):

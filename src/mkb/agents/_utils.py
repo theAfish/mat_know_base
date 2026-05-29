@@ -14,6 +14,10 @@ from mkb.config import settings
 from mkb.db.engine import init_db
 
 
+class JobCancelled(BaseException):
+    """Raised inside a worker thread / coroutine to signal job cancellation."""
+
+
 def ensure_llm_env() -> None:
     """Set OpenAI environment variables from settings if configured."""
     if settings.openai_api_key:

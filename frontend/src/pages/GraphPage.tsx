@@ -2,8 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Network, type Options } from 'vis-network'
 import { DataSet } from 'vis-data'
 import { getKnowledgeGraph, getReviewCounts, reviewGraph, clearGraph } from '../api/graph'
-import { getJob } from '../api/jobs'
-import { nextJobPollDelayMs, shouldStopJobPolling } from '../api/jobPolling'
+import { startJobPolling } from '../api/jobPolling'
 import JobProgress from '../components/JobProgress'
 import type { GraphConcept, GraphRelation, GraphPayload, Job } from '../types'
 
@@ -665,35 +664,15 @@ function ReviewPanel({ onReviewComplete }: ReviewPanelProps) {
       setIsRunning(true)
       setExpanded(true)
       const { job_id } = await reviewGraph({ mode, seed_count: seedCount })
-      pollJob(job_id)
+      startJobPolling({
+        jobId: job_id,
+        onUpdate: setReviewJob,
+        onComplete: () => { setIsRunning(false); onReviewComplete() },
+        onFailed: () => setIsRunning(false),
+      })
     } catch {
       setIsRunning(false)
     }
-  }
-
-  const pollJob = (jobId: string) => {
-    let consecutiveErrors = 0
-    const poll = async () => {
-      try {
-        const job = await getJob(jobId)
-        consecutiveErrors = 0
-        setReviewJob(job)
-        if (job.status === 'RUNNING' || job.status === 'PENDING') {
-          setTimeout(poll, 1000)
-        } else {
-          setIsRunning(false)
-          if (job.status === 'COMPLETED') onReviewComplete()
-        }
-      } catch (error) {
-        consecutiveErrors += 1
-        if (shouldStopJobPolling(error, consecutiveErrors)) {
-          setIsRunning(false)
-          return
-        }
-        setTimeout(poll, nextJobPollDelayMs(consecutiveErrors))
-      }
-    }
-    setTimeout(poll, 500)
   }
 
   return (

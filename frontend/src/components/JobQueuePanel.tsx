@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
-import { listJobs, cancelJob } from '../api/jobs'
-import { nextJobPollDelayMs } from '../api/jobPolling'
+import { useState, useEffect } from 'react'
+import { cancelJob, cancelAllJobs } from '../api/jobs'
+import { JOB_STARTED_EVENT } from '../api/client'
+import { useActiveJobs, useRecentJobs, useJobsStore } from '../store/jobsStore'
 import type { Job } from '../types'
 
 const STATUS_DOT: Record<string, string> = {
@@ -58,86 +59,120 @@ function JobRow({ job, onCancel }: { job: Job; onCancel?: (id: string) => void }
 }
 
 export default function JobQueuePanel() {
-  const [jobs, setJobs] = useState<Job[]>([])
   const [open, setOpen] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const errorsRef = useRef(0)
+  const [confirmCancelAll, setConfirmCancelAll] = useState(false)
+  const [cancellingAll, setCancellingAll] = useState(false)
 
-  const activeJobs = jobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
-  const recentJobs = jobs.filter(j => j.status === 'COMPLETED' || j.status === 'FAILED' || j.status === 'CANCELLED').slice(0, 5)
-
-  const fetchJobs = async () => {
-    try {
-      const data = await listJobs({ limit: 200 })
-      errorsRef.current = 0
-      setJobs(data)
-      return data
-    } catch {
-      errorsRef.current += 1
-      return jobs
-    }
-  }
+  const activeJobs = useActiveJobs()
+  const recentJobs = useRecentJobs(5)
 
   const handleCancel = async (jobId: string) => {
     try {
       await cancelJob(jobId)
-      // Optimistically update local state while the next poll confirms
-      setJobs(prev => prev.map(j => j.job_id === jobId ? { ...j, status: 'CANCELLED' as const, current_message: 'Cancelling…' } : j))
-    } catch { /* ignore — next poll will reflect the real state */ }
+      // Optimistically update local state while the next poll confirms.
+      useJobsStore.getState().patchJob(jobId, { status: 'CANCELLED', current_message: 'Cancelling…' })
+    } catch { /* next poll reconciles */ }
   }
 
-  useEffect(() => {
-    let cancelled = false
-
-    const schedule = async () => {
-      if (cancelled) return
-      const data = await fetchJobs()
-      if (cancelled) return
-      if (errorsRef.current > 0) {
-        timerRef.current = setTimeout(schedule, nextJobPollDelayMs(errorsRef.current, 2000, 15000))
-        return
+  const handleCancelAll = async () => {
+    setCancellingAll(true)
+    try {
+      await cancelAllJobs()
+      // Optimistic local patch — global poller will reconcile shortly.
+      const { jobs, patchJob } = useJobsStore.getState()
+      for (const job of Object.values(jobs)) {
+        if (job.status === 'RUNNING' || job.status === 'QUEUED' || job.status === 'PENDING') {
+          patchJob(job.job_id, { status: 'CANCELLED', current_message: 'Cancelling…' })
+        }
       }
-      const hasActive = data.some(j => j.status === 'RUNNING' || j.status === 'QUEUED' || j.status === 'PENDING')
-      timerRef.current = setTimeout(schedule, hasActive ? 1500 : 8000)
+    } catch { /* next poll reconciles */ }
+    finally {
+      setCancellingAll(false)
+      setConfirmCancelAll(false)
     }
-
-    schedule()
-
-    return () => {
-      cancelled = true
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }
 
   // Auto-open when a job becomes active
   useEffect(() => {
     if (activeJobs.length > 0) setOpen(true)
+    else setConfirmCancelAll(false)
   }, [activeJobs.length])
+
+  // Also auto-open the moment a job is dispatched, even before the
+  // global poller has observed it.
+  useEffect(() => {
+    const onJobStarted = () => setOpen(true)
+    window.addEventListener(JOB_STARTED_EVENT, onJobStarted)
+    return () => window.removeEventListener(JOB_STARTED_EVENT, onJobStarted)
+  }, [])
 
   const totalActive = activeJobs.length
 
   return (
     <div className="border-t border-slate-700 flex-shrink-0">
       {/* Header toggle */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 transition-colors"
-      >
-        <span className="text-sm leading-none">🔧</span>
-        <span className="flex-1 text-left font-medium">Jobs</span>
+      <div className="w-full flex items-center gap-2 px-3 py-2.5 text-xs text-slate-400 hover:bg-slate-700/50 transition-colors">
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center gap-2 flex-1 min-w-0 text-left hover:text-slate-200"
+        >
+          <span className="text-sm leading-none">🔧</span>
+          <span className="flex-1 text-left font-medium">Jobs</span>
+          {totalActive > 0 && (
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse" />
+              <span className="text-yellow-300 font-semibold">{totalActive}</span>
+            </span>
+          )}
+        </button>
         {totalActive > 0 && (
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse" />
-            <span className="text-yellow-300 font-semibold">{totalActive}</span>
-          </span>
+          <button
+            onClick={() => { setOpen(true); setConfirmCancelAll(true) }}
+            disabled={cancellingAll}
+            className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800 text-red-300 hover:text-red-200 transition-colors disabled:opacity-50"
+            title={`Cancel all ${totalActive} active job(s)`}
+          >
+            Cancel all
+          </button>
         )}
-        <span className="text-slate-500">{open ? '▲' : '▼'}</span>
-      </button>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex-shrink-0 text-slate-500 hover:text-slate-300"
+          aria-label={open ? 'Collapse jobs' : 'Expand jobs'}
+        >
+          {open ? '▲' : '▼'}
+        </button>
+      </div>
 
       {/* Expandable job list */}
       {open && (
         <div className="max-h-72 overflow-y-auto bg-slate-800/50">
+          {confirmCancelAll && (
+            <div className="px-3 py-2 border-b border-slate-700/60 bg-red-950/40">
+              <p className="text-xs text-red-200 font-medium">
+                Cancel all {totalActive} active job{totalActive === 1 ? '' : 's'}?
+              </p>
+              <p className="mt-0.5 text-[11px] text-slate-400">
+                Running jobs will be interrupted; queued jobs will be discarded. This cannot be undone.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  onClick={handleCancelAll}
+                  disabled={cancellingAll || totalActive === 0}
+                  className="text-[11px] px-2 py-1 rounded bg-red-700 hover:bg-red-600 text-white font-medium disabled:opacity-50"
+                >
+                  {cancellingAll ? 'Cancelling…' : `Yes, cancel ${totalActive}`}
+                </button>
+                <button
+                  onClick={() => setConfirmCancelAll(false)}
+                  disabled={cancellingAll}
+                  className="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50"
+                >
+                  Keep running
+                </button>
+              </div>
+            </div>
+          )}
           {activeJobs.length === 0 && recentJobs.length === 0 && (
             <p className="px-3 py-3 text-xs text-slate-500 italic">No jobs.</p>
           )}

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from google.adk.agents import Agent
 
-from mkb.agents._utils import SpaceConfig, create_llm, sync_agent_run
+from mkb.agents._utils import JobCancelled, SpaceConfig, create_llm, sync_agent_run
 from mkb.agents.prompts.projection import build_projection_prompt
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.projection import PROJECTION_TOOLS, write_projection_trace
@@ -140,7 +140,6 @@ async def _run_projection_async(
 
         projection_id = projection.projection_id
         space_name = space.name
-        _emit(f"Projection started for {space_name} (source={source_kind})", stage="setup")
         write_projection_trace(
             event="projection_run_started",
             projection_id=str(projection_id),
@@ -203,12 +202,23 @@ async def _run_projection_async(
             f"vision tools with project_id=\"{resolved_project_id}\"."
         )
 
-    result = await runner.run(
-        session_id=session_id,
-        message=message,
-        verbose=verbose,
-        progress_callback=progress_callback,
-    )
+    try:
+        _emit(f"Projection started for {space_name} (source={source_kind})", stage="setup")
+        result = await runner.run(
+            session_id=session_id,
+            message=message,
+            verbose=verbose,
+            progress_callback=progress_callback,
+        )
+    except JobCancelled:
+        # Revert the projection to PENDING so it can be re-run cleanly.
+        with SyncSessionLocal() as db:
+            proj = db.query(Projection).filter_by(projection_id=projection_id).first()
+            if proj and proj.status == ProjectionStatus.IN_PROGRESS:
+                proj.status = ProjectionStatus.PENDING
+                db.commit()
+        logger.info("Projection %s cancelled — reverted to PENDING", projection_id)
+        raise
 
     if not result.success:
         with SyncSessionLocal() as db:

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { useUiStore } from '../store/uiStore'
 import type { Page } from '../types'
 import JobQueuePanel from './JobQueuePanel'
+import { useGlobalJobsPoller } from '../hooks/useGlobalJobsPoller'
 
 const NAV_ITEMS: { page: Page; label: string; icon: string }[] = [
   { page: 'assistant',    label: 'Assistant',          icon: '🤖' },
@@ -18,6 +19,7 @@ interface Props { children: ReactNode }
 
 export default function Layout({ children }: Props) {
   const { page, setPage } = useUiStore()
+  useGlobalJobsPoller()
 
   return (
     <div className="flex h-screen bg-slate-900 text-slate-200 overflow-hidden">

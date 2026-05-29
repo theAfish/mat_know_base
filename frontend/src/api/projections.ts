@@ -25,3 +25,25 @@ export const reviewProjections = (params: {
 
 export const deleteProjection = (id: string) =>
   client.delete(`/projections/${id}`)
+
+export const exportProjections = async (
+  projectionIds: string[],
+  format: 'yaml' | 'json',
+): Promise<void> => {
+  const resp = await client.post(
+    '/projections/export',
+    { projection_ids: projectionIds, format },
+    { responseType: 'blob' },
+  )
+  const contentDisposition: string = resp.headers['content-disposition'] ?? ''
+  const match = contentDisposition.match(/filename="?([^";\n]+)"?/)
+  const filename = match ? match[1] : `selected_projections.${format === 'json' ? 'json' : 'zip'}`
+  const url = URL.createObjectURL(resp.data as Blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
