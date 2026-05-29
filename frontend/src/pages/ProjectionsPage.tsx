@@ -25,7 +25,6 @@ export default function ProjectionsPage() {
   const [allProjects, setAllProjects] = useState<Project[]>([])
   const [groups, setGroups] = useState<ProjectGroup[]>([])
   const [paperLookup, setPaperLookup] = useState<Record<string, string>>({})
-  const [sectionRows, setSectionRows] = useState<Record<string, Array<Record<string, string>>>>({})
   const [loading, setLoading] = useState(false)
   const [newestOnly, setNewestOnly] = useState(true)
   const [showHistory, setShowHistory] = useState(false)
@@ -97,7 +96,6 @@ export default function ProjectionsPage() {
       setPaperLookup(lookup)
       setAllProjects(projects)
       setProjections(projs)
-      setSectionRows(buildSectionRows(projs, lookup))
       getSpace(selectedSpaceId).then(setSpaceDetail).catch(() => {})
     } finally {
       setLoading(false)
@@ -105,6 +103,8 @@ export default function ProjectionsPage() {
   }, [selectedSpaceId, newestOnly, showHistory])
 
   useEffect(() => { loadProjections() }, [loadProjections])
+
+  const sectionRows = useMemo(() => buildSectionRows(projections, paperLookup), [projections, paperLookup])
 
   const [reviewMode, setReviewMode] = useState<'per_project' | 'session'>('per_project')
 
