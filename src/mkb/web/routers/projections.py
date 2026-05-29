@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 from mkb import api
 from mkb.web._helpers import _parse_uuid
@@ -12,6 +13,11 @@ from mkb.web._models import ProjectionReviewRequest
 from mkb.web._state import jobs
 
 router = APIRouter()
+
+
+class ProjectionBatchExportRequest(BaseModel):
+    projection_ids: list[str]
+    format: str = "yaml"
 
 
 @router.get("/api/projections")
@@ -92,6 +98,48 @@ def export_projection_endpoint(projection_id: str, format: str = "yaml"):
             headers={
                 "Content-Disposition": f'attachment; filename="projection_{projection_id}.zip"',
             },
+        )
+
+
+@router.post("/api/projections/export")
+def export_projections_batch(body: ProjectionBatchExportRequest):
+    """Export a batch of projections by ID as a ZIP archive (or single file if only one)."""
+    fmt = (body.format or "yaml").strip().lower()
+    if fmt not in {"yaml", "json"}:
+        raise HTTPException(status_code=400, detail="format must be yaml or json")
+    if not body.projection_ids:
+        raise HTTPException(status_code=400, detail="No projection IDs provided")
+    for pid in body.projection_ids:
+        _parse_uuid(pid, "projection_id")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "export"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for pid in body.projection_ids:
+            api.export_projection(pid, out_dir, format=fmt, overwrite=True)
+
+        files = [p for p in out_dir.rglob("*") if p.is_file()]
+        if not files:
+            raise HTTPException(status_code=404, detail="Nothing to export")
+
+        if len(files) == 1:
+            data = files[0].read_bytes()
+            media = "application/json" if fmt == "json" else "application/x-yaml"
+            return Response(
+                content=data,
+                media_type=media,
+                headers={"Content-Disposition": f'attachment; filename="{files[0].name}"'},
+            )
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in files:
+                zf.write(p, p.relative_to(out_dir))
+        buf.seek(0)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="selected_projections.zip"'},
         )
 
 
