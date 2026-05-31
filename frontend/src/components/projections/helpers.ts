@@ -7,10 +7,14 @@ export const PAGE_SIZE = 50
 
 export function paperName(project: Project | undefined): string {
   if (!project) return ''
+  if (project.label) return project.label
   const src = project.source_path ?? ''
-  if (!src) return project.label ?? project.project_id.slice(0, 12)
-  const parts = src.replace(/[/\\]+$/, '').split(/[/\\]/)
-  return parts[parts.length - 1] || project.label || project.project_id.slice(0, 12)
+  if (src) {
+    const parts = src.replace(/[/\\]+$/, '').split(/[/\\]/)
+    const folder = parts[parts.length - 1]
+    if (folder) return folder
+  }
+  return project.project_id.slice(0, 12)
 }
 
 export function stringify(val: unknown): string {
