@@ -91,21 +91,28 @@ async def _run_review_async(
         if not frame:
             return {"status": "error", "message": f"No frame found for project {project_id}"}
 
-        # Count non-deleted completed projections
-        projection_count = (
+        # Count non-deleted completed projections and detect stale schema versions
+        projections_for_count = (
             db.query(Projection)
             .filter_by(space_id=space_id, frame_id=frame.frame_id)
             .filter(Projection.status == ProjectionStatus.COMPLETED)
             .filter(Projection.deleted_at.is_(None))
             .filter(Projection.superseded_by_id.is_(None))
-            .count()
+            .all()
         )
+        projection_count = len(projections_for_count)
         if projection_count == 0:
             return {
                 "status": "error",
                 "message": f"No completed projections for space {space_id} and project {project_id}",
             }
 
+        current_space_version = space.version
+        stale_versions = [
+            p.space_version
+            for p in projections_for_count
+            if p.space_version < current_space_version
+        ]
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
         space_review_prompt = getattr(space, "review_prompt", None)
@@ -120,10 +127,26 @@ async def _run_review_async(
     session_id = f"review_proj_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"
     await runner.create_session(session_id)
 
+    schema_change_hint = ""
+    if stale_versions:
+        schema_change_hint = (
+            f" IMPORTANT: The space template has been updated — "
+            f"the current schema version is v{current_space_version}, but "
+            f"{len(stale_versions)} of the projection run(s) were extracted "
+            f"with an older version (v{min(stale_versions)}). "
+            f"The extraction_schema returned by get_all_projections_for_review "
+            f"is the CURRENT (authoritative) schema. When reviewing, "
+            f"revise the projection data to conform to the new schema: "
+            f"populate any new or renamed fields that are present in the current "
+            f"schema but missing from old projections, and remove or remap fields "
+            f"that no longer appear in the current schema."
+        )
+
     message = (
         f"Review all projections for space {space_id} ('{space_name}') "
         f"and project {project_id}. "
-        f"There are {projection_count} completed projection run(s) to review. "
+        f"There are {projection_count} completed projection run(s) to review."
+        f"{schema_change_hint} "
         f"Start by loading all projections and the knowledge frame, "
         f"then systematically verify the data, pick the best projection "
         f"as the winner, merge corrections, and save it."

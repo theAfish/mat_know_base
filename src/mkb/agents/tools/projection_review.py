@@ -68,12 +68,14 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
                 "error": f"No projections found for space {space_id} and project {project_id}.",
             }
 
+        current_space_version = space.version
         projection_list = []
         for proj in projections:
             normalized_data, validation = normalize_projection_data(
                 proj.data or {},
                 space.extraction_schema,
             )
+            schema_outdated = proj.space_version < current_space_version
             projection_list.append({
                 "projection_id": str(proj.projection_id),
                 "status": proj.status.value,
@@ -81,16 +83,20 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
                 "validation_result": validation,
                 "agent_notes": proj.agent_notes,
                 "space_version": proj.space_version,
+                "schema_outdated": schema_outdated,
                 "times_reviewed": proj.times_reviewed,
                 "extracted_at": proj.extracted_at.isoformat() if proj.extracted_at else None,
                 "created_at": proj.created_at.isoformat() if proj.created_at else None,
             })
 
+        any_schema_outdated = any(p["schema_outdated"] for p in projection_list)
         return {
             "space_id": str(sid),
             "space_name": space.name,
             "project_id": str(pid),
             "frame_id": str(frame.frame_id),
+            "current_space_version": current_space_version,
+            "any_schema_outdated": any_schema_outdated,
             "extraction_schema": space.extraction_schema,
             "total_projections": len(projection_list),
             "projections": projection_list,
