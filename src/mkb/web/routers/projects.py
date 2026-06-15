@@ -1,6 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException, Response
 
 from mkb import api
+from mkb.db.engine import SyncSessionLocal
+from mkb.db.models import Asset, ProcessedAsset, ProjectAsset
+from mkb.storage.s3 import download_bytes
 from mkb.web._helpers import _parse_uuid
 from mkb.web._models import (
     ProjectGroupAssign,
@@ -12,6 +18,26 @@ from mkb.web._models import (
 from mkb.web._state import jobs
 
 router = APIRouter()
+
+
+def _inline_headers(filename: str) -> dict[str, str]:
+    safe_name = filename.replace('"', "'").replace("\r", "").replace("\n", "")
+    ascii_name = safe_name.encode("ascii", "ignore").decode("ascii") or "document"
+    return {
+        "Content-Disposition": (
+            f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(safe_name)}'
+        ),
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+def _asset_media_type(filename: str, mime_type: str | None = None) -> str | None:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf" or mime_type == "application/pdf":
+        return "application/pdf"
+    if suffix in {".md", ".markdown"} or mime_type in {"text/markdown", "text/x-markdown"}:
+        return "text/markdown"
+    return None
 
 
 @router.get("/api/projects")
@@ -56,6 +82,60 @@ def list_project_assets(project_id: str):
 def list_project_processed_assets(project_id: str):
     _parse_uuid(project_id, "project_id")
     return api.list_processed_assets(project_id=project_id)
+
+
+@router.get("/api/projects/{project_id}/assets/{asset_id}/content")
+def get_project_asset_content(project_id: str, asset_id: str):
+    pid = _parse_uuid(project_id, "project_id")
+    aid = _parse_uuid(asset_id, "asset_id")
+    with SyncSessionLocal() as session:
+        asset = (
+            session.query(Asset)
+            .join(ProjectAsset, ProjectAsset.asset_id == Asset.asset_id)
+            .filter(ProjectAsset.project_id == pid, Asset.asset_id == aid)
+            .first()
+        )
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found in this project")
+        media_type = _asset_media_type(asset.filename, asset.mime_type)
+        if not media_type:
+            raise HTTPException(status_code=415, detail="Preview is only available for PDF and Markdown files")
+        data = download_bytes(asset.s3_bucket, asset.s3_key)
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers=_inline_headers(asset.filename),
+        )
+
+
+@router.get("/api/projects/{project_id}/processed-assets/{processed_asset_id}/content")
+def get_project_processed_asset_content(project_id: str, processed_asset_id: str):
+    pid = _parse_uuid(project_id, "project_id")
+    paid = _parse_uuid(processed_asset_id, "processed_asset_id")
+    with SyncSessionLocal() as session:
+        row = (
+            session.query(ProcessedAsset)
+            .join(ProjectAsset, ProjectAsset.asset_id == ProcessedAsset.asset_id)
+            .filter(
+                ProjectAsset.project_id == pid,
+                ProcessedAsset.processed_asset_id == paid,
+            )
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Processed asset not found in this project")
+
+        metadata = row.conversion_metadata or {}
+        filename = metadata.get("primary_relpath") or f"processed.{row.output_format}"
+        media_type = _asset_media_type(filename)
+        if not media_type:
+            raise HTTPException(status_code=415, detail="Preview is only available for PDF and Markdown files")
+        data = download_bytes(row.s3_bucket, row.s3_key)
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers=_inline_headers(Path(filename).name),
+        )
 
 
 @router.post("/api/projects/{project_id}/process")

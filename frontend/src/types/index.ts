@@ -46,6 +46,7 @@ export interface ProcessedAsset {
   processed_asset_id: string
   asset_id: string
   filename: string | null
+  primary_relpath?: string | null
   processing_type: string
   output_format: string
   artifact_count: number
