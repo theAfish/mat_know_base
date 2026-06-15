@@ -151,6 +151,7 @@ def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
     total_ingested = 0
     total_dupes = 0
     created: list[str] = []
+    reused = 0
     upload_id = payload[0].get("upload_id", "")
     temp_root = session_dir(upload_id)
 
@@ -185,19 +186,24 @@ def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
             result = api.ingest(upload_dir)
             total_ingested += result.get("ingested", 0)
             total_dupes += result.get("duplicates", 0)
-            created.append(upload_dir.name)
+            if result.get("project_reused"):
+                reused += 1
+                shutil.rmtree(upload_dir, ignore_errors=True)
+            else:
+                created.append(upload_dir.name)
     finally:
         if temp_root.is_dir():
             shutil.rmtree(temp_root, ignore_errors=True)
 
     message = (
-        f"Created {len(created)} project(s) · "
+        f"Created {len(created)} project(s), reused {reused} existing project(s) · "
         f"{total_ingested} file(s) ingested, {total_dupes} duplicate(s) skipped."
     )
     return {
         "status": "completed",
         "message": message,
         "created_projects": created,
+        "reused_projects": reused,
         "ingested": total_ingested,
         "duplicates": total_dupes,
     }
