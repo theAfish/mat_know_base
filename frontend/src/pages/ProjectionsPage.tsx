@@ -12,6 +12,7 @@ import {
   GLOBAL_KG_SPACE,
   buildSectionRows,
   paperName,
+  slugifyExportName,
 } from '../components/projections/helpers'
 import StatusBadge from '../components/StatusBadge'
 import type { Job, Project, ProjectGroup, Projection, Space } from '../types'
@@ -201,6 +202,10 @@ export default function ProjectionsPage() {
   }, [])
 
   const userSpaces = spaces
+  const selectedSpaceName = useMemo(
+    () => userSpaces.find(space => space.space_id === selectedSpaceId)?.name ?? selectedSpaceId ?? 'space',
+    [selectedSpaceId, userSpaces],
+  )
 
   return (
     <div className="p-6 max-w-6xl space-y-5">
@@ -409,6 +414,7 @@ export default function ProjectionsPage() {
                                 name={section}
                                 rows={sectionRowData}
                                 schemaOrder={schemaOrder}
+                                exportBasename={`${slugifyExportName(selectedSpaceName)}__${slugifyExportName(label)}__${slugifyExportName(section)}`}
                                 onRequestDeleteProjection={batchDeleteIds}
                                 onRequestReview={ids => startReview(ids)}
                                 reviewDisabled={isReviewing || !selectedSpaceId}
@@ -436,6 +442,7 @@ export default function ProjectionsPage() {
                       name={section}
                       rows={rows}
                       schemaOrder={schemaOrder}
+                      exportBasename={`${slugifyExportName(selectedSpaceName)}__${slugifyExportName(section)}`}
                       onRequestDeleteProjection={batchDeleteIds}
                       onRequestReview={ids => startReview(ids)}
                       reviewDisabled={isReviewing || !selectedSpaceId}

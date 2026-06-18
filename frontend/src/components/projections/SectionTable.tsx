@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, UIEvent } from 'react'
 import {
   flexRender,
@@ -14,8 +14,10 @@ import {
   type ColPrefs,
   PAGE_SIZE,
   defaultColumns,
+  exportTableRows,
   loadColPrefs,
   saveColPrefs,
+  slugifyExportName,
 } from './helpers'
 
 type ProjectionTableRow = Record<string, string>
@@ -81,6 +83,7 @@ export default function SectionTable({
   name,
   rows,
   schemaOrder,
+  exportBasename,
   onRequestDeleteProjection,
   onRequestReview,
   selectedProjectionIds,
@@ -91,6 +94,7 @@ export default function SectionTable({
   name: string
   rows: ProjectionTableRow[]
   schemaOrder?: string[]
+  exportBasename?: string
   onRequestDeleteProjection?: (projectionIds: string[]) => void
   onRequestReview?: (projectionIds: string[]) => void
   selectedProjectionIds: Set<string>
@@ -100,6 +104,7 @@ export default function SectionTable({
 }) {
   const [page, setPage] = useState(1)
   const [sorting, setSorting] = useState<SortingState>([])
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'excel' | null>(null)
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
   const start = (page - 1) * PAGE_SIZE
 
@@ -369,6 +374,27 @@ export default function SectionTable({
     known: allCols,
   }))
 
+  const handleExport = useCallback(async (format: 'csv' | 'excel') => {
+    if (visibleCols.length === 0) {
+      alert('Show at least one column before exporting this table.')
+      return
+    }
+    setExportingFormat(format)
+    try {
+      const sortedRowsForExport = table.getSortedRowModel().rows.map(row => row.original)
+      exportTableRows(
+        sortedRowsForExport.map(row => Object.fromEntries(visibleCols.map(col => [col, row[col] ?? '']))),
+        visibleCols,
+        exportBasename ?? slugifyExportName(name),
+        format,
+      )
+    } catch (error) {
+      alert(`Export failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setExportingFormat(null)
+    }
+  }, [exportBasename, name, table, visibleCols])
+
   const colStyle = (col: string): CSSProperties => {
     const column = table.getColumn(col)
     if (!column) return { maxWidth: '20rem' }
@@ -388,6 +414,22 @@ export default function SectionTable({
           title="Show/hide, reorder, and resize columns"
         >
           ⚙ Columns ({visibleCols.length}/{prefs.known.length})
+        </button>
+        <button
+          onClick={() => handleExport('csv')}
+          disabled={exportingFormat !== null || visibleCols.length === 0}
+          className="text-[11px] px-2 py-0.5 rounded bg-amber-900/20 hover:bg-amber-800/30 disabled:opacity-40 text-amber-300 border border-amber-700/40"
+          title="Export this table as CSV using only the currently visible columns"
+        >
+          {exportingFormat === 'csv' ? 'Exporting…' : '⬇ CSV'}
+        </button>
+        <button
+          onClick={() => handleExport('excel')}
+          disabled={exportingFormat !== null || visibleCols.length === 0}
+          className="text-[11px] px-2 py-0.5 rounded bg-amber-900/20 hover:bg-amber-800/30 disabled:opacity-40 text-amber-300 border border-amber-700/40"
+          title="Export this table as an Excel-compatible file using only the currently visible columns"
+        >
+          {exportingFormat === 'excel' ? 'Exporting…' : '⬇ Excel'}
         </button>
         {sectionSelectedProjectionIds.length > 0 && (
           <>

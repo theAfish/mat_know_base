@@ -127,3 +127,82 @@ export function loadColPrefs(name: string): ColPrefs | null {
 export function saveColPrefs(name: string, prefs: ColPrefs) {
   try { localStorage.setItem(COL_PREFS_KEY(name), JSON.stringify(prefs)) } catch { /* ignore quota */ }
 }
+
+function escapeCsvCell(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
+  return value
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export function slugifyExportName(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return normalized || 'projection_table'
+}
+
+export function exportTableRows(
+  rows: Array<Record<string, string>>,
+  columns: string[],
+  baseName: string,
+  format: 'csv' | 'excel',
+) {
+  const safeBaseName = slugifyExportName(baseName)
+  if (format === 'csv') {
+    const csv = [
+      columns.map(escapeCsvCell).join(','),
+      ...rows.map(row => columns.map(col => escapeCsvCell(row[col] ?? '')).join(',')),
+    ].join('\r\n')
+    triggerDownload(
+      new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' }),
+      `${safeBaseName}.csv`,
+    )
+    return
+  }
+
+  const sheetName = escapeXml(baseName.slice(0, 31) || 'Sheet1')
+  const headerCells = columns
+    .map(col => `<Cell><Data ss:Type="String">${escapeXml(col)}</Data></Cell>`)
+    .join('')
+  const bodyRows = rows
+    .map(row => (
+      `<Row>${columns.map(col => (
+        `<Cell><Data ss:Type="String">${escapeXml(row[col] ?? '')}</Data></Cell>`
+      )).join('')}</Row>`
+    ))
+    .join('')
+  const workbook = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Worksheet ss:Name="${sheetName}">
+  <Table>
+   <Row>${headerCells}</Row>
+   ${bodyRows}
+  </Table>
+ </Worksheet>
+</Workbook>`
+  triggerDownload(
+    new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8;' }),
+    `${safeBaseName}.xls`,
+  )
+}
