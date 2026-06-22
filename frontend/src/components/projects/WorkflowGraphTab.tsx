@@ -1,63 +1,29 @@
-import { useEffect, useRef, useState } from 'react'
-import { DataSet } from 'vis-data'
-import { Network } from 'vis-network'
+import { useEffect, useState } from 'react'
 
 import { getProjectWorkflow, listProjectWorkflows } from '../../api/projects'
 import type { RawWorkflowVersion } from '../../types'
-
-function esc(value: unknown) {
-  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
-}
+import WorkflowCanvas, { type WorkflowCanvasEdge, type WorkflowCanvasNode } from './WorkflowCanvas'
 
 function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
-  const ref = useRef<HTMLDivElement>(null)
   const graph = workflow.graph
 
-  useEffect(() => {
-    if (!ref.current || !graph) return
-    const nodes = new DataSet(graph.nodes.map(node => ({
-      id: node.node_id,
-      label: node.raw_name,
-      shape: node.node_kind_guess === 'operation' ? 'box' : 'ellipse',
-      color: node.node_kind_guess === 'operation'
-        ? { background: '#7c3aed', border: '#a78bfa' }
-        : { background: '#0f766e', border: '#2dd4bf' },
-      title: `<b>${esc(node.raw_name)}</b><br>${esc(node.node_kind_guess)} · confidence ${node.confidence.toFixed(2)}<br><br>${esc(node.evidence_text)}`,
-    })))
-    const edges = new DataSet(graph.edges.map(edge => ({
-      id: edge.edge_id, from: edge.source_node, to: edge.target_node,
-      label: edge.relation_type,
-      title: `${esc(edge.evidence_text)}<br>confidence ${edge.confidence.toFixed(2)}`,
-      arrows: 'to', color: { color: '#64748b' },
-    })))
-    const network = new Network(ref.current, { nodes, edges }, {
-      layout: {
-        hierarchical: {
-          enabled: true,
-          direction: 'UD',
-          sortMethod: 'directed',
-          shakeTowards: 'roots',
-          levelSeparation: 120,
-          nodeSpacing: 180,
-          treeSpacing: 220,
-          blockShifting: true,
-          edgeMinimization: true,
-          parentCentralization: true,
-        },
-      },
-      physics: false,
-      nodes: { font: { color: '#f1f5f9', size: 13 }, margin: { top: 10, right: 10, bottom: 10, left: 10 }, borderWidth: 1 },
-      edges: {
-        font: { color: '#94a3b8', size: 10, align: 'middle' },
-        smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.35 },
-      },
-      interaction: { hover: true, tooltipDelay: 100, navigationButtons: true, keyboard: true },
-    })
-    return () => network.destroy()
-  }, [graph])
-
   if (!graph || graph.nodes.length === 0) return <p className="text-sm text-slate-400">This version contains no explicitly supported workflow steps.</p>
-  return <div ref={ref} className="h-[430px] rounded-lg border border-slate-700 bg-slate-950" />
+
+  const nodes: WorkflowCanvasNode[] = graph.nodes.map(node => ({
+    id: node.node_id,
+    label: node.raw_name,
+    kind: node.node_kind_guess === 'operation' ? 'operation' : 'object',
+    title: `${node.raw_name}\n${node.node_kind_guess} · confidence ${node.confidence.toFixed(2)}\n\n${node.evidence_text}`,
+  }))
+  const edges: WorkflowCanvasEdge[] = graph.edges.map(edge => ({
+    id: edge.edge_id,
+    source: edge.source_node,
+    target: edge.target_node,
+    label: edge.relation_type,
+    title: `${edge.evidence_text}\nconfidence ${edge.confidence.toFixed(2)}`,
+  }))
+
+  return <WorkflowCanvas nodes={nodes} edges={edges} exportBaseName={`raw-workflow-v${workflow.version}`} />
 }
 
 export default function WorkflowGraphTab({ projectId }: { projectId: string }) {
@@ -93,7 +59,7 @@ export default function WorkflowGraphTab({ projectId }: { projectId: string }) {
       </div>
       {selected?.error && <p className="text-sm text-red-400">{selected.error}</p>}
       {selected && <RawWorkflowCanvas workflow={selected} />}
-      <p className="text-xs text-slate-500">Purple rectangles are operations; teal ellipses are objects. Hover nodes and edges for evidence.</p>
+      <p className="text-xs text-slate-500">Purple rectangles are operations; teal parallelograms are objects. Drag nodes freely to tidy the canvas and hover nodes for evidence.</p>
     </div>
   )
 }

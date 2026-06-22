@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 
 import { getFrame, getFrameHistory } from '../../api/frames'
-import type { ExtractionPass, Frame } from '../../types'
+import { getProject } from '../../api/projects'
+import type { ExtractionPass, Frame, Project } from '../../types'
 import StatusBadge from '../StatusBadge'
 import { FrameHeader, FrameSection } from './frameRender'
 
@@ -9,12 +10,17 @@ import { FrameHeader, FrameSection } from './frameRender'
 export default function KnowledgeFrameTab({ projectId }: { projectId: string }) {
   const [frame, setFrame] = useState<Frame | null>(null)
   const [history, setHistory] = useState<ExtractionPass[]>([])
+  const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
   const [showRaw, setShowRaw] = useState(false)
 
   useEffect(() => {
-    Promise.all([getFrame(projectId), getFrameHistory(projectId)])
-      .then(([f, h]) => { setFrame(f); setHistory(h as unknown as ExtractionPass[]) })
+    Promise.all([getFrame(projectId), getFrameHistory(projectId), getProject(projectId)])
+      .then(([f, h, p]) => {
+        setFrame(f)
+        setHistory(h as unknown as ExtractionPass[])
+        setProject(p)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [projectId])
@@ -31,6 +37,7 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
       <div className="flex gap-6 flex-wrap text-sm">
         <div><span className="text-slate-400">Status: </span><StatusBadge status={status} /></div>
         <div><span className="text-slate-400">Version: </span><span className="text-slate-200">v{extraction_version}</span></div>
+        <div><span className="text-slate-400">Workflow: </span><StatusBadge status={project?.workflow_status ?? 'NO_WORKFLOW'} /></div>
         {extracted_at && <div><span className="text-slate-400">Extracted: </span><span className="text-slate-200">{extracted_at.slice(0, 10)}</span></div>}
       </div>
 

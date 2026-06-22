@@ -38,6 +38,52 @@ def test_raw_workflow_contract_accepts_evidenced_object_operation_edge():
     assert graph.edges[0].relation_type == "input_to"
 
 
+def test_raw_workflow_contract_accepts_multiple_outputs_from_one_operation():
+    payload = _graph()
+    eid = payload["extraction_id"]
+    payload["nodes"].append({
+        "node_id": f"raw:{eid}:n0003",
+        "raw_name": "crystalline sample A",
+        "node_kind_guess": "object",
+        "attributes_explicitly_mentioned": {},
+        "evidence_text": "The powder was annealed to yield crystalline sample A and exhaust gas.",
+        "paper_location": {"section": "Methods"},
+        "confidence": 0.97,
+    })
+    payload["nodes"].append({
+        "node_id": f"raw:{eid}:n0004",
+        "raw_name": "exhaust gas",
+        "node_kind_guess": "object",
+        "attributes_explicitly_mentioned": {},
+        "evidence_text": "The powder was annealed to yield crystalline sample A and exhaust gas.",
+        "paper_location": {"section": "Methods"},
+        "confidence": 0.92,
+    })
+    payload["edges"].append({
+        "edge_id": f"raw:{eid}:e0002",
+        "source_node": f"raw:{eid}:n0002",
+        "target_node": f"raw:{eid}:n0003",
+        "relation_type": "produces",
+        "evidence_text": "The powder was annealed to yield crystalline sample A and exhaust gas.",
+        "confidence": 0.96,
+    })
+    payload["edges"].append({
+        "edge_id": f"raw:{eid}:e0003",
+        "source_node": f"raw:{eid}:n0002",
+        "target_node": f"raw:{eid}:n0004",
+        "relation_type": "produces",
+        "evidence_text": "The powder was annealed to yield crystalline sample A and exhaust gas.",
+        "confidence": 0.9,
+    })
+
+    graph = RawWorkflowGraph.model_validate(payload)
+
+    assert [edge.target_node for edge in graph.edges if edge.relation_type == "produces"] == [
+        f"raw:{eid}:n0003",
+        f"raw:{eid}:n0004",
+    ]
+
+
 def test_raw_workflow_contract_rejects_unknown_edge_endpoint():
     payload = _graph()
     payload["edges"][0]["target_node"] = "missing"

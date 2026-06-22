@@ -1,41 +1,29 @@
-import { useEffect, useRef, useState } from 'react'
-import { DataSet } from 'vis-data'
-import { Network } from 'vis-network'
+import { useEffect, useState } from 'react'
 
 import { getCanonicalWorkflow, listCanonicalWorkflows } from '../../api/projects'
 import type { CanonicalWorkflowVersion } from '../../types'
-
-const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
+import WorkflowCanvas, { type WorkflowCanvasEdge, type WorkflowCanvasNode } from './WorkflowCanvas'
 
 function Canvas({ workflow }: { workflow: CanonicalWorkflowVersion }) {
-  const ref = useRef<HTMLDivElement>(null)
   const graph = workflow.graph
-  useEffect(() => {
-    if (!ref.current || !graph) return
-    const nodes = new DataSet(graph.nodes.map(node => ({
-      id: node.node_id, label: node.label,
-      shape: node.node_kind === 'operation' ? 'box' : 'ellipse',
-      color: node.node_kind === 'operation'
-        ? { background: '#4338ca', border: '#818cf8' }
-        : { background: '#0369a1', border: '#38bdf8' },
-      title: `<b>${esc(node.label)}</b><br>${esc(node.object_schema ?? node.operation_template_id ?? 'unmatched template')}<br><br>Raw sources: ${esc(node.raw_node_ids.join(', '))}<br>Attributes: ${esc(JSON.stringify(node.attributes))}`,
-    })))
-    const edges = new DataSet(graph.edges.map(edge => ({
-      id: edge.edge_id, from: edge.source_node, to: edge.target_node,
-      label: edge.relation_type, arrows: 'to', color: { color: '#64748b' },
-      title: `Raw edges: ${esc(edge.raw_edge_ids.join(', '))}`,
-    })))
-    const network = new Network(ref.current, { nodes, edges }, {
-      layout: { hierarchical: { enabled: true, direction: 'UD', sortMethod: 'directed', shakeTowards: 'roots', levelSeparation: 120, nodeSpacing: 180, treeSpacing: 220, blockShifting: true, edgeMinimization: true, parentCentralization: true } },
-      physics: false,
-      nodes: { font: { color: '#f1f5f9', size: 13 }, margin: { top: 10, right: 10, bottom: 10, left: 10 }, borderWidth: 1 },
-      edges: { font: { color: '#94a3b8', size: 10, align: 'middle' }, smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.35 } },
-      interaction: { hover: true, tooltipDelay: 100, navigationButtons: true, keyboard: true },
-    })
-    return () => network.destroy()
-  }, [graph])
+
   if (!graph?.nodes.length) return <p className="text-sm text-slate-400">This canonical version has no nodes.</p>
-  return <div ref={ref} className="h-[430px] rounded-lg border border-slate-700 bg-slate-950" />
+
+  const nodes: WorkflowCanvasNode[] = graph.nodes.map(node => ({
+    id: node.node_id,
+    label: node.label,
+    kind: node.node_kind,
+    title: `${node.label}\n${node.object_schema ?? node.operation_template_id ?? 'unmatched template'}\n\nRaw sources: ${node.raw_node_ids.join(', ')}\nAttributes: ${JSON.stringify(node.attributes)}`,
+  }))
+  const edges: WorkflowCanvasEdge[] = graph.edges.map(edge => ({
+    id: edge.edge_id,
+    source: edge.source_node,
+    target: edge.target_node,
+    label: edge.relation_type,
+    title: `Raw edges: ${edge.raw_edge_ids.join(', ')}`,
+  }))
+
+  return <WorkflowCanvas nodes={nodes} edges={edges} exportBaseName={`canonical-workflow-v${workflow.version}`} />
 }
 
 export default function CanonicalWorkflowTab({ projectId }: { projectId: string }) {
@@ -63,6 +51,7 @@ export default function CanonicalWorkflowTab({ projectId }: { projectId: string 
     </div>
     {selected?.error && <p className="text-sm text-red-400">{selected.error}</p>}
     {selected && <Canvas workflow={selected} />}
+    <p className="text-xs text-slate-500">Objects start above their earliest consuming step, labels wrap across multiple lines, and you can drag nodes freely anywhere in the canvas.</p>
     {selected?.graph && <div className="flex gap-4 text-xs text-slate-500">
       <span>{selected.graph.raw_to_canonical_mappings.length} mappings</span>
       <span>{selected.graph.unmatched_raw_information.length} unmatched items</span>

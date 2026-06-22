@@ -8,6 +8,8 @@ import {
   kgExtractProject,
   processProject,
   projectToSpace,
+  workflowExtractProject,
+  canonicalizeProjectWorkflow,
 } from '../../api/projects'
 import { listSpaces } from '../../api/spaces'
 import type { Job, Project, Space } from '../../types'
@@ -17,9 +19,10 @@ import FeedbackTab from './FeedbackTab'
 import GraphTab from './GraphTab'
 import KnowledgeFrameTab from './KnowledgeFrameTab'
 import ProjectionsTab from './ProjectionsTab'
+import WorkflowTab from './WorkflowTab'
 
 
-type DetailTab = 'assets' | 'frame' | 'projections' | 'graph' | 'feedback'
+type DetailTab = 'assets' | 'frame' | 'projections' | 'workflow' | 'graph' | 'feedback'
 
 export default function ProjectDetail({
   project,
@@ -93,6 +96,7 @@ export default function ProjectDetail({
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} />
             <StatusBadge status={project.frame_status ?? 'NO_FRAME'} />
+            <StatusBadge status={project.workflow_status ?? 'NO_WORKFLOW'} />
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -143,6 +147,7 @@ export default function ProjectDetail({
           ['assets', 'Assets'],
           ['frame', 'Knowledge Frame'],
           ['projections', 'Projections'],
+          ['workflow', 'Workflow'],
           ['graph', 'Knowledge Graph'],
           ['feedback', `Feedback${feedbackCount > 0 ? ` (${feedbackCount})` : ''}`],
         ] as [DetailTab, string][]).map(([tab, name]) => (
@@ -159,6 +164,15 @@ export default function ProjectDetail({
         {activeTab === 'assets'      && <AssetsTab key={`assets-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'frame'       && <KnowledgeFrameTab key={`frame-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'projections' && <ProjectionsTab key={`proj-${refreshKey}`} projectId={project.project_id} />}
+        {activeTab === 'workflow'    && (
+          <WorkflowTab
+            key={`workflow-${project.project_id}-${project.workflow_version ?? 0}-${project.canonical_workflow_version ?? 0}-${refreshKey}`}
+            project={project}
+            activeJobId={activeJobId}
+            onExtractWorkflow={() => run(() => workflowExtractProject(project.project_id))}
+            onCanonicalizeWorkflow={() => run(() => canonicalizeProjectWorkflow(project.project_id))}
+          />
+        )}
         {activeTab === 'graph'       && <GraphTab key={`graph-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'feedback'    && <FeedbackTab key={`fb-${refreshKey}`} projectId={project.project_id} />}
       </div>

@@ -145,6 +145,8 @@ export default function ProjectDetail({
               <span>Processed: <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} /></span>
               <span className="text-slate-600">·</span>
               <span>Frame: <StatusBadge status={project.frame_status ?? 'NO_FRAME'} /></span>
+              <span className="text-slate-600">·</span>
+              <span>Workflow: <StatusBadge status={project.workflow_status ?? 'NO_WORKFLOW'} /></span>
             </p>
           </div>
           <button
@@ -188,14 +190,14 @@ export default function ProjectDetail({
             <button
               onClick={() => runAction(() => workflowExtractProject(project.project_id))}
               disabled={!!activeJobId}
-              className="px-3 py-2 bg-violet-900/70 hover:bg-violet-800 disabled:opacity-40 rounded text-sm text-violet-100 col-span-2"
+              className="px-3 py-2 bg-violet-900/70 hover:bg-violet-800 disabled:opacity-40 rounded text-xs text-violet-100"
             >
               ⛓ Extract Workflow
             </button>
             <button
               onClick={() => runAction(() => canonicalizeProjectWorkflow(project.project_id))}
               disabled={!!activeJobId || project.workflow_status !== 'COMPLETED'}
-              className="px-3 py-2 bg-indigo-900/70 hover:bg-indigo-800 disabled:opacity-40 rounded text-sm text-indigo-100 col-span-2"
+              className="px-3 py-2 bg-indigo-900/70 hover:bg-indigo-800 disabled:opacity-40 rounded text-xs text-indigo-100"
             >
               ◇ Canonicalize Workflow
             </button>
