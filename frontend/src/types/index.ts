@@ -8,6 +8,10 @@ export interface Project {
   asset_count: number
   processing_status: string
   frame_status: string | null
+  workflow_status: string
+  workflow_version: number | null
+  canonical_workflow_status: string
+  canonical_workflow_version: number | null
   created_at: string
   group_id?: string | null
 }
@@ -196,6 +200,94 @@ export interface KnowledgeGraph {
 export interface GraphPayload {
   graph: KnowledgeGraph
   projection_count: number
+}
+
+export interface RawWorkflowNode {
+  node_id: string
+  raw_name: string
+  node_kind_guess: 'object' | 'operation' | 'unknown'
+  attributes_explicitly_mentioned: Record<string, unknown>
+  evidence_text: string
+  paper_location: Record<string, unknown>
+  confidence: number
+}
+
+export interface RawWorkflowEdge {
+  edge_id: string
+  source_node: string
+  target_node: string
+  relation_type: string
+  evidence_text: string
+  paper_location?: Record<string, unknown> | null
+  confidence: number
+}
+
+export interface RawWorkflowGraph {
+  schema_version: string
+  paper_id: string
+  extraction_id: string
+  nodes: RawWorkflowNode[]
+  edges: RawWorkflowEdge[]
+}
+
+export interface RawWorkflowVersion {
+  extraction_id: string
+  project_id: string
+  version: number
+  schema_version: string
+  extractor_version: string
+  status: string
+  record_status: string
+  supersedes_extraction_id: string | null
+  model: string | null
+  provenance: Record<string, unknown>
+  error: string | null
+  created_at: string | null
+  extracted_at: string | null
+  node_count?: number
+  edge_count?: number
+  graph?: RawWorkflowGraph | null
+}
+
+export interface CanonicalWorkflowNode {
+  node_id: string
+  label: string
+  node_kind: 'object' | 'operation'
+  object_schema?: string | null
+  operation_template_id?: string | null
+  attributes: Record<string, unknown>
+  raw_node_ids: string[]
+}
+
+export interface CanonicalWorkflowGraph {
+  schema_version: string
+  canonicalization_id: string
+  paper_id: string
+  raw_extraction_id: string
+  nodes: CanonicalWorkflowNode[]
+  edges: Array<{ edge_id: string; source_node: string; target_node: string; relation_type: string; raw_edge_ids: string[] }>
+  raw_to_canonical_mappings: Array<Record<string, unknown>>
+  unmatched_raw_information: Array<Record<string, unknown>>
+  granularity_mappings: Array<Record<string, unknown>>
+  proposed_schema_updates: Array<Record<string, unknown>>
+}
+
+export interface CanonicalWorkflowVersion {
+  canonicalization_id: string
+  project_id: string
+  raw_extraction_id: string
+  version: number
+  schema_version: string
+  canonicalizer_version: string
+  status: string
+  model: string | null
+  provenance: Record<string, unknown>
+  error: string | null
+  created_at: string | null
+  canonicalized_at: string | null
+  node_count?: number
+  edge_count?: number
+  graph?: CanonicalWorkflowGraph | null
 }
 
 // ─── Upload types ─────────────────────────────────────────────────────────────

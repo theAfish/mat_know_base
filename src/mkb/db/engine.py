@@ -43,6 +43,16 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                 "ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE"
             ),
         },
+        "raw_workflow_extractions": {
+            "record_status": (
+                "ALTER TABLE raw_workflow_extractions "
+                "ADD COLUMN record_status VARCHAR(32) NOT NULL DEFAULT 'active'"
+            ),
+            "supersedes_extraction_id": (
+                "ALTER TABLE raw_workflow_extractions "
+                "ADD COLUMN supersedes_extraction_id UUID"
+            ),
+        },
     }
 
     with engine.begin() as conn:

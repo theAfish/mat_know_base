@@ -628,7 +628,7 @@ def list_projects(limit: int = 50) -> list[dict]:
     """List research projects."""
     from collections import defaultdict
 
-    from mkb.db.models import KnowledgeFrame, ProcessedAsset, ProjectAsset, ResearchProject
+    from mkb.db.models import CanonicalWorkflow, KnowledgeFrame, ProcessedAsset, ProjectAsset, RawWorkflowExtraction, ResearchProject
 
     init_db()
     with SyncSessionLocal() as session:
@@ -665,6 +665,30 @@ def list_projects(limit: int = 50) -> list[dict]:
         # Bulk-fetch frames
         frames = session.query(KnowledgeFrame).filter(KnowledgeFrame.project_id.in_(project_ids)).all()
         frame_by_project = {f.project_id: f for f in frames}
+        workflow_rows = (
+            session.query(RawWorkflowExtraction)
+            .filter(RawWorkflowExtraction.project_id.in_(project_ids))
+            .order_by(RawWorkflowExtraction.version.desc())
+            .all()
+        )
+        workflow_by_project = {}
+        for workflow in workflow_rows:
+            workflow_by_project.setdefault(workflow.project_id, workflow)
+            current = workflow_by_project[workflow.project_id]
+            current_is_valid = (
+                current.status == "COMPLETED"
+                and current.record_status in {"active", "needs_review"}
+            )
+            if not current_is_valid and workflow.status == "COMPLETED" and workflow.record_status in {"active", "needs_review"}:
+                workflow_by_project[workflow.project_id] = workflow
+        canonical_rows = (
+            session.query(CanonicalWorkflow)
+            .filter(CanonicalWorkflow.project_id.in_(project_ids))
+            .order_by(CanonicalWorkflow.version.desc()).all()
+        )
+        canonical_by_project = {}
+        for canonical in canonical_rows:
+            canonical_by_project.setdefault(canonical.project_id, canonical)
 
         result = []
         for p in projects:
@@ -681,6 +705,8 @@ def list_projects(limit: int = 50) -> list[dict]:
                 processing_status = "PROCESSED"
 
             frame = frame_by_project.get(p.project_id)
+            workflow = workflow_by_project.get(p.project_id)
+            canonical = canonical_by_project.get(p.project_id)
             result.append({
                 "project_id": str(p.project_id),
                 "label": p.label,
@@ -689,6 +715,10 @@ def list_projects(limit: int = 50) -> list[dict]:
                 "asset_count": total,
                 "processing_status": processing_status,
                 "frame_status": frame.status.value if frame else "NO_FRAME",
+                "workflow_status": workflow.status if workflow else "NO_WORKFLOW",
+                "workflow_version": workflow.version if workflow else None,
+                "canonical_workflow_status": canonical.status if canonical else "NO_CANONICAL_WORKFLOW",
+                "canonical_workflow_version": canonical.version if canonical else None,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
                 "duplicate_of": (p.metadata_ or {}).get("duplicate_of"),
                 "group_id": str(p.group_id) if p.group_id else None,
@@ -851,6 +881,7 @@ def delete_project(
     """
     from mkb.db.models import (
         Asset,
+        CanonicalWorkflow,
         ExtractionPass,
         Feedback,
         KnowledgeFrame,
@@ -858,6 +889,7 @@ def delete_project(
         ProcessingLog,
         ProjectAsset,
         Projection,
+        RawWorkflowExtraction,
         ResearchProject,
     )
     from mkb.storage.s3 import delete_object
@@ -982,6 +1014,17 @@ def delete_project(
         )
         deleted_feedback += extra_feedback
 
+        deleted_workflows = (
+            session.query(RawWorkflowExtraction)
+            .filter(RawWorkflowExtraction.project_id == pid)
+            .delete(synchronize_session=False)
+        )
+        deleted_canonical_workflows = (
+            session.query(CanonicalWorkflow)
+            .filter(CanonicalWorkflow.project_id == pid)
+            .delete(synchronize_session=False)
+        )
+
         # ── Delete the project itself ─────────────────────────────────────
         session.delete(project)
         session.commit()
@@ -996,7 +1039,188 @@ def delete_project(
         "deleted_projections": deleted_projections,
         "deleted_extraction_passes": deleted_passes,
         "deleted_feedback": deleted_feedback,
+        "deleted_workflow_versions": deleted_workflows,
+        "deleted_canonical_workflow_versions": deleted_canonical_workflows,
     }
+
+
+# ── Raw workflow graphs ───────────────────────────────────────
+
+
+def extract_raw_workflow(project_id: str | uuid.UUID, model: str | None = None, verbose: bool = False, progress_callback=None) -> dict:
+    """Append a new faithful raw-workflow extraction version for a project."""
+    from mkb.agents.workflow_extraction import run_workflow_extraction
+
+    init_db()
+    return run_workflow_extraction(
+        uuid.UUID(str(project_id)), model=model, verbose=verbose,
+        progress_callback=progress_callback,
+    )
+
+
+def list_raw_workflows(project_id: str | uuid.UUID, include_graph: bool = False) -> list[dict]:
+    """List append-only raw workflow versions, newest first."""
+    from mkb.db.models import RawWorkflowExtraction
+
+    pid = uuid.UUID(str(project_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        rows = (
+            session.query(RawWorkflowExtraction)
+            .filter(RawWorkflowExtraction.project_id == pid)
+            .order_by(RawWorkflowExtraction.version.desc())
+            .all()
+        )
+        return [_serialize_raw_workflow(row, include_graph=include_graph) for row in rows]
+
+
+def get_raw_workflow(project_id: str | uuid.UUID, version: int | None = None) -> dict | None:
+    """Get the latest completed raw workflow, or a specific version."""
+    from mkb.db.models import RawWorkflowExtraction
+
+    pid = uuid.UUID(str(project_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        query = session.query(RawWorkflowExtraction).filter(RawWorkflowExtraction.project_id == pid)
+        if version is None:
+            query = query.filter(RawWorkflowExtraction.status == "COMPLETED").order_by(RawWorkflowExtraction.version.desc())
+        else:
+            query = query.filter(RawWorkflowExtraction.version == version)
+        row = query.first()
+        return _serialize_raw_workflow(row, include_graph=True) if row else None
+
+
+def _serialize_raw_workflow(row, include_graph: bool) -> dict:
+    payload = {
+        "extraction_id": str(row.extraction_id), "project_id": str(row.project_id),
+        "version": row.version, "schema_version": row.schema_version,
+        "extractor_version": row.extractor_version, "model": row.model,
+        "status": row.status, "record_status": row.record_status,
+        "supersedes_extraction_id": str(row.supersedes_extraction_id) if row.supersedes_extraction_id else None,
+        "provenance": row.provenance or {}, "error": row.error,
+        "extracted_at": row.extracted_at.isoformat() if row.extracted_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    if include_graph:
+        payload["graph"] = row.graph
+    elif row.graph:
+        payload["node_count"] = len(row.graph.get("nodes", []))
+        payload["edge_count"] = len(row.graph.get("edges", []))
+    return payload
+
+
+def canonicalize_workflow(project_id: str | uuid.UUID, raw_extraction_id: str | uuid.UUID | None = None, model: str | None = None, verbose: bool = False, progress_callback=None) -> dict:
+    """Create an append-only canonical view from a valid raw workflow."""
+    from mkb.agents.workflow_canonicalization import run_workflow_canonicalization
+
+    init_db()
+    return run_workflow_canonicalization(
+        uuid.UUID(str(project_id)),
+        uuid.UUID(str(raw_extraction_id)) if raw_extraction_id else None,
+        model=model, verbose=verbose, progress_callback=progress_callback,
+    )
+
+
+def list_canonical_workflows(project_id: str | uuid.UUID, include_graph: bool = False) -> list[dict]:
+    from mkb.db.models import CanonicalWorkflow
+
+    pid = uuid.UUID(str(project_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        rows = session.query(CanonicalWorkflow).filter_by(project_id=pid).order_by(CanonicalWorkflow.version.desc()).all()
+        return [_serialize_canonical_workflow(row, include_graph) for row in rows]
+
+
+def get_canonical_workflow(project_id: str | uuid.UUID, version: int | None = None) -> dict | None:
+    from mkb.db.models import CanonicalWorkflow
+
+    pid = uuid.UUID(str(project_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        query = session.query(CanonicalWorkflow).filter(CanonicalWorkflow.project_id == pid)
+        query = (
+            query.filter(CanonicalWorkflow.status == "COMPLETED").order_by(CanonicalWorkflow.version.desc())
+            if version is None else query.filter(CanonicalWorkflow.version == version)
+        )
+        row = query.first()
+        return _serialize_canonical_workflow(row, True) if row else None
+
+
+def _serialize_canonical_workflow(row, include_graph: bool) -> dict:
+    payload = {
+        "canonicalization_id": str(row.canonicalization_id), "project_id": str(row.project_id),
+        "raw_extraction_id": str(row.raw_extraction_id), "version": row.version,
+        "schema_version": row.schema_version, "canonicalizer_version": row.canonicalizer_version,
+        "model": row.model, "status": row.status, "provenance": row.provenance or {},
+        "error": row.error,
+        "canonicalized_at": row.canonicalized_at.isoformat() if row.canonicalized_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    if include_graph:
+        payload["graph"] = row.graph
+    elif row.graph:
+        payload.update(node_count=len(row.graph.get("nodes", [])), edge_count=len(row.graph.get("edges", [])))
+    return payload
+
+
+def search_canonical_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "exact", limit: int = 100) -> list[dict]:
+    """Search canonical workflow triples or paths with an explanation."""
+    from mkb.db.models import CanonicalWorkflow
+    from mkb.workflows.schema_library import get_schema_library_payload
+
+    if mode not in {"exact", "relaxed", "expanded", "summarized"}:
+        raise ValueError(f"Unsupported query mode: {mode}")
+    templates = get_schema_library_payload()["operation_templates"]
+
+    def matches(value: str, query: str | None) -> bool:
+        if not query:
+            return True
+        return value == query if mode == "exact" else query.casefold() in value.casefold()
+
+    init_db()
+    results = []
+    with SyncSessionLocal() as session:
+        rows = session.query(CanonicalWorkflow).filter_by(status="COMPLETED").order_by(CanonicalWorkflow.created_at.desc()).all()
+        for row in rows:
+            graph = row.graph or {}
+            nodes = {node["node_id"]: node for node in graph.get("nodes", [])}
+            adjacency = {}
+            for edge in graph.get("edges", []):
+                adjacency.setdefault(edge["source_node"], []).append(edge["target_node"])
+            sources = [nid for nid, node in nodes.items() if node.get("node_kind") == "object" and matches(node.get("label", ""), source)]
+            targets = {nid for nid, node in nodes.items() if node.get("node_kind") == "object" and matches(node.get("label", ""), target)}
+            operations = set()
+            for nid, node in nodes.items():
+                if node.get("node_kind") != "operation":
+                    continue
+                template = templates.get(node.get("operation_template_id"), {})
+                candidates = [node.get("label", ""), template.get("label", ""), *(template.get("aliases") or [])]
+                if not operation or any(matches(candidate, operation) for candidate in candidates):
+                    operations.add(nid)
+            matched_path = None
+            for start in sources:
+                queue = [(start, [start])]
+                while queue:
+                    current, path = queue.pop(0)
+                    if current in targets and (not operation or operations.intersection(path)):
+                        if mode in {"expanded", "summarized"} or len(path) == 3:
+                            matched_path = path
+                            break
+                    if mode in {"exact", "relaxed"} and len(path) >= 3:
+                        continue
+                    queue.extend((nxt, path + [nxt]) for nxt in adjacency.get(current, []) if nxt not in path)
+                if matched_path:
+                    break
+            if matched_path:
+                results.append({
+                    "project_id": str(row.project_id), "canonicalization_id": str(row.canonicalization_id),
+                    "version": row.version, "mode": mode,
+                    "path": [nodes[nid] for nid in matched_path],
+                    "explanation": f"Matched a {'direct triple' if len(matched_path) == 3 else 'reachable expanded path'} using {mode} mode.",
+                })
+                if len(results) >= limit:
+                    break
+    return results
 
 
 def assign_projects_to_group(

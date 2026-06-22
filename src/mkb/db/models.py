@@ -122,6 +122,80 @@ class ProjectAsset(Base):
     asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
 
 
+# ── Raw workflow extraction ───────────────────────────────────
+
+
+class RawWorkflowExtraction(Base):
+    """Immutable, paper-level workflow extraction version.
+
+    ``graph`` follows the versioned contract in :mod:`mkb.workflows.contract`.
+    A row may move from IN_PROGRESS to COMPLETED/FAILED while it is being
+    produced; once completed its graph is never updated in place.
+    """
+
+    __tablename__ = "raw_workflow_extractions"
+
+    extraction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="IN_PROGRESS"
+    )
+    record_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="active"
+    )
+    supersedes_extraction_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_raw_workflow_project_version"),
+        Index("ix_raw_workflow_project_created", "project_id", "created_at"),
+    )
+
+
+class CanonicalWorkflow(Base):
+    """Append-only canonicalization derived from one raw extraction version."""
+
+    __tablename__ = "canonical_workflows"
+
+    canonicalization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    raw_extraction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonicalizer_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="IN_PROGRESS")
+    graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonicalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_canonical_workflow_project_version"),
+        Index("ix_canonical_workflow_project_created", "project_id", "created_at"),
+        Index("ix_canonical_workflow_raw", "raw_extraction_id"),
+    )
+
+
 # ── Assets (core raw-data table) ───────────────────────────────
 
 
@@ -486,4 +560,3 @@ class GraphElementReview(Base):
         UniqueConstraint("space_id", "element_type", "element_key", name="uq_graph_element_review"),
         Index("ix_graph_element_review_space", "space_id", "element_type"),
     )
-

@@ -14,6 +14,7 @@ from mkb.web._models import (
     ProjectGroupUpdate,
     ProjectionRunRequest,
     ProjectUpdateRequest,
+    WorkflowCanonicalizeRequest,
 )
 from mkb.web._state import jobs
 
@@ -197,6 +198,90 @@ def project_kg_extract(project_id: str):
         kwargs={"project_id": project_id},
     )
     return {"job_id": job_id}
+
+
+@router.post("/api/projects/{project_id}/workflow-extract")
+def project_workflow_extract(project_id: str):
+    _parse_uuid(project_id, "project_id")
+    job_id = jobs.start_job(
+        kind="raw_workflow",
+        label="Extract Workflow",
+        project_id=project_id,
+        target=api.extract_raw_workflow,
+        kwargs={"project_id": project_id},
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/api/projects/{project_id}/workflows")
+def project_workflows(project_id: str, include_graph: bool = False):
+    _parse_uuid(project_id, "project_id")
+    return api.list_raw_workflows(project_id, include_graph=include_graph)
+
+
+@router.get("/api/projects/{project_id}/workflows/latest")
+def latest_project_workflow(project_id: str):
+    _parse_uuid(project_id, "project_id")
+    result = api.get_raw_workflow(project_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="No completed raw workflow found")
+    return result
+
+
+@router.post("/api/projects/{project_id}/workflows/canonicalize")
+def canonicalize_project_workflow(project_id: str, body: WorkflowCanonicalizeRequest):
+    _parse_uuid(project_id, "project_id")
+    if body.raw_extraction_id:
+        _parse_uuid(body.raw_extraction_id, "raw_extraction_id")
+    job_id = jobs.start_job(
+        kind="canonical_workflow", label="Canonicalize Workflow", project_id=project_id,
+        target=api.canonicalize_workflow,
+        kwargs={"project_id": project_id, "raw_extraction_id": body.raw_extraction_id},
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/api/projects/{project_id}/workflows/{version}")
+def project_workflow_version(project_id: str, version: int):
+    _parse_uuid(project_id, "project_id")
+    result = api.get_raw_workflow(project_id, version=version)
+    if not result:
+        raise HTTPException(status_code=404, detail="Raw workflow version not found")
+    return result
+
+
+@router.get("/api/projects/{project_id}/canonical-workflows")
+def project_canonical_workflows(project_id: str, include_graph: bool = False):
+    _parse_uuid(project_id, "project_id")
+    return api.list_canonical_workflows(project_id, include_graph=include_graph)
+
+
+@router.get("/api/projects/{project_id}/canonical-workflows/latest")
+def latest_project_canonical_workflow(project_id: str):
+    _parse_uuid(project_id, "project_id")
+    result = api.get_canonical_workflow(project_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="No completed canonical workflow found")
+    return result
+
+
+@router.get("/api/projects/{project_id}/canonical-workflows/{version}")
+def project_canonical_workflow_version(project_id: str, version: int):
+    _parse_uuid(project_id, "project_id")
+    result = api.get_canonical_workflow(project_id, version=version)
+    if not result:
+        raise HTTPException(status_code=404, detail="Canonical workflow version not found")
+    return result
+
+
+@router.get("/api/workflows/search")
+def search_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "exact", limit: int = 100):
+    if not any((source, operation, target)):
+        raise HTTPException(status_code=400, detail="Provide source, operation, or target")
+    try:
+        return api.search_canonical_workflows(source, operation, target, mode, limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/projects/{project_id}/jobs")

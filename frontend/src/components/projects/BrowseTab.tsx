@@ -50,6 +50,10 @@ export default function BrowseTab({ spaces }: { spaces: Space[] }) {
             render: p => <StatusBadge status={p.processing_status ?? 'UNPROCESSED'} /> },
           { header: 'Frame',
             render: p => <StatusBadge status={p.frame_status ?? 'NO_FRAME'} /> },
+          { header: 'Workflow',
+            render: p => <StatusBadge status={p.workflow_status ?? 'NO_WORKFLOW'} /> },
+          { header: 'Normalized',
+            render: p => <StatusBadge status={p.canonical_workflow_status ?? 'NO_CANONICAL_WORKFLOW'} /> },
           { header: 'Created', cellClassName: 'text-slate-500 text-xs',
             render: p => p.created_at?.slice(0, 10) },
         ]}

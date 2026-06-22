@@ -78,6 +78,10 @@ class ProjectUpdateRequest(BaseModel):
     label: str
 
 
+class WorkflowCanonicalizeRequest(BaseModel):
+    raw_extraction_id: str | None = None
+
+
 class ProjectGroupCreate(BaseModel):
     name: str
     description: str | None = None

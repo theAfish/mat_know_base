@@ -10,11 +10,16 @@ import {
   kgExtractProject,
   processProject,
   projectToSpace,
+  workflowExtractProject,
+  canonicalizeProjectWorkflow,
 } from '../../api/projects'
 import type { Job, Project, Space } from '../../types'
 import JobProgress from '../JobProgress'
 import StatusBadge from '../StatusBadge'
 import ProjectAssetsPanel from './ProjectAssetsPanel'
+import WorkflowGraphTab from './WorkflowGraphTab'
+import CanonicalWorkflowTab from './CanonicalWorkflowTab'
+import GraphTab from '../frames/GraphTab'
 
 
 export interface ProjectDetailProps {
@@ -42,6 +47,7 @@ export default function ProjectDetail({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [graphView, setGraphView] = useState<'knowledge' | 'workflow' | 'canonical'>('workflow')
   const pollHandleRef = useRef<JobPollHandle | null>(null)
 
   const userSpaces = spaces.filter(s => s.name !== '__global_kg__')
@@ -126,7 +132,7 @@ export default function ProjectDetail({
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+      <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-700">
           <div className="min-w-0 flex-1">
@@ -179,6 +185,34 @@ export default function ProjectDetail({
             >
               🕸 Extract graph
             </button>
+            <button
+              onClick={() => runAction(() => workflowExtractProject(project.project_id))}
+              disabled={!!activeJobId}
+              className="px-3 py-2 bg-violet-900/70 hover:bg-violet-800 disabled:opacity-40 rounded text-sm text-violet-100 col-span-2"
+            >
+              ⛓ Extract Workflow
+            </button>
+            <button
+              onClick={() => runAction(() => canonicalizeProjectWorkflow(project.project_id))}
+              disabled={!!activeJobId || project.workflow_status !== 'COMPLETED'}
+              className="px-3 py-2 bg-indigo-900/70 hover:bg-indigo-800 disabled:opacity-40 rounded text-sm text-indigo-100 col-span-2"
+            >
+              ◇ Canonicalize Workflow
+            </button>
+          </div>
+
+          <div>
+            <div className="flex gap-1 border-b border-slate-700 mb-3">
+              {([['knowledge', 'Knowledge Graph'], ['workflow', 'Raw Workflow'], ['canonical', 'Normalized Workflow']] as const).map(([key, label]) => (
+                <button key={key} onClick={() => setGraphView(key)}
+                  className={`px-3 py-2 text-sm border-b-2 -mb-px ${graphView === key ? 'border-violet-400 text-violet-300' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {graphView === 'knowledge' && <GraphTab projectId={project.project_id} />}
+            {graphView === 'workflow' && <WorkflowGraphTab key={`${project.project_id}-${project.workflow_version ?? 0}`} projectId={project.project_id} />}
+            {graphView === 'canonical' && <CanonicalWorkflowTab key={`${project.project_id}-${project.canonical_workflow_version ?? 0}`} projectId={project.project_id} />}
           </div>
 
           {/* Space selector */}
