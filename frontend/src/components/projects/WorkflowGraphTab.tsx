@@ -55,7 +55,6 @@ export default function WorkflowGraphTab({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingVersion, setDeletingVersion] = useState<number | null>(null)
-  const resumableVersions = versions.filter(row => row.resumable)
 
   const load = async () => {
     setLoading(true)
@@ -81,9 +80,9 @@ export default function WorkflowGraphTab({
 
   const handleDelete = async (version: number) => {
     const target = versions.find(row => row.version === version)
-    if (!target?.resumable) return
+    if (!target) return
     const confirmed = window.confirm(
-      `Delete raw workflow v${version}? This removes the unfinished version so future reruns start fresh instead of resuming it.`,
+      `Delete raw workflow v${version}? This removes the selected raw workflow version.`,
     )
     if (!confirmed) return
     try {
@@ -113,7 +112,7 @@ export default function WorkflowGraphTab({
           {versions.map(row => <option key={row.extraction_id} value={row.version}>v{row.version} · {row.status}</option>)}
         </select>
         {selected && <span>{selected.graph?.nodes.length ?? 0} nodes · {selected.graph?.edges.length ?? 0} edges · {selected.schema_version}</span>}
-        {selected?.resumable && (
+        {selected && (
           <button
             onClick={() => handleDelete(selected.version)}
             disabled={actionsDisabled || deletingVersion === selected.version}
@@ -123,35 +122,6 @@ export default function WorkflowGraphTab({
           </button>
         )}
       </div>
-      {resumableVersions.length > 0 && (
-        <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-sm text-amber-200">
-          <div className="font-medium">Stale resumable workflow versions</div>
-          <p className="mt-1 text-amber-300/90">
-            These unfinished versions will be resumed on rerun unless you delete them.
-          </p>
-          <div className="mt-3 space-y-2">
-            {resumableVersions.map(row => (
-              <div key={row.extraction_id} className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="rounded bg-amber-900/40 px-2 py-1 text-amber-100">
-                  v{row.version} · {row.status}
-                </span>
-                {row.has_checkpoint && (
-                  <span className="text-amber-300/80">
-                    checkpoint{row.checkpoint_updated_at ? ` from ${new Date(row.checkpoint_updated_at).toLocaleString()}` : ''}
-                  </span>
-                )}
-                <button
-                  onClick={() => handleDelete(row.version)}
-                  disabled={actionsDisabled || deletingVersion === row.version}
-                  className="rounded border border-red-800/70 bg-red-950/40 px-2 py-1 text-red-200 hover:bg-red-900/40 disabled:opacity-40"
-                >
-                  {deletingVersion === row.version ? 'Deleting…' : `Delete v${row.version}`}
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {error && <p className="text-sm text-red-400">{error}</p>}
       {selected?.error && <p className="text-sm text-red-400">{selected.error}</p>}
       {selected && !selected.graph && selected.resumable && (

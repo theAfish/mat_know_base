@@ -1166,8 +1166,8 @@ def get_raw_workflow(project_id: str | uuid.UUID, version: int | None = None) ->
 
 
 def delete_raw_workflow_version(project_id: str | uuid.UUID, version: int) -> dict:
-    """Delete one unfinished raw workflow version so it cannot be resumed."""
-    from mkb.db.models import RawWorkflowExtraction
+    """Delete one raw workflow version when no canonical version depends on it."""
+    from mkb.db.models import CanonicalWorkflow, RawWorkflowExtraction
 
     pid = uuid.UUID(str(project_id))
     init_db()
@@ -1182,8 +1182,19 @@ def delete_raw_workflow_version(project_id: str | uuid.UUID, version: int) -> di
         )
         if not row:
             return {"error": "Raw workflow version not found"}
-        if row.status == "COMPLETED" or row.graph is not None:
-            return {"error": "Completed raw workflow versions cannot be deleted"}
+        dependent_canonical = (
+            session.query(CanonicalWorkflow)
+            .filter(CanonicalWorkflow.raw_extraction_id == row.extraction_id)
+            .order_by(CanonicalWorkflow.version.desc())
+            .first()
+        )
+        if dependent_canonical:
+            return {
+                "error": (
+                    f"Raw workflow v{version} cannot be deleted because canonical workflow "
+                    f"v{dependent_canonical.version} still depends on it"
+                )
+            }
 
         extraction_id = row.extraction_id
         session.delete(row)
@@ -1193,6 +1204,42 @@ def delete_raw_workflow_version(project_id: str | uuid.UUID, version: int) -> di
             "project_id": str(pid),
             "version": version,
             "extraction_id": str(extraction_id),
+        }
+
+
+def delete_canonical_workflow_version(project_id: str | uuid.UUID, version: int) -> dict:
+    """Delete one canonical workflow version and its derived indexes/tasks."""
+    from mkb.db.models import CanonicalWorkflow, WorkflowIndexEntry, WorkflowMaintenanceTask
+
+    pid = uuid.UUID(str(project_id))
+    init_db()
+    with SyncSessionLocal() as session:
+        row = (
+            session.query(CanonicalWorkflow)
+            .filter(
+                CanonicalWorkflow.project_id == pid,
+                CanonicalWorkflow.version == version,
+            )
+            .first()
+        )
+        if not row:
+            return {"error": "Canonical workflow version not found"}
+
+        canonicalization_id = row.canonicalization_id
+        session.query(WorkflowIndexEntry).filter(
+            WorkflowIndexEntry.canonicalization_id == canonicalization_id
+        ).delete(synchronize_session=False)
+        session.query(WorkflowMaintenanceTask).filter(
+            WorkflowMaintenanceTask.project_id == pid,
+            WorkflowMaintenanceTask.source_canonicalization_id == canonicalization_id,
+        ).delete(synchronize_session=False)
+        session.delete(row)
+        session.commit()
+        return {
+            "status": "deleted",
+            "project_id": str(pid),
+            "version": version,
+            "canonicalization_id": str(canonicalization_id),
         }
 
 

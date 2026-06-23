@@ -23,7 +23,7 @@ export default function WorkflowTab({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-4 text-sm">
         <div className="flex items-center gap-2">
-          <span className="text-slate-400">Workflow cards</span>
+          <span className="text-slate-400">Workflow</span>
           <StatusBadge status={project.workflow_status ?? 'NO_WORKFLOW'} />
           <span className="text-slate-500">v{project.workflow_version ?? '—'}</span>
         </div>

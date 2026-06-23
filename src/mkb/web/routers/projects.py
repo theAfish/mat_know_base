@@ -305,6 +305,23 @@ def project_canonical_workflow_version(project_id: str, version: int):
     return result
 
 
+@router.delete("/api/projects/{project_id}/canonical-workflows/{version}")
+def delete_project_canonical_workflow_version(project_id: str, version: int):
+    _parse_uuid(project_id, "project_id")
+    active = jobs.find_active_job(project_id=project_id, kind="canonical_workflow")
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail="Workflow canonicalization is currently running for this project. Cancel or wait for it to finish before deleting a version.",
+        )
+    result = api.delete_canonical_workflow_version(project_id, version)
+    if result.get("error"):
+        detail = result["error"]
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail)
+    return result
+
+
 @router.get("/api/workflows/search")
 def search_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "strict", limit: int = 100):
     if not any((source, operation, target)):

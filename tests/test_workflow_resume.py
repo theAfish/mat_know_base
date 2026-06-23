@@ -85,10 +85,12 @@ def test_delete_raw_workflow_version_removes_unfinished_row(monkeypatch):
         graph=None,
     )
 
-    fake_query = MagicMock()
-    fake_query.filter.return_value.first.return_value = fake_row
+    fake_raw_query = MagicMock()
+    fake_raw_query.filter.return_value.first.return_value = fake_row
+    fake_canonical_query = MagicMock()
+    fake_canonical_query.filter.return_value.order_by.return_value.first.return_value = None
     fake_session = MagicMock()
-    fake_session.query.return_value = fake_query
+    fake_session.query.side_effect = [fake_raw_query, fake_canonical_query]
     fake_cm = MagicMock()
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
@@ -108,7 +110,7 @@ def test_delete_raw_workflow_version_removes_unfinished_row(monkeypatch):
     fake_session.commit.assert_called_once()
 
 
-def test_delete_raw_workflow_version_rejects_completed_rows(monkeypatch):
+def test_delete_raw_workflow_version_rejects_when_canonical_depends_on_it(monkeypatch):
     project_id = uuid.uuid4()
     fake_row = SimpleNamespace(
         extraction_id=uuid.uuid4(),
@@ -116,6 +118,36 @@ def test_delete_raw_workflow_version_rejects_completed_rows(monkeypatch):
         version=2,
         status="COMPLETED",
         graph={"nodes": [], "edges": []},
+    )
+    fake_canonical = SimpleNamespace(version=5)
+
+    fake_raw_query = MagicMock()
+    fake_raw_query.filter.return_value.first.return_value = fake_row
+    fake_canonical_query = MagicMock()
+    fake_canonical_query.filter.return_value.order_by.return_value.first.return_value = fake_canonical
+    fake_session = MagicMock()
+    fake_session.query.side_effect = [fake_raw_query, fake_canonical_query]
+    fake_cm = MagicMock()
+    fake_cm.__enter__.return_value = fake_session
+    fake_cm.__exit__.return_value = False
+
+    monkeypatch.setattr(api, "init_db", lambda: None)
+    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
+
+    result = api.delete_raw_workflow_version(project_id, 2)
+
+    assert result == {"error": "Raw workflow v2 cannot be deleted because canonical workflow v5 still depends on it"}
+    fake_session.delete.assert_not_called()
+    fake_session.commit.assert_not_called()
+
+
+def test_delete_canonical_workflow_version_removes_indexes_and_tasks(monkeypatch):
+    project_id = uuid.uuid4()
+    canonicalization_id = uuid.uuid4()
+    fake_row = SimpleNamespace(
+        canonicalization_id=canonicalization_id,
+        project_id=project_id,
+        version=3,
     )
 
     fake_query = MagicMock()
@@ -129,11 +161,32 @@ def test_delete_raw_workflow_version_rejects_completed_rows(monkeypatch):
     monkeypatch.setattr(api, "init_db", lambda: None)
     monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
 
-    result = api.delete_raw_workflow_version(project_id, 2)
+    result = api.delete_canonical_workflow_version(project_id, 3)
 
-    assert result == {"error": "Completed raw workflow versions cannot be deleted"}
-    fake_session.delete.assert_not_called()
-    fake_session.commit.assert_not_called()
+    assert result == {
+        "status": "deleted",
+        "project_id": str(project_id),
+        "version": 3,
+        "canonicalization_id": str(canonicalization_id),
+    }
+    fake_session.delete.assert_called_once_with(fake_row)
+    fake_session.commit.assert_called_once()
+
+
+def test_delete_canonical_workflow_version_rejects_active_job(monkeypatch):
+    project_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        projects_router.jobs,
+        "find_active_job",
+        lambda **_kwargs: {"job_id": "j1", "status": "RUNNING"},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        projects_router.delete_project_canonical_workflow_version(project_id, 2)
+
+    assert exc.value.status_code == 409
+    assert "currently running" in exc.value.detail.lower()
 
 
 def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):

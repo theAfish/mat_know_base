@@ -70,6 +70,11 @@ export const getCanonicalWorkflow = (id: string, version?: number) =>
     `/projects/${id}/canonical-workflows/${version == null ? 'latest' : version}`,
   ).then(r => r.data)
 
+export const deleteCanonicalWorkflowVersion = (id: string, version: number) =>
+  client.delete<{ status: string; project_id: string; version: number; canonicalization_id: string }>(
+    `/projects/${id}/canonical-workflows/${version}`,
+  ).then(r => r.data)
+
 export const getProjectJobs = (id: string) =>
   client.get<Job[]>(`/projects/${id}/jobs`).then(r => r.data)
 
