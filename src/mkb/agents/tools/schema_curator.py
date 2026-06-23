@@ -61,6 +61,70 @@ def _workflow_evidence(row: CanonicalWorkflow, raw: RawWorkflowExtraction | None
     }
 
 
+def _card_workflow_evidence(row: RawWorkflowExtraction) -> dict:
+    """Bounded evidence view for a v2 extraction with no canonicalization pass."""
+    graph = row.graph or {}
+    return {
+        "workflow_id": str(row.extraction_id),
+        # compatibility key used by the proposal UI/storage layer
+        "canonicalization_id": str(row.extraction_id),
+        "project_id": str(row.project_id),
+        "schema_version": row.schema_version,
+        "nodes": [{
+            "node_id": node.get("node_id"),
+            "label": node.get("canonical_name") or node.get("raw_name"),
+            "raw_name": node.get("raw_name"),
+            "node_kind": node.get("node_kind") or node.get("node_kind_guess"),
+            "semantic_type": node.get("semantic_type"),
+            "card_id": node.get("card_id"),
+            "ontology_status": node.get("ontology_status"),
+            "parameters": node.get("parameters", {}),
+            "identity": node.get("identity", {}),
+            "state": node.get("state", {}),
+            "role": node.get("role", {}),
+            "context": node.get("context", {}),
+            "evidence_text": str(node.get("evidence_text") or "")[:600],
+        } for node in graph.get("nodes", [])[:80]],
+        "edges": graph.get("edges", [])[:120],
+        "reproducibility": graph.get("reproducibility", {}),
+        "unresolved_information": graph.get("unresolved_information", [])[:30],
+    }
+
+
+def _as_induction_workflow(row: RawWorkflowExtraction) -> dict:
+    """Adapt card instances to the deterministic discovery signal analyzer."""
+    raw_graph = row.graph or {}
+    nodes = []
+    unmatched = []
+    for node in raw_graph.get("nodes", []):
+        kind = node.get("node_kind") or node.get("node_kind_guess")
+        card_id = node.get("card_id")
+        nodes.append({
+            "node_id": node.get("node_id"),
+            "label": node.get("canonical_name") or node.get("raw_name"),
+            "node_kind": kind,
+            "object_schema": node.get("semantic_type") if kind == "object" else None,
+            "operation_template_id": card_id if kind == "operation" else None,
+            "attributes": node.get("parameters", {}),
+        })
+        if kind == "operation" and not card_id:
+            unmatched.append({"raw_node_ids": [node.get("node_id")], "reason": "unmapped card"})
+    return {
+        "canonicalization_id": str(row.extraction_id),
+        "graph": {
+            "nodes": nodes,
+            "edges": raw_graph.get("edges", []),
+            "unmatched_raw_information": unmatched,
+            "granularity_mappings": [
+                {"coarse": edge.get("source_node"), "fine": edge.get("target_node")}
+                for edge in raw_graph.get("edges", [])
+                if edge.get("relation_type") in {"part_of", "has_part", "expands_to", "summarized_by"}
+            ],
+        },
+        "raw_graph": raw_graph,
+    }
+
+
 def get_schema_curator_context(min_support: int = 2, max_workflows: int = 40) -> dict:
     """Load global schema, deterministic discovery signals, and bounded evidence."""
     min_support = max(1, int(min_support))
@@ -102,6 +166,30 @@ def get_schema_curator_context(min_support: int = 2, max_workflows: int = 40) ->
                 "raw_graph": raw.graph if raw else {},
             })
             evidence.append(_workflow_evidence(row, raw))
+        # V2 graphs are already structured card instances. Include their latest
+        # active versions directly and avoid requiring the removed per-paper
+        # canonicalization stage. Old canonical workflows remain readable while
+        # installations migrate.
+        card_rows = (
+            session.query(RawWorkflowExtraction)
+            .filter(
+                RawWorkflowExtraction.status == "COMPLETED",
+                RawWorkflowExtraction.schema_version == "workflow-cards/2.0",
+                RawWorkflowExtraction.record_status.in_(("active", "needs_review")),
+            )
+            .order_by(RawWorkflowExtraction.created_at.desc())
+            .limit(max_workflows)
+            .all()
+        )
+        card_workflows = []
+        card_evidence = []
+        for row in card_rows:
+            card_workflows.append(_as_induction_workflow(row))
+            card_evidence.append(_card_workflow_evidence(row))
+        # Prefer the new direct evidence layer; fill any remaining context
+        # budget with legacy canonicalizations.
+        workflows = (card_workflows + workflows)[:max_workflows]
+        evidence = (card_evidence + evidence)[:max_workflows]
         candidates = analyze_canonical_workflows(workflows, min_support=min_support)
         diagnostics = (
             candidates[0].get("analysis", {}).get("diagnostics", {})
@@ -111,7 +199,7 @@ def get_schema_curator_context(min_support: int = 2, max_workflows: int = 40) ->
             candidate.get("analysis", {}).pop("diagnostics", None)
         return {
             "schema_library": library,
-            "workflow_count": len(rows),
+            "workflow_count": len(workflows),
             "min_support": min_support,
             "deterministic_candidates": candidates,
             "corpus_diagnostics": diagnostics,
@@ -126,7 +214,7 @@ def get_schema_curator_context(min_support: int = 2, max_workflows: int = 40) ->
                 "base_schema_version": proposal.base_schema_version,
             } for proposal in requested_revisions],
             "instructions": (
-                "Use only canonicalization_id values from workflow_evidence as evidence. "
+                "Use only workflow_id/canonicalization_id values from workflow_evidence as evidence. "
                 "Candidates are signals that require semantic review."
             ),
         }
@@ -159,6 +247,12 @@ def submit_schema_proposal(
                 CanonicalWorkflow.canonicalization_id.in_(evidence_uuids),
             ).all()
         }
+        known.update({
+            str(value) for (value,) in session.query(RawWorkflowExtraction.extraction_id).filter(
+                RawWorkflowExtraction.status == "COMPLETED",
+                RawWorkflowExtraction.extraction_id.in_(evidence_uuids),
+            ).all()
+        })
         errors = validate_proposal(
             proposal_type, payload, evidence_workflow_ids, library,
         )
@@ -231,6 +325,12 @@ def revise_schema_proposal(
                 CanonicalWorkflow.canonicalization_id.in_(evidence_uuids),
             ).all()
         }
+        known.update({
+            str(value) for (value,) in session.query(RawWorkflowExtraction.extraction_id).filter(
+                RawWorkflowExtraction.status == "COMPLETED",
+                RawWorkflowExtraction.extraction_id.in_(evidence_uuids),
+            ).all()
+        })
         errors = validate_proposal(
             proposal.proposal_type, payload, evidence_workflow_ids, library,
         )

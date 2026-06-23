@@ -379,11 +379,11 @@ def workflow_schema_status():
 def curate_schema(body: SchemaCurateRequest):
     if body.min_support < 1:
         raise HTTPException(status_code=400, detail="min_support must be at least 1")
-    from mkb.agents.schema_curator import run_schema_curator
+    from mkb.agents.ontology_induction import run_ontology_induction
 
     job_id = jobs.start_job(
-        kind="schema_curator", label="Analyze Global Workflow Schema",
-        target=run_schema_curator,
+        kind="ontology_induction", label="Induce Global Workflow Ontology",
+        target=run_ontology_induction,
         kwargs={
             "min_support": body.min_support,
             "author": body.author.strip() or "schema-curator/ui",

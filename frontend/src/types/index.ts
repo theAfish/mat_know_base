@@ -206,6 +206,17 @@ export interface RawWorkflowNode {
   node_id: string
   raw_name: string
   node_kind_guess: 'object' | 'operation' | 'unknown'
+  canonical_name?: string
+  card_id?: string | null
+  node_kind?: 'object' | 'operation' | 'unknown'
+  semantic_type?: string | null
+  parameters?: Record<string, unknown>
+  identity?: Record<string, unknown>
+  state?: Record<string, unknown>
+  role?: Record<string, unknown>
+  context?: Record<string, unknown>
+  unparsed_modifiers?: string[]
+  ontology_status?: 'matched' | 'candidate' | 'unmapped'
   attributes_explicitly_mentioned: Record<string, unknown>
   evidence_text: string
   paper_location: Record<string, unknown>
@@ -228,6 +239,14 @@ export interface RawWorkflowGraph {
   extraction_id: string
   nodes: RawWorkflowNode[]
   edges: RawWorkflowEdge[]
+  ontology_version?: string | null
+  reproducibility?: {
+    level: 'complete' | 'approximate' | 'insufficient' | 'not_applicable'
+    missing_details: string[]
+    assumptions: string[]
+    notes?: string | null
+  }
+  unresolved_information?: Record<string, unknown>[]
 }
 
 export interface RawWorkflowVersion {

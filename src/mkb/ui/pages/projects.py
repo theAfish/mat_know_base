@@ -642,38 +642,26 @@ def _render_workflow_tab(project_id: str):
         return
 
     raw_workflow = api.get_raw_workflow(project_id)
-    canonical_workflow = api.get_canonical_workflow(project_id)
     raw_job = get_running_job(project_id, "raw_workflow")
-    canonical_job = get_running_job(project_id, "canonical_workflow")
 
-    summary_cols = st.columns(4)
-    summary_cols[0].write(f"Raw status: **{project.get('workflow_status') or 'NO_WORKFLOW'}**")
-    summary_cols[1].write(f"Raw version: {project.get('workflow_version') or '—'}")
-    summary_cols[2].write(f"Canonical status: **{project.get('canonical_workflow_status') or 'NO_CANONICAL_WORKFLOW'}**")
-    summary_cols[3].write(f"Canonical version: {project.get('canonical_workflow_version') or '—'}")
+    summary_cols = st.columns(2)
+    summary_cols[0].write(f"Workflow status: **{project.get('workflow_status') or 'NO_WORKFLOW'}**")
+    summary_cols[1].write(f"Card graph version: {project.get('workflow_version') or '—'}")
 
     if raw_workflow:
         st.caption(
-            f"Latest raw workflow v{raw_workflow.get('version')} "
+            f"Latest workflow-card graph v{raw_workflow.get('version')} "
             f"({raw_workflow.get('status')}, {raw_workflow.get('record_status')})"
         )
     else:
-        st.caption("No completed raw workflow yet.")
+        st.caption("No completed workflow-card graph yet.")
 
-    if canonical_workflow:
-        st.caption(
-            f"Latest canonical workflow v{canonical_workflow.get('version')} "
-            f"({canonical_workflow.get('status')})"
-        )
-    else:
-        st.caption("No completed canonical workflow yet.")
-
-    action_cols = st.columns([1, 1])
+    action_cols = st.columns([1])
     with action_cols[0]:
         if st.button(
             "Extract Workflow",
             key=f"wf_extract_{project_id}",
-            help="Run raw workflow extraction",
+            help="Extract a structured, reusable workflow-card graph",
             disabled=raw_job is not None,
         ):
             readiness = api.get_raw_workflow_extraction_readiness(project_id)
@@ -690,25 +678,6 @@ def _render_workflow_tab(project_id: str):
             st.rerun()
         if raw_job:
             st.caption(raw_job.get("current_message") or "Running")
-
-    with action_cols[1]:
-        if st.button(
-            "Canonicalize Workflow",
-            key=f"wf_canonical_{project_id}",
-            help="Create a normalized workflow from the latest completed raw extraction",
-            disabled=canonical_job is not None or raw_workflow is None,
-        ):
-            start_job(
-                kind="canonical_workflow",
-                label="Canonicalize Workflow",
-                project_id=project_id,
-                target=api.canonicalize_workflow,
-                kwargs={"project_id": project_id},
-            )
-            st.rerun()
-        if canonical_job:
-            st.caption(canonical_job.get("current_message") or "Running")
-
 
 def _render_graph_tab(project_id: str):
     kg = get_knowledge_graph_cached(project_id=project_id)

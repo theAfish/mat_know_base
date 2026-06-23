@@ -496,8 +496,8 @@ def cmd_workflow_correct(args):
 
 
 def cmd_schema_curate(args):
-    from mkb.agents.schema_curator import run_schema_curator
-    _json_dump(run_schema_curator(min_support=args.min_support, author=args.author))
+    from mkb.agents.ontology_induction import run_ontology_induction
+    _json_dump(run_ontology_induction(min_support=args.min_support, author=args.author))
 
 
 def cmd_schema_proposals(args):

@@ -25,11 +25,14 @@ def audit_raw_graph(graph: dict, *, low_confidence_threshold: float = 0.5, later
                 flags.append({"type": "low_confidence", "item_type": item_type, "item_id": item.get(id_key)})
             if not str(item.get("evidence_text", "")).strip():
                 flags.append({"type": "missing_evidence", "item_type": item_type, "item_id": item.get(id_key)})
-    normalized = [str(n.get("raw_name", "")).casefold().strip() for n in nodes]
-    duplicates = {name for name, count in Counter(normalized).items() if name and count > 1}
-    for node in nodes:
-        if str(node.get("raw_name", "")).casefold().strip() in duplicates:
-            flags.append({"type": "duplicated_node", "item_type": "node", "item_id": node.get("node_id")})
+    # Repeated names are normal card reuse in v2 (distinct runs of the same
+    # operation). Keep the old heuristic only for legacy free-text graphs.
+    if graph.get("schema_version") == "raw-workflow/1.0":
+        normalized = [str(n.get("raw_name", "")).casefold().strip() for n in nodes]
+        duplicates = {name for name, count in Counter(normalized).items() if name and count > 1}
+        for node in nodes:
+            if str(node.get("raw_name", "")).casefold().strip() in duplicates:
+                flags.append({"type": "duplicated_node", "item_type": "node", "item_id": node.get("node_id")})
     for edge in edges:
         source, target = by_id.get(edge.get("source_node")), by_id.get(edge.get("target_node"))
         relation = edge.get("relation_type")

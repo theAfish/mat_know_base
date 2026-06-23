@@ -9,6 +9,8 @@ from difflib import SequenceMatcher
 ALLOWED_PROPOSAL_TYPES = {
     "create_template", "merge_templates", "add_alias", "add_slot",
     "add_granularity_relation", "deprecate_template",
+    "create_card", "merge_cards", "add_card_alias", "add_parameter_slot",
+    "add_parent_relation", "deprecate_card",
 }
 
 
@@ -78,6 +80,15 @@ def analyze_canonical_workflows(workflows: list[dict], *, min_support: int = 2) 
                 "slug": slugify(name), "label": name, "aliases": [],
             }
             proposals.append(_proposal("create_template", payload, evidence, {"signal": "frequent_unmatched_operation", "support": len(evidence)}))
+    for name, evidence in object_patterns.items():
+        evidence = sorted(set(evidence))
+        if len(evidence) >= min_support:
+            proposals.append(_proposal(
+                "create_card",
+                {"slug": slugify(name), "canonical_name": name, "kind": "object", "aliases": []},
+                evidence,
+                {"signal": "frequent_unmapped_object", "support": len(evidence)},
+            ))
     clustered = set()
     unmatched_names = sorted(unmatched)
     for index, name in enumerate(unmatched_names):
@@ -127,8 +138,14 @@ def validate_proposal(proposal_type: str, payload: dict, evidence_workflow_ids: 
     if not evidence_workflow_ids:
         errors.append("at least one evidence workflow is required")
     templates = library.get("operation_templates", {})
+    cards = library.get("cards", {})
     if proposal_type == "create_template" and (not payload.get("slug") or not payload.get("label")):
         errors.append("create_template requires slug and label")
+    if proposal_type == "create_card":
+        if not payload.get("slug") or not payload.get("canonical_name"):
+            errors.append("create_card requires slug and canonical_name")
+        if payload.get("kind") not in {"object", "operation"}:
+            errors.append("create_card kind must be object or operation")
     if proposal_type == "create_template":
         parameters = payload.get("parameters", {})
         if not isinstance(parameters, dict):
@@ -148,6 +165,8 @@ def validate_proposal(proposal_type: str, payload: dict, evidence_workflow_ids: 
                 break
     if proposal_type in {"add_alias", "add_slot", "deprecate_template"} and payload.get("template_id") not in templates:
         errors.append("template_id does not exist")
+    if proposal_type in {"add_card_alias", "add_parameter_slot", "deprecate_card"} and payload.get("card_id") not in cards:
+        errors.append("card_id does not exist")
     if proposal_type == "add_alias" and not str(payload.get("alias", "")).strip():
         errors.append("add_alias requires alias")
     if proposal_type == "add_slot":
@@ -157,11 +176,28 @@ def validate_proposal(proposal_type: str, payload: dict, evidence_workflow_ids: 
             or (isinstance(slot, dict) and str(slot.get("key", "")).strip())
         ):
             errors.append("add_slot requires a key string or an object containing key")
+    if proposal_type == "add_parameter_slot":
+        slot = payload.get("slot")
+        if not (
+            (isinstance(slot, str) and slot.strip())
+            or (isinstance(slot, dict) and str(slot.get("key", "")).strip())
+        ):
+            errors.append("add_parameter_slot requires a key string or an object containing key")
+    if proposal_type == "add_card_alias" and not str(payload.get("alias", "")).strip():
+        errors.append("add_card_alias requires alias")
     if proposal_type == "merge_templates":
         if payload.get("source_template_id") not in templates or payload.get("target_template_id") not in templates:
             errors.append("merge source and target templates must exist")
         if payload.get("source_template_id") == payload.get("target_template_id"):
             errors.append("cannot merge a template into itself")
+    if proposal_type == "merge_cards":
+        if payload.get("source_card_id") not in cards or payload.get("target_card_id") not in cards:
+            errors.append("merge source and target cards must exist")
+        if payload.get("source_card_id") == payload.get("target_card_id"):
+            errors.append("cannot merge a card into itself")
+    if proposal_type == "add_parent_relation":
+        if payload.get("parent_card_id") not in cards or payload.get("child_card_id") not in cards:
+            errors.append("parent and child cards must exist")
     if proposal_type == "add_granularity_relation" and (not payload.get("coarse") or not payload.get("fine")):
         errors.append("granularity relation requires coarse and fine values")
     return errors
@@ -170,6 +206,7 @@ def validate_proposal(proposal_type: str, payload: dict, evidence_workflow_ids: 
 def apply_proposal(library: dict, proposal_type: str, payload: dict) -> dict:
     result = copy.deepcopy(library)
     templates = result.setdefault("operation_templates", {})
+    cards = result.setdefault("cards", {})
     if proposal_type == "create_template":
         template_id = f"operation-template:{result['schema_version']}:{payload['slug']}"
         if template_id in templates:
@@ -195,4 +232,34 @@ def apply_proposal(library: dict, proposal_type: str, payload: dict) -> dict:
         templates[payload["source_template_id"]]["deprecated"] = True
     elif proposal_type == "add_granularity_relation":
         result.setdefault("granularity_relations", []).append(payload)
+    elif proposal_type == "create_card":
+        card_id = f"card:{result['schema_version']}:{payload['kind']}:{payload['slug']}"
+        if card_id in cards:
+            raise ValueError("card already exists")
+        cards[card_id] = {key: value for key, value in payload.items() if key != "slug"}
+        cards[card_id].setdefault("aliases", [])
+        cards[card_id].setdefault("parameter_slots", [])
+        cards[card_id].setdefault("status", "active")
+    elif proposal_type == "add_card_alias":
+        aliases = cards[payload["card_id"]].setdefault("aliases", [])
+        if payload["alias"] not in aliases:
+            aliases.append(payload["alias"])
+    elif proposal_type == "add_parameter_slot":
+        slots = cards[payload["card_id"]].setdefault("parameter_slots", [])
+        if payload["slot"] not in slots:
+            slots.append(payload["slot"])
+    elif proposal_type == "merge_cards":
+        cards[payload["source_card_id"]]["replaced_by"] = payload["target_card_id"]
+        cards[payload["source_card_id"]]["status"] = "deprecated"
+    elif proposal_type == "deprecate_card":
+        cards[payload["card_id"]]["status"] = "deprecated"
+        if payload.get("replacement_card_id"):
+            cards[payload["card_id"]]["replaced_by"] = payload["replacement_card_id"]
+    elif proposal_type == "add_parent_relation":
+        relation = {
+            "parent_card_id": payload["parent_card_id"],
+            "child_card_id": payload["child_card_id"],
+        }
+        if relation not in result.setdefault("card_relations", []):
+            result["card_relations"].append(relation)
     return result

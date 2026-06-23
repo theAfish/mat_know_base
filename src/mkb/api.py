@@ -1470,7 +1470,7 @@ def edit_schema_proposal(
     """Save an attributed proposal draft revision and revalidate it."""
     from sqlalchemy import func
     from mkb.db.models import (
-        CanonicalWorkflow, SchemaProposal, SchemaProposalRevision,
+        CanonicalWorkflow, RawWorkflowExtraction, SchemaProposal, SchemaProposalRevision,
         WorkflowSchemaVersion,
     )
     from mkb.workflows.curator import validate_proposal
@@ -1497,6 +1497,12 @@ def edit_schema_proposal(
                 CanonicalWorkflow.canonicalization_id.in_(evidence_uuids)
             ).all()
         } if evidence_workflow_ids else set()
+        if evidence_workflow_ids:
+            known_evidence.update({
+                str(value) for (value,) in session.query(RawWorkflowExtraction.extraction_id).filter(
+                    RawWorkflowExtraction.extraction_id.in_(evidence_uuids)
+                ).all()
+            })
         errors = validate_proposal(
             row.proposal_type, payload, evidence_workflow_ids, current.payload,
         )
@@ -1569,7 +1575,7 @@ def review_schema_proposal(
     """Validate and approve/reject a proposal; approval creates a schema snapshot."""
     from sqlalchemy import func
     from mkb.db.models import (
-        CanonicalWorkflow, SchemaProposal, SchemaProposalRevision,
+        CanonicalWorkflow, RawWorkflowExtraction, SchemaProposal, SchemaProposalRevision,
         WorkflowMaintenanceTask, WorkflowSchemaVersion,
     )
     from mkb.workflows.curator import apply_proposal, validate_proposal
@@ -1598,6 +1604,14 @@ def review_schema_proposal(
                 ])
             ).all()
         } if row.evidence_workflow_ids else set()
+        if row.evidence_workflow_ids:
+            known_evidence.update({
+                str(value) for (value,) in session.query(RawWorkflowExtraction.extraction_id).filter(
+                    RawWorkflowExtraction.extraction_id.in_([
+                        uuid.UUID(value) for value in row.evidence_workflow_ids
+                    ])
+                ).all()
+            })
         missing = sorted(set(row.evidence_workflow_ids) - known_evidence)
         if missing:
             errors.append(f"unknown evidence workflows: {', '.join(missing)}")

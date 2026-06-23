@@ -9,7 +9,6 @@ import {
   processProject,
   projectToSpace,
   workflowExtractProject,
-  canonicalizeProjectWorkflow,
 } from '../../api/projects'
 import { listSpaces } from '../../api/spaces'
 import type { Job, Project, Space } from '../../types'
@@ -179,11 +178,10 @@ export default function ProjectDetail({
         {activeTab === 'projections' && <ProjectionsTab key={`proj-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'workflow'    && (
           <WorkflowTab
-            key={`workflow-${project.project_id}-${project.workflow_version ?? 0}-${project.canonical_workflow_version ?? 0}-${refreshKey}`}
+            key={`workflow-${project.project_id}-${project.workflow_version ?? 0}-${refreshKey}`}
             project={project}
             activeJobId={activeJobId}
             onExtractWorkflow={() => run(() => workflowExtractProject(project.project_id))}
-            onCanonicalizeWorkflow={() => run(() => canonicalizeProjectWorkflow(project.project_id))}
             onWorkflowVersionDeleted={() => {
               setRefreshKey(k => k + 1)
               refreshProject()

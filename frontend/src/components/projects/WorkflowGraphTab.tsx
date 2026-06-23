@@ -11,10 +11,19 @@ function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
 
   const nodes: WorkflowCanvasNode[] = graph.nodes.map(node => ({
     id: node.node_id,
-    label: node.raw_name,
-    kind: node.node_kind_guess === 'operation' ? 'operation' : 'object',
-    title: `${node.raw_name}\n${node.node_kind_guess} · confidence ${node.confidence.toFixed(2)}\n\n${node.evidence_text}`,
+    label: node.canonical_name ?? node.raw_name,
+    kind: (node.node_kind ?? node.node_kind_guess) === 'operation' ? 'operation' : 'object',
+    title: `${node.canonical_name ?? node.raw_name}\nsource term: ${node.raw_name}\n${node.semantic_type ?? node.node_kind_guess} · confidence ${node.confidence.toFixed(2)}\n\n${node.evidence_text}`,
     details: {
+      card_id: node.card_id,
+      ontology_status: node.ontology_status,
+      semantic_type: node.semantic_type,
+      parameters: node.parameters,
+      identity: node.identity,
+      state: node.state,
+      role: node.role,
+      context: node.context,
+      unparsed_modifiers: node.unparsed_modifiers,
       confidence: node.confidence,
       attributes_explicitly_mentioned: node.attributes_explicitly_mentioned,
       paper_location: node.paper_location,

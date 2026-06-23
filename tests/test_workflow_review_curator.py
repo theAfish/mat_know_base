@@ -110,3 +110,16 @@ def test_add_slot_supports_agent_created_structured_keys():
         },
     })
     assert updated["operation_templates"][template_id]["slots"][0]["key"] == "method"
+
+
+def test_object_and_operation_cards_evolve_symmetrically():
+    library = {"schema_version": "workflow-schema/2.0", "cards": {}}
+    payload = {
+        "slug": "xrd-spectrum", "canonical_name": "XRD Spectrum",
+        "kind": "object", "aliases": ["X-ray diffraction pattern"],
+    }
+    assert not validate_proposal("create_card", payload, ["workflow-id"], library)
+    updated = apply_proposal(library, "create_card", payload)
+    card_id = "card:workflow-schema/2.0:object:xrd-spectrum"
+    assert updated["cards"][card_id]["kind"] == "object"
+    assert updated["cards"][card_id]["canonical_name"] == "XRD Spectrum"
