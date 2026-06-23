@@ -41,6 +41,7 @@ export default function ProjectDetail({
   const [projectionSource, setProjectionSource] = useState<'frame' | 'markdown'>('frame')
   const [feedbackCount, setFeedbackCount] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const refreshFeedbackCount = useCallback(() => {
     listFeedback({ project_id: project.project_id, limit: 100 })
@@ -80,7 +81,14 @@ export default function ProjectDetail({
 
   const run = async (fn: () => Promise<{ job_id: string }>, onDone?: () => void) => {
     if (activeJobId) return
-    try { const { job_id } = await fn(); pollJob(job_id, onDone) } catch { /* ignore */ }
+    try {
+      setActionError(null)
+      const { job_id } = await fn()
+      pollJob(job_id, onDone)
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } }; message?: string }
+      setActionError(e?.response?.data?.detail ?? e?.message ?? 'Action failed')
+    }
   }
 
   const label = project.label ?? project.source_path ?? project.project_id.slice(0, 12)
@@ -132,6 +140,11 @@ export default function ProjectDetail({
             🕸 Extract Graph
           </button>
         </div>
+        {actionError && (
+          <div className="rounded border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+            {actionError}
+          </div>
+        )}
         {activeJob && (
           <div className="flex items-center gap-2 text-xs text-slate-400">
             {activeJobId && <span className="inline-block w-3 h-3 border-2 border-teal-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
@@ -171,6 +184,10 @@ export default function ProjectDetail({
             activeJobId={activeJobId}
             onExtractWorkflow={() => run(() => workflowExtractProject(project.project_id))}
             onCanonicalizeWorkflow={() => run(() => canonicalizeProjectWorkflow(project.project_id))}
+            onWorkflowVersionDeleted={() => {
+              setRefreshKey(k => k + 1)
+              refreshProject()
+            }}
           />
         )}
         {activeTab === 'graph'       && <GraphTab key={`graph-${refreshKey}`} projectId={project.project_id} />}

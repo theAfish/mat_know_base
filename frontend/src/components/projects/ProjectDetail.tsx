@@ -47,6 +47,7 @@ export default function ProjectDetail({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [graphView, setGraphView] = useState<'knowledge' | 'workflow' | 'canonical'>('workflow')
   const pollHandleRef = useRef<JobPollHandle | null>(null)
 
@@ -94,10 +95,13 @@ export default function ProjectDetail({
 
   const runAction = async (fn: () => Promise<{ job_id: string }>) => {
     try {
+      setActionError(null)
       const { job_id } = await fn()
       pollJob(job_id)
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Action failed', err)
+      const e = err as { response?: { data?: { detail?: string } }; message?: string }
+      setActionError(e?.response?.data?.detail ?? e?.message ?? 'Action failed')
     }
   }
 
@@ -129,6 +133,11 @@ export default function ProjectDetail({
   }
 
   const activeJob = jobs.find(j => j.job_id === activeJobId) ?? null
+  const workflowActionLabel = project.workflow_status === 'IN_PROGRESS'
+    ? '⛓ Resume Workflow'
+    : project.workflow_status === 'FAILED'
+      ? '⛓ Retry Workflow'
+      : '⛓ Extract Workflow'
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
@@ -158,6 +167,11 @@ export default function ProjectDetail({
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {/* Action buttons */}
+          {actionError && (
+            <div className="rounded border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+              {actionError}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => runAction(() => processProject(project.project_id))}
@@ -192,7 +206,7 @@ export default function ProjectDetail({
               disabled={!!activeJobId}
               className="px-3 py-2 bg-violet-900/70 hover:bg-violet-800 disabled:opacity-40 rounded text-xs text-violet-100"
             >
-              ⛓ Extract Workflow
+              {workflowActionLabel}
             </button>
             <button
               onClick={() => runAction(() => canonicalizeProjectWorkflow(project.project_id))}
@@ -213,7 +227,14 @@ export default function ProjectDetail({
               ))}
             </div>
             {graphView === 'knowledge' && <GraphTab projectId={project.project_id} />}
-            {graphView === 'workflow' && <WorkflowGraphTab key={`${project.project_id}-${project.workflow_version ?? 0}`} projectId={project.project_id} />}
+            {graphView === 'workflow' && (
+              <WorkflowGraphTab
+                key={`${project.project_id}-${project.workflow_version ?? 0}`}
+                projectId={project.project_id}
+                actionsDisabled={!!activeJobId}
+                onWorkflowVersionDeleted={refreshProject}
+              />
+            )}
             {graphView === 'canonical' && <CanonicalWorkflowTab key={`${project.project_id}-${project.canonical_workflow_version ?? 0}`} projectId={project.project_id} />}
           </div>
 

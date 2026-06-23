@@ -19,20 +19,25 @@ class JobCancelled(BaseException):
 
 
 def ensure_llm_env() -> None:
-    """Set OpenAI environment variables from settings if configured."""
-    if settings.openai_api_key:
-        os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
-    if settings.openai_api_base:
-        os.environ.setdefault("OPENAI_API_BASE", settings.openai_api_base)
+    """Set env vars used by LiteLLM for OpenAI-compatible providers."""
+    effective_api_key = settings.llm_api_key or settings.openai_api_key
+    effective_api_base = settings.llm_api_base or settings.openai_api_base
+
+    if effective_api_key:
+        os.environ["OPENAI_API_KEY"] = effective_api_key
+    if effective_api_base:
+        os.environ["OPENAI_API_BASE"] = effective_api_base
 
 
 def create_llm(model: str | None = None) -> LiteLlm:
     """Create a LiteLlm instance with env setup."""
     ensure_llm_env()
+    from mkb.runtime_settings import get_setting
+
     if model is None:
-        from mkb.runtime_settings import get_setting
         model = get_setting("extraction_model")
-    return LiteLlm(model=model)
+    timeout = int(get_setting("agent_llm_timeout"))
+    return LiteLlm(model=model, timeout=timeout)
 
 
 _loop_lock = threading.Lock()

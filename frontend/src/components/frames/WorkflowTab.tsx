@@ -10,13 +10,20 @@ export default function WorkflowTab({
   activeJobId,
   onExtractWorkflow,
   onCanonicalizeWorkflow,
+  onWorkflowVersionDeleted,
 }: {
   project: Project
   activeJobId: string | null
   onExtractWorkflow: () => void
   onCanonicalizeWorkflow: () => void
+  onWorkflowVersionDeleted?: () => void
 }) {
   const [view, setView] = useState<'raw' | 'canonical'>('raw')
+  const workflowActionLabel = project.workflow_status === 'IN_PROGRESS'
+    ? '⛓ Resume Workflow'
+    : project.workflow_status === 'FAILED'
+      ? '⛓ Retry Workflow'
+      : '⛓ Extract Workflow'
 
   return (
     <div className="space-y-4">
@@ -39,7 +46,7 @@ export default function WorkflowTab({
           disabled={!!activeJobId}
           className="px-3 py-1.5 bg-violet-900/70 hover:bg-violet-800 disabled:opacity-40 rounded text-xs text-violet-100"
         >
-          ⛓ Extract Workflow
+          {workflowActionLabel}
         </button>
         <button
           onClick={onCanonicalizeWorkflow}
@@ -69,7 +76,13 @@ export default function WorkflowTab({
         ))}
       </div>
 
-      {view === 'raw' && <WorkflowGraphTab projectId={project.project_id} />}
+      {view === 'raw' && (
+        <WorkflowGraphTab
+          projectId={project.project_id}
+          actionsDisabled={!!activeJobId}
+          onWorkflowVersionDeleted={onWorkflowVersionDeleted}
+        />
+      )}
       {view === 'canonical' && <CanonicalWorkflowTab projectId={project.project_id} />}
     </div>
   )

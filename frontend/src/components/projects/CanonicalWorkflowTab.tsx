@@ -14,6 +14,12 @@ function Canvas({ workflow }: { workflow: CanonicalWorkflowVersion }) {
     label: node.label,
     kind: node.node_kind,
     title: `${node.label}\n${node.object_schema ?? node.operation_template_id ?? 'unmatched template'}\n\nRaw sources: ${node.raw_node_ids.join(', ')}\nAttributes: ${JSON.stringify(node.attributes)}`,
+    details: {
+      object_schema: node.object_schema,
+      operation_template_id: node.operation_template_id,
+      attributes: node.attributes,
+      raw_node_ids: node.raw_node_ids,
+    },
   }))
   const edges: WorkflowCanvasEdge[] = graph.edges.map(edge => ({
     id: edge.edge_id,
@@ -34,8 +40,8 @@ export default function CanonicalWorkflowTab({ projectId }: { projectId: string 
     setLoading(true)
     listCanonicalWorkflows(projectId).then(async rows => {
       setVersions(rows)
-      const latest = rows.find(row => row.status === 'COMPLETED')
-      setSelected(latest ? await getCanonicalWorkflow(projectId, latest.version) : null)
+      const preferred = rows.find(row => row.status === 'COMPLETED') ?? rows[0] ?? null
+      setSelected(preferred ? await getCanonicalWorkflow(projectId, preferred.version) : null)
     }).finally(() => setLoading(false))
   }, [projectId])
   const choose = async (version: number) => setSelected(await getCanonicalWorkflow(projectId, version))
@@ -50,7 +56,15 @@ export default function CanonicalWorkflowTab({ projectId }: { projectId: string 
       {selected && <span>{selected.schema_version} · raw {selected.raw_extraction_id.slice(0, 8)}</span>}
     </div>
     {selected?.error && <p className="text-sm text-red-400">{selected.error}</p>}
-    {selected && <Canvas workflow={selected} />}
+    {selected && !selected.graph && selected.resumable && (
+      <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+        {selected.has_checkpoint
+          ? `This unfinished canonical version has a saved checkpoint${selected.checkpoint_updated_at ? ` from ${new Date(selected.checkpoint_updated_at).toLocaleString()}` : ''}. Run Canonicalize Workflow again to resume the same version instead of creating a new one.`
+          : 'This unfinished canonical version has no finalized graph yet. Run Canonicalize Workflow again to resume the same version.'}
+        {selected.checkpoint_summary ? <p className="mt-1 text-xs text-amber-300/90">{selected.checkpoint_summary}</p> : null}
+      </div>
+    )}
+    {selected?.graph ? <Canvas workflow={selected} /> : null}
     <p className="text-xs text-slate-500">Objects start above their earliest consuming step, labels wrap across multiple lines, and you can drag nodes freely anywhere in the canvas.</p>
     {selected?.graph && <div className="flex gap-4 text-xs text-slate-500">
       <span>{selected.graph.raw_to_canonical_mappings.length} mappings</span>

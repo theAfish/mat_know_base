@@ -12,9 +12,9 @@ OBJECT_SCHEMAS = {
 }
 
 OPERATION_TEMPLATES = {
-    "dft-relaxation": {"label": "DFT relaxation", "aliases": ["geometry optimization", "structure relaxation"]},
-    "dft-single-point": {"label": "DFT single-point calculation", "aliases": ["single point calculation", "SCF calculation"]},
-    "dft-band-structure": {"label": "DFT band structure calculation", "aliases": ["band structure calculation"]},
+    "dft-relaxation": {"label": "Structure relaxation", "parameters": {"method": "dft"}, "aliases": ["DFT relaxation", "geometry optimization", "structure relaxation"]},
+    "dft-single-point": {"label": "Single-point calculation", "parameters": {"method": "dft"}, "aliases": ["DFT single-point calculation", "single point calculation", "SCF calculation"]},
+    "dft-band-structure": {"label": "Band structure calculation", "parameters": {"method": "dft"}, "aliases": ["DFT band structure calculation", "band structure calculation"]},
     "molecular-dynamics": {"label": "Molecular dynamics", "aliases": ["MD simulation"]},
     "powder-xrd": {"label": "Powder XRD", "aliases": ["PXRD", "powder X-ray diffraction"]},
     "sem": {"label": "SEM", "aliases": ["scanning electron microscopy"]},
@@ -24,8 +24,8 @@ OPERATION_TEMPLATES = {
 }
 
 
-def get_schema_library_payload() -> dict:
-    return {
+def get_schema_library_payload(schema_version: str | None = None) -> dict:
+    seed = {
         "schema_version": CANONICAL_SCHEMA_VERSION,
         "object_schemas": OBJECT_SCHEMAS,
         "operation_templates": {
@@ -33,3 +33,20 @@ def get_schema_library_payload() -> dict:
             for slug, value in OPERATION_TEMPLATES.items()
         },
     }
+    # Database-backed versions are optional so contracts and unit tests remain
+    # usable without a running database.
+    try:
+        from mkb.db.engine import SyncSessionLocal
+        from mkb.db.models import WorkflowSchemaVersion
+        with SyncSessionLocal() as session:
+            query = session.query(WorkflowSchemaVersion)
+            row = (
+                query.filter_by(name=schema_version).first()
+                if schema_version
+                else query.filter_by(status="active").order_by(WorkflowSchemaVersion.version.desc()).first()
+            )
+            if row:
+                return row.payload
+    except Exception:
+        pass
+    return seed

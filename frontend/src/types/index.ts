@@ -244,6 +244,10 @@ export interface RawWorkflowVersion {
   error: string | null
   created_at: string | null
   extracted_at: string | null
+  has_checkpoint?: boolean
+  checkpoint_summary?: string | null
+  checkpoint_updated_at?: string | null
+  resumable?: boolean
   node_count?: number
   edge_count?: number
   graph?: RawWorkflowGraph | null
@@ -285,9 +289,84 @@ export interface CanonicalWorkflowVersion {
   error: string | null
   created_at: string | null
   canonicalized_at: string | null
+  has_checkpoint?: boolean
+  checkpoint_summary?: string | null
+  checkpoint_updated_at?: string | null
+  resumable?: boolean
   node_count?: number
   edge_count?: number
   graph?: CanonicalWorkflowGraph | null
+}
+
+export type SchemaProposalStatus = 'pending' | 'revision_requested' | 'approved' | 'rejected'
+
+export interface WorkflowSchemaStatus {
+  schema_version: string
+  version_number: number
+  status: string
+  change_summary: string | null
+  created_by: string
+  created_at: string | null
+  object_schema_count: number
+  operation_template_count: number
+  granularity_relation_count: number
+  proposal_counts: Record<string, number>
+  pending_recanonicalizations: number
+}
+
+export interface SchemaProposal {
+  proposal_id: string
+  proposal_type: string
+  status: SchemaProposalStatus
+  payload: Record<string, unknown>
+  evidence_workflow_ids: string[]
+  analysis: Record<string, unknown>
+  rationale: string | null
+  base_schema_version: string
+  created_by: string
+  reviewed_by: string | null
+  reviewer_notes: string | null
+  reviewed_at: string | null
+  created_at: string | null
+  validation_errors: string[]
+  revision_count: number
+}
+
+export interface SchemaProposalReviewResult {
+  proposal_id: string
+  status: SchemaProposalStatus
+  schema_version?: string
+  recanonicalization_scheduled?: number
+  rebased_from_schema?: string | null
+  queues_created?: number
+  queues_updated?: number
+  duplicate_queues_removed?: number
+}
+
+export interface SchemaProposalRevision {
+  revision_id: string
+  revision_number: number
+  payload: Record<string, unknown>
+  evidence_workflow_ids: string[]
+  analysis: Record<string, unknown>
+  rationale: string | null
+  author: string
+  author_type: 'agent' | 'human' | 'system'
+  change_note: string | null
+  validation_errors: string[]
+  created_at: string | null
+}
+
+export interface WorkflowMaintenanceTask {
+  task_id: string
+  project_id: string
+  task_type: 'reextract' | 'recanonicalize'
+  reason: string
+  scope: Record<string, unknown>
+  status: string
+  target_schema_version: string | null
+  result: Record<string, unknown>
+  error: string | null
 }
 
 // ─── Upload types ─────────────────────────────────────────────────────────────

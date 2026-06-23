@@ -676,6 +676,10 @@ def _render_workflow_tab(project_id: str):
             help="Run raw workflow extraction",
             disabled=raw_job is not None,
         ):
+            readiness = api.get_raw_workflow_extraction_readiness(project_id)
+            if not readiness.get("ready"):
+                st.error(readiness.get("message") or "Project is not ready for workflow extraction.")
+                return
             start_job(
                 kind="raw_workflow",
                 label="Extract Workflow",

@@ -52,6 +52,11 @@ export const getProjectWorkflow = (id: string, version?: number) =>
     `/projects/${id}/workflows/${version == null ? 'latest' : version}`,
   ).then(r => r.data)
 
+export const deleteProjectWorkflowVersion = (id: string, version: number) =>
+  client.delete<{ status: string; project_id: string; version: number; extraction_id: string }>(
+    `/projects/${id}/workflows/${version}`,
+  ).then(r => r.data)
+
 export const canonicalizeProjectWorkflow = (id: string, rawExtractionId?: string) =>
   client.post<{ job_id: string }>(`/projects/${id}/workflows/canonicalize`, {
     raw_extraction_id: rawExtractionId ?? null,

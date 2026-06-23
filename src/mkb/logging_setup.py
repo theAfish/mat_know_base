@@ -74,7 +74,15 @@ def setup_logging(
     # config (which itself reads .env).
     from mkb.config import settings
 
-    resolved_level = _coerce_level(level or settings.log_level, logging.DEBUG)
+    if level is None:
+        try:
+            from mkb.runtime_settings import get_setting
+            configured_level = get_setting("log_level")
+        except Exception:
+            configured_level = settings.log_level
+    else:
+        configured_level = level
+    resolved_level = _coerce_level(configured_level, logging.DEBUG)
     resolved_dir = Path(log_dir or settings.log_dir).resolve()
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
@@ -134,8 +142,12 @@ def setup_logging(
 
     # google-adk / litellm / mineru: in DEBUG show everything, in INFO
     # surface only warnings.
-    for name in ("google_adk", "google.adk", "litellm", "LiteLLM", "mineru"):
+    for name in ("google_adk", "google.adk", "mineru"):
         logging.getLogger(name).setLevel(logging.DEBUG if is_debug else logging.WARNING)
+    # LiteLLM DEBUG formats and logs entire prompts/tool histories before the
+    # HTTP call. Keep useful lifecycle logs without serializing huge requests.
+    for name in ("litellm", "LiteLLM"):
+        logging.getLogger(name).setLevel(logging.INFO if is_debug else logging.WARNING)
 
     # Dedicated mineru.log that captures BOTH loguru (local backend) and
     # stdlib (API backend) PDF processing logs.

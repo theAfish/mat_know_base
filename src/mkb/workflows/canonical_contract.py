@@ -46,7 +46,7 @@ class UnmatchedRawInformation(BaseModel):
 
 
 class CanonicalWorkflowGraph(BaseModel):
-    schema_version: Literal["workflow-schema/1.0"] = CANONICAL_SCHEMA_VERSION
+    schema_version: str = Field(default=CANONICAL_SCHEMA_VERSION, pattern=r"^workflow-schema/\d+\.\d+$")
     canonicalization_id: str
     paper_id: str
     raw_extraction_id: str

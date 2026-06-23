@@ -480,6 +480,83 @@ def cmd_debug_link_processed(args):
     _json_dump(result)
 
 
+def cmd_workflow_review(args):
+    from mkb.api import review_raw_workflow
+    _json_dump(review_raw_workflow(args.extraction_id, status=args.status, author=args.author))
+
+
+def cmd_workflow_correct(args):
+    from mkb.api import correct_raw_workflow
+    graph = json.loads(args.graph_file.read())
+    _json_dump(correct_raw_workflow(
+        args.extraction_id, graph, reason=args.reason, author=args.author,
+        affected_nodes=args.affected_node, affected_edges=args.affected_edge,
+        evidence=args.evidence,
+    ))
+
+
+def cmd_schema_curate(args):
+    from mkb.agents.schema_curator import run_schema_curator
+    _json_dump(run_schema_curator(min_support=args.min_support, author=args.author))
+
+
+def cmd_schema_proposals(args):
+    from mkb.api import list_schema_proposals
+    _json_dump(list_schema_proposals(status=args.status))
+
+
+def cmd_schema_review(args):
+    from mkb.api import review_schema_proposal
+    _json_dump(review_schema_proposal(args.proposal_id, approve=args.approve, reviewer=args.reviewer))
+
+
+def cmd_workflow_reextract(args):
+    from mkb.api import run_workflow_maintenance_task, schedule_workflow_reextraction
+    scope = {"type": args.scope}
+    if args.selector:
+        scope["selector"] = args.selector
+    result = schedule_workflow_reextraction(
+        args.project_id, reason=args.reason, requested_by=args.requested_by,
+        scope=scope, raw_extraction_id=args.raw_extraction_id,
+    )
+    if args.run and result.get("task_id"):
+        result = run_workflow_maintenance_task(result["task_id"], model=args.model, verbose=args.verbose)
+    _json_dump(result)
+
+
+def cmd_workflow_recanonicalize(args):
+    from mkb.api import run_workflow_maintenance_task, schedule_workflow_recanonicalization
+    result = schedule_workflow_recanonicalization(
+        args.project_id, reason=args.reason, requested_by=args.requested_by,
+        raw_extraction_id=args.raw_extraction_id,
+    )
+    if args.run and result.get("task_id"):
+        result = run_workflow_maintenance_task(result["task_id"], model=args.model, verbose=args.verbose)
+    _json_dump(result)
+
+
+def cmd_workflow_tasks(args):
+    from mkb.api import list_workflow_maintenance_tasks
+    _json_dump(list_workflow_maintenance_tasks(status=args.status, project_id=args.project_id))
+
+
+def cmd_workflow_task_run(args):
+    from mkb.api import run_workflow_maintenance_task
+    _json_dump(run_workflow_maintenance_task(args.task_id, model=args.model, verbose=args.verbose))
+
+
+def cmd_workflow_index(args):
+    from mkb.api import rebuild_workflow_indexes
+    _json_dump(rebuild_workflow_indexes(args.project_id))
+
+
+def cmd_workflow_search(args):
+    from mkb.api import search_canonical_workflows
+    _json_dump(search_canonical_workflows(
+        args.source, args.operation, args.target, args.mode, args.limit,
+    ))
+
+
 # ── Argument Parsing ─────────────────────────────────────────────
 
 
@@ -661,6 +738,79 @@ def main():
     p.add_argument("--processing-type", default=None, help="Optional override: MARKDOWN, DATAFRAME, IMAGE")
     p.add_argument("--output-format", default=None, help="Optional override for output format")
 
+    p = sub.add_parser("workflow-review", help="Audit or manually classify a raw workflow")
+    p.add_argument("extraction_id")
+    p.add_argument("--status", choices=["active", "superseded", "retracted", "needs_review", "known_error"])
+    p.add_argument("--author", default="cli")
+
+    p = sub.add_parser("workflow-correct", help="Create an immutable corrected raw workflow version")
+    p.add_argument("extraction_id")
+    p.add_argument("graph_file", type=argparse.FileType("r"))
+    p.add_argument("--reason", required=True)
+    p.add_argument("--author", required=True)
+    p.add_argument("--evidence", required=True)
+    p.add_argument("--affected-node", action="append", default=[])
+    p.add_argument("--affected-edge", action="append", default=[])
+
+    p = sub.add_parser("schema-curate", help="Analyze workflows and propose schema changes")
+    p.add_argument("--min-support", type=int, default=2)
+    p.add_argument("--author", default="schema-curator/1.0")
+
+    p = sub.add_parser("schema-proposals", help="List schema proposals")
+    p.add_argument("--status", default="pending")
+
+    p = sub.add_parser("schema-review", help="Approve or reject a schema proposal")
+    p.add_argument("proposal_id")
+    decision = p.add_mutually_exclusive_group(required=True)
+    decision.add_argument("--approve", action="store_true")
+    decision.add_argument("--reject", dest="approve", action="store_false")
+    p.add_argument("--reviewer", required=True)
+
+    p = sub.add_parser("workflow-reextract", help="Queue controlled full or partial re-extraction")
+    p.add_argument("project_id")
+    p.add_argument("--reason", required=True, choices=[
+        "extractor_prompt_changed", "low_quality_extraction", "new_parser_capability",
+        "manual_review_error", "schema_evolution_missing_information",
+    ])
+    p.add_argument("--scope", choices=["full", "section", "paragraph", "table", "figure"], default="full")
+    p.add_argument("--selector")
+    p.add_argument("--raw-extraction-id")
+    p.add_argument("--requested-by", default="cli")
+    p.add_argument("--run", action="store_true")
+    p.add_argument("--model")
+    p.add_argument("--verbose", action="store_true")
+
+    p = sub.add_parser("workflow-recanonicalize", help="Queue canonical rebuild from a valid raw version")
+    p.add_argument("project_id")
+    p.add_argument("--reason", choices=[
+        "alias_added", "templates_merged", "slot_added", "granularity_relation_added",
+        "schema_version_changed", "raw_version_changed", "manual_request",
+    ], default="manual_request")
+    p.add_argument("--raw-extraction-id")
+    p.add_argument("--requested-by", default="cli")
+    p.add_argument("--run", action="store_true")
+    p.add_argument("--model")
+    p.add_argument("--verbose", action="store_true")
+
+    p = sub.add_parser("workflow-tasks", help="List workflow maintenance tasks")
+    p.add_argument("--status")
+    p.add_argument("--project-id")
+
+    p = sub.add_parser("workflow-task-run", help="Run one queued workflow maintenance task")
+    p.add_argument("task_id")
+    p.add_argument("--model")
+    p.add_argument("--verbose", action="store_true")
+
+    p = sub.add_parser("workflow-index", help="Rebuild persisted workflow search indexes")
+    p.add_argument("--project-id")
+
+    p = sub.add_parser("workflow-search", help="Search indexed canonical workflows")
+    p.add_argument("--source")
+    p.add_argument("--operation")
+    p.add_argument("--target")
+    p.add_argument("--mode", choices=["strict", "alias-expanded", "template-expanded", "granularity-expanded", "evidence-required"], default="strict")
+    p.add_argument("--limit", type=int, default=100)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -680,6 +830,17 @@ def main():
         "frame": cmd_frame,
         "processed": cmd_processed,
         "debug-link-processed": cmd_debug_link_processed,
+        "workflow-review": cmd_workflow_review,
+        "workflow-correct": cmd_workflow_correct,
+        "schema-curate": cmd_schema_curate,
+        "schema-proposals": cmd_schema_proposals,
+        "schema-review": cmd_schema_review,
+        "workflow-reextract": cmd_workflow_reextract,
+        "workflow-recanonicalize": cmd_workflow_recanonicalize,
+        "workflow-tasks": cmd_workflow_tasks,
+        "workflow-task-run": cmd_workflow_task_run,
+        "workflow-index": cmd_workflow_index,
+        "workflow-search": cmd_workflow_search,
         "extraction-history": cmd_extraction_history,
         "project-run": cmd_project_run,
         "projections": cmd_projections,

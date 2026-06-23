@@ -253,6 +253,19 @@ class JobManager:
         rows = active + inactive
         return [dict(j) for j in rows[:limit]]
 
+    def find_active_job(self, *, project_id: str | None = None, kind: str | None = None) -> dict[str, Any] | None:
+        self._drain()
+        with self._lock:
+            for job in self._jobs.values():
+                if job.get("status") not in {"QUEUED", "RUNNING"}:
+                    continue
+                if project_id is not None and job.get("project_id") != project_id:
+                    continue
+                if kind is not None and job.get("kind") != kind:
+                    continue
+                return dict(job)
+        return None
+
 
 # ── Singletons shared by every router ────────────────────────────────────────
 

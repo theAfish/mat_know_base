@@ -14,7 +14,12 @@ from mkb.web._models import (
     ProjectGroupUpdate,
     ProjectionRunRequest,
     ProjectUpdateRequest,
+    SchemaCurateRequest,
+    SchemaProposalEditRequest,
+    SchemaProposalReviewRequest,
     WorkflowCanonicalizeRequest,
+    WorkflowRecanonicalizationRequest,
+    WorkflowReextractionRequest,
 )
 from mkb.web._state import jobs
 
@@ -203,6 +208,15 @@ def project_kg_extract(project_id: str):
 @router.post("/api/projects/{project_id}/workflow-extract")
 def project_workflow_extract(project_id: str):
     _parse_uuid(project_id, "project_id")
+    active = jobs.find_active_job(project_id=project_id, kind="raw_workflow")
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Workflow extraction is already {active['status'].lower()} for this project.",
+        )
+    readiness = api.get_raw_workflow_extraction_readiness(project_id)
+    if not readiness.get("ready"):
+        raise HTTPException(status_code=400, detail=readiness.get("message") or "Project is not ready for workflow extraction")
     job_id = jobs.start_job(
         kind="raw_workflow",
         label="Extract Workflow",
@@ -250,6 +264,23 @@ def project_workflow_version(project_id: str, version: int):
     return result
 
 
+@router.delete("/api/projects/{project_id}/workflows/{version}")
+def delete_project_workflow_version(project_id: str, version: int):
+    _parse_uuid(project_id, "project_id")
+    active = jobs.find_active_job(project_id=project_id, kind="raw_workflow")
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail="Workflow extraction is currently running for this project. Cancel or wait for it to finish before deleting a version.",
+        )
+    result = api.delete_raw_workflow_version(project_id, version)
+    if result.get("error"):
+        detail = result["error"]
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail)
+    return result
+
+
 @router.get("/api/projects/{project_id}/canonical-workflows")
 def project_canonical_workflows(project_id: str, include_graph: bool = False):
     _parse_uuid(project_id, "project_id")
@@ -275,13 +306,131 @@ def project_canonical_workflow_version(project_id: str, version: int):
 
 
 @router.get("/api/workflows/search")
-def search_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "exact", limit: int = 100):
+def search_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "strict", limit: int = 100):
     if not any((source, operation, target)):
         raise HTTPException(status_code=400, detail="Provide source, operation, or target")
     try:
         return api.search_canonical_workflows(source, operation, target, mode, limit)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/workflow-reextract")
+def schedule_reextraction(project_id: str, body: WorkflowReextractionRequest):
+    _parse_uuid(project_id, "project_id")
+    try:
+        result = api.schedule_workflow_reextraction(
+            project_id, reason=body.reason, requested_by=body.requested_by,
+            scope=body.scope, raw_extraction_id=body.raw_extraction_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/api/projects/{project_id}/workflow-recanonicalize")
+def schedule_recanonicalization(project_id: str, body: WorkflowRecanonicalizationRequest):
+    _parse_uuid(project_id, "project_id")
+    try:
+        result = api.schedule_workflow_recanonicalization(
+            project_id, reason=body.reason, requested_by=body.requested_by,
+            raw_extraction_id=body.raw_extraction_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.post("/api/workflow-maintenance/{task_id}/run")
+def run_maintenance_task(task_id: str):
+    _parse_uuid(task_id, "task_id")
+    job_id = jobs.start_job(
+        kind="workflow_maintenance", label="Workflow Maintenance",
+        target=api.run_workflow_maintenance_task, kwargs={"task_id": task_id},
+    )
+    return {"job_id": job_id, "task_id": task_id}
+
+
+@router.get("/api/workflow-maintenance")
+def workflow_maintenance_tasks(status: str | None = None, project_id: str | None = None):
+    return api.list_workflow_maintenance_tasks(status=status, project_id=project_id)
+
+
+@router.post("/api/workflow-maintenance-batch/recanonicalize")
+def run_recanonicalization_batch():
+    job_id = jobs.start_job(
+        kind="workflow_maintenance_batch",
+        label="Recanonicalize Global Workflow Batch",
+        target=api.run_pending_recanonicalizations,
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/api/workflow-schema")
+def workflow_schema_status():
+    return api.get_workflow_schema_status()
+
+
+@router.post("/api/workflow-schema/curate")
+def curate_schema(body: SchemaCurateRequest):
+    if body.min_support < 1:
+        raise HTTPException(status_code=400, detail="min_support must be at least 1")
+    from mkb.agents.schema_curator import run_schema_curator
+
+    job_id = jobs.start_job(
+        kind="schema_curator", label="Analyze Global Workflow Schema",
+        target=run_schema_curator,
+        kwargs={
+            "min_support": body.min_support,
+            "author": body.author.strip() or "schema-curator/ui",
+            "model": body.model,
+            "verbose": body.verbose,
+        },
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/api/workflow-schema/proposals")
+def schema_proposals(status: str | None = "pending"):
+    return api.list_schema_proposals(status=status or None)
+
+
+@router.post("/api/workflow-schema/proposals/{proposal_id}/review")
+def review_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalReviewRequest):
+    _parse_uuid(proposal_id, "proposal_id")
+    if not body.reviewer.strip():
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    result = api.review_schema_proposal(
+        proposal_id, decision=body.decision, reviewer=body.reviewer.strip(),
+        notes=body.notes,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.patch("/api/workflow-schema/proposals/{proposal_id}")
+def edit_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalEditRequest):
+    _parse_uuid(proposal_id, "proposal_id")
+    result = api.edit_schema_proposal(
+        proposal_id, payload=body.payload,
+        evidence_workflow_ids=body.evidence_workflow_ids,
+        rationale=body.rationale, editor=body.editor,
+        change_note=body.change_note,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.get("/api/workflow-schema/proposals/{proposal_id}/revisions")
+def schema_proposal_revisions(proposal_id: str):
+    _parse_uuid(proposal_id, "proposal_id")
+    return api.get_schema_proposal_revisions(proposal_id)
 
 
 @router.get("/api/projects/{project_id}/jobs")

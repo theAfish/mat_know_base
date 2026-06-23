@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { getProjectWorkflow, listProjectWorkflows } from '../../api/projects'
+import { deleteProjectWorkflowVersion, getProjectWorkflow, listProjectWorkflows } from '../../api/projects'
 import type { RawWorkflowVersion } from '../../types'
 import WorkflowCanvas, { type WorkflowCanvasEdge, type WorkflowCanvasNode } from './WorkflowCanvas'
 
@@ -14,6 +14,12 @@ function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
     label: node.raw_name,
     kind: node.node_kind_guess === 'operation' ? 'operation' : 'object',
     title: `${node.raw_name}\n${node.node_kind_guess} · confidence ${node.confidence.toFixed(2)}\n\n${node.evidence_text}`,
+    details: {
+      confidence: node.confidence,
+      attributes_explicitly_mentioned: node.attributes_explicitly_mentioned,
+      paper_location: node.paper_location,
+      evidence_text: node.evidence_text,
+    },
   }))
   const edges: WorkflowCanvasEdge[] = graph.edges.map(edge => ({
     id: edge.edge_id,
@@ -26,25 +32,67 @@ function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
   return <WorkflowCanvas nodes={nodes} edges={edges} exportBaseName={`raw-workflow-v${workflow.version}`} />
 }
 
-export default function WorkflowGraphTab({ projectId }: { projectId: string }) {
+export default function WorkflowGraphTab({
+  projectId,
+  actionsDisabled = false,
+  onWorkflowVersionDeleted,
+}: {
+  projectId: string
+  actionsDisabled?: boolean
+  onWorkflowVersionDeleted?: () => void
+}) {
   const [versions, setVersions] = useState<RawWorkflowVersion[]>([])
   const [selected, setSelected] = useState<RawWorkflowVersion | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [deletingVersion, setDeletingVersion] = useState<number | null>(null)
+  const resumableVersions = versions.filter(row => row.resumable)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const rows = await listProjectWorkflows(projectId)
+      setVersions(rows)
+      const preferred = rows.find(row => row.status === 'COMPLETED') ?? rows[0] ?? null
+      setSelected(preferred ? await getProjectWorkflow(projectId, preferred.version) : null)
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } }; message?: string }
+      setError(e?.response?.data?.detail ?? e?.message ?? 'Failed to load workflow versions')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    setLoading(true)
-    listProjectWorkflows(projectId)
-      .then(async rows => {
-        setVersions(rows)
-        const latest = rows.find(row => row.status === 'COMPLETED')
-        setSelected(latest ? await getProjectWorkflow(projectId, latest.version) : null)
-      })
-      .finally(() => setLoading(false))
+    void load()
   }, [projectId])
 
   const choose = async (version: number) => setSelected(await getProjectWorkflow(projectId, version))
 
+  const handleDelete = async (version: number) => {
+    const target = versions.find(row => row.version === version)
+    if (!target?.resumable) return
+    const confirmed = window.confirm(
+      `Delete raw workflow v${version}? This removes the unfinished version so future reruns start fresh instead of resuming it.`,
+    )
+    if (!confirmed) return
+    try {
+      setDeletingVersion(version)
+      setError(null)
+      await deleteProjectWorkflowVersion(projectId, version)
+      await load()
+      onWorkflowVersionDeleted?.()
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } }; message?: string }
+      setError(e?.response?.data?.detail ?? e?.message ?? 'Failed to delete workflow version')
+    } finally {
+      setDeletingVersion(null)
+    }
+  }
+
   if (loading) return <p className="text-sm text-slate-400">Loading workflow…</p>
+  if (error && versions.length === 0) return <p className="text-sm text-red-400">{error}</p>
   if (versions.length === 0) return <p className="text-sm text-slate-400">No workflow extraction yet. Run Extract Workflow.</p>
 
   return (
@@ -56,9 +104,56 @@ export default function WorkflowGraphTab({ projectId }: { projectId: string }) {
           {versions.map(row => <option key={row.extraction_id} value={row.version}>v{row.version} · {row.status}</option>)}
         </select>
         {selected && <span>{selected.graph?.nodes.length ?? 0} nodes · {selected.graph?.edges.length ?? 0} edges · {selected.schema_version}</span>}
+        {selected?.resumable && (
+          <button
+            onClick={() => handleDelete(selected.version)}
+            disabled={actionsDisabled || deletingVersion === selected.version}
+            className="rounded border border-red-800/70 bg-red-950/40 px-2 py-1 text-red-200 hover:bg-red-900/40 disabled:opacity-40"
+          >
+            {deletingVersion === selected.version ? 'Deleting…' : 'Delete Version'}
+          </button>
+        )}
       </div>
+      {resumableVersions.length > 0 && (
+        <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-3 text-sm text-amber-200">
+          <div className="font-medium">Stale resumable workflow versions</div>
+          <p className="mt-1 text-amber-300/90">
+            These unfinished versions will be resumed on rerun unless you delete them.
+          </p>
+          <div className="mt-3 space-y-2">
+            {resumableVersions.map(row => (
+              <div key={row.extraction_id} className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="rounded bg-amber-900/40 px-2 py-1 text-amber-100">
+                  v{row.version} · {row.status}
+                </span>
+                {row.has_checkpoint && (
+                  <span className="text-amber-300/80">
+                    checkpoint{row.checkpoint_updated_at ? ` from ${new Date(row.checkpoint_updated_at).toLocaleString()}` : ''}
+                  </span>
+                )}
+                <button
+                  onClick={() => handleDelete(row.version)}
+                  disabled={actionsDisabled || deletingVersion === row.version}
+                  className="rounded border border-red-800/70 bg-red-950/40 px-2 py-1 text-red-200 hover:bg-red-900/40 disabled:opacity-40"
+                >
+                  {deletingVersion === row.version ? 'Deleting…' : `Delete v${row.version}`}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {error && <p className="text-sm text-red-400">{error}</p>}
       {selected?.error && <p className="text-sm text-red-400">{selected.error}</p>}
-      {selected && <RawWorkflowCanvas workflow={selected} />}
+      {selected && !selected.graph && selected.resumable && (
+        <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+          {selected.has_checkpoint
+            ? `This unfinished version has a saved checkpoint${selected.checkpoint_updated_at ? ` from ${new Date(selected.checkpoint_updated_at).toLocaleString()}` : ''}. Run Extract Workflow again to resume the same version instead of creating a new one.`
+            : 'This unfinished version has no finalized graph yet. Run Extract Workflow again to resume the same version.'}
+          {selected.checkpoint_summary ? <p className="mt-1 text-xs text-amber-300/90">{selected.checkpoint_summary}</p> : null}
+        </div>
+      )}
+      {selected?.graph ? <RawWorkflowCanvas workflow={selected} /> : null}
       <p className="text-xs text-slate-500">Purple rectangles are operations; teal parallelograms are objects. Drag nodes freely to tidy the canvas and hover nodes for evidence.</p>
     </div>
   )

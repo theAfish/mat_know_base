@@ -52,6 +52,22 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                 "ALTER TABLE raw_workflow_extractions "
                 "ADD COLUMN supersedes_extraction_id UUID"
             ),
+            "correction_reason": "ALTER TABLE raw_workflow_extractions ADD COLUMN correction_reason TEXT",
+            "correction_author": "ALTER TABLE raw_workflow_extractions ADD COLUMN correction_author VARCHAR(255)",
+            "correction_details": "ALTER TABLE raw_workflow_extractions ADD COLUMN correction_details JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "review_flags": "ALTER TABLE raw_workflow_extractions ADD COLUMN review_flags JSONB NOT NULL DEFAULT '[]'::jsonb",
+            "checkpoint": "ALTER TABLE raw_workflow_extractions ADD COLUMN checkpoint JSONB",
+            "checkpoint_updated_at": (
+                "ALTER TABLE raw_workflow_extractions "
+                "ADD COLUMN checkpoint_updated_at TIMESTAMP WITH TIME ZONE"
+            ),
+        },
+        "canonical_workflows": {
+            "checkpoint": "ALTER TABLE canonical_workflows ADD COLUMN checkpoint JSONB",
+            "checkpoint_updated_at": (
+                "ALTER TABLE canonical_workflows "
+                "ADD COLUMN checkpoint_updated_at TIMESTAMP WITH TIME ZONE"
+            ),
         },
     }
 

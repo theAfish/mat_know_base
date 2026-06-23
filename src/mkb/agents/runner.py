@@ -33,6 +33,11 @@ def _is_retryable_provider_error(error: str) -> bool:
         "temporar",
         "timeout",
         "429",
+        "jsondecodeerror",
+        "expecting ',' delimiter",
+        "unterminated string",
+        "extra data",
+        "tool call arguments",
     ]
     return any(marker in e for marker in retry_markers)
 
@@ -98,6 +103,17 @@ class AgentRunner:
             error_str = result.error or ""
             if _is_retryable_provider_error(error_str):
                 if attempt < max_retries:
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "label": "retry",
+                                "message": (
+                                    f"Transient model error on attempt {attempt}/{max_retries}: "
+                                    f"{error_str[:180]}. Retrying in {retry_delay:.1f}s."
+                                ),
+                                "stage": "retry",
+                            }
+                        )
                     logger.warning(
                         "Transient provider error on attempt %d/%d: %s — retrying in %.1fs",
                         attempt, max_retries, error_str[:200], retry_delay,
@@ -130,7 +146,7 @@ class AgentRunner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=initial_message,
-                run_config=RunConfig(max_llm_calls=self.max_llm_calls),
+                run_config=RunConfig(max_llm_calls=getattr(self, "max_llm_calls", 40)),
             ):
                 if progress_callback and event.content and event.content.parts:
                     for part in event.content.parts:

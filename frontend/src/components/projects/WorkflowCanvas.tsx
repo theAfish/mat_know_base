@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import ReactFlow, {
   Background,
   Controls,
@@ -21,6 +21,7 @@ export interface WorkflowCanvasNode {
   label: string
   kind: WorkflowNodeKind
   title?: string
+  details?: Record<string, unknown>
 }
 
 export interface WorkflowCanvasEdge {
@@ -32,8 +33,11 @@ export interface WorkflowCanvasEdge {
 }
 
 interface WorkflowNodeData {
+  id: string
+  kind: WorkflowNodeKind
   label: string
   title?: string
+  details?: Record<string, unknown>
 }
 
 const XML_NS = 'http://www.w3.org/2000/svg'
@@ -352,7 +356,7 @@ function buildLayout(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]): 
         id: node.id,
         type: 'operation',
         position: { x: opX.get(node.id) ?? 0, y: (opLevel.get(node.id) ?? 0) * Y_GAP },
-        data: { label: node.label, title: node.title },
+        data: { id: node.id, kind: node.kind, label: node.label, title: node.title, details: node.details },
       }
     }
 
@@ -361,7 +365,7 @@ function buildLayout(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]): 
       id: node.id,
       type: 'object',
       position: { x: layout.x, y: layout.y },
-      data: { label: node.label, title: node.title },
+      data: { id: node.id, kind: node.kind, label: node.label, title: node.title, details: node.details },
     }
   })
 
@@ -400,12 +404,16 @@ export default function WorkflowCanvas({
 }) {
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowNodeData>([])
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<Edge>([])
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
   useEffect(() => {
     const layout = buildLayout(nodes, edges)
     setFlowNodes(layout.nodes)
     setFlowEdges(layout.edges)
+    setSelectedNodeId(null)
   }, [edges, nodes, setFlowEdges, setFlowNodes])
+
+  const selectedNode = flowNodes.find(node => node.id === selectedNodeId) ?? null
 
   const exportSvg = () => {
     if (flowNodes.length === 0) return
@@ -528,29 +536,57 @@ export default function WorkflowCanvas({
         </button>
       </div>
 
-      <div className="h-[680px] rounded-xl border border-slate-700 bg-slate-950/95">
-        <ReactFlow
-          nodes={flowNodes}
-          edges={flowEdges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          fitView
-          fitViewOptions={{ padding: 0.18 }}
-          minZoom={0.2}
-          maxZoom={1.8}
-          nodesConnectable={false}
-          elementsSelectable
-        >
-          <Background color="#27272a" gap={24} />
-          <MiniMap
-            pannable
-            zoomable
-            nodeColor={node => node.type === 'operation' ? '#8b5cf6' : '#14b8a6'}
-            maskColor="rgba(9, 9, 11, 0.78)"
-          />
-          <Controls showInteractive={false} />
-        </ReactFlow>
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="h-[680px] rounded-xl border border-slate-700 bg-slate-950/95">
+          <ReactFlow
+            nodes={flowNodes}
+            edges={flowEdges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+            fitView
+            fitViewOptions={{ padding: 0.18 }}
+            minZoom={0.2}
+            maxZoom={1.8}
+            nodesConnectable={false}
+            elementsSelectable
+          >
+            <Background color="#27272a" gap={24} />
+            <MiniMap
+              pannable
+              zoomable
+              nodeColor={node => node.type === 'operation' ? '#8b5cf6' : '#14b8a6'}
+              maskColor="rgba(9, 9, 11, 0.78)"
+            />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+        </div>
+        <div className="rounded-xl border border-slate-700 bg-slate-900/75 p-4">
+          {selectedNode ? (
+            <div className="space-y-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Selected node</p>
+                <h4 className="mt-1 text-sm font-semibold text-slate-100">{selectedNode.data.label}</h4>
+                <p className="mt-1 text-xs text-slate-400">{selectedNode.data.kind} · {selectedNode.data.id}</p>
+              </div>
+              <div className="space-y-2">
+                {Object.entries(selectedNode.data.details ?? {}).map(([key, value]) => (
+                  <div key={key} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500">{key.replace(/_/g, ' ')}</p>
+                    <pre className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-slate-200">
+                      {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full min-h-[220px] items-center justify-center text-center text-sm text-slate-400">
+              Click a workflow node to inspect its extracted parameters and supporting data.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
