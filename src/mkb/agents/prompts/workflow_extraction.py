@@ -18,7 +18,7 @@ Represent every step as Object -> Operation -> Object:
 Each node is an instantiated card. Fill both the v2 card fields and evidence:
 
 * `canonical_name`: short reusable concept, such as `XRD Measurement`,
-  `Band Structure Calculation`, `Material`, or `Band Structure`
+  `Band Structure Calculation`, `Comparison`, `Material`, or `Band Structure`
 * `raw_name`: the paper's original phrase (preserves terminology)
 * `node_kind` and compatibility field `node_kind_guess`
 * `semantic_type`: an open, concise scientific type; do not choose from a
@@ -62,12 +62,19 @@ Reproducibility rules:
 Execution:
 
 1. Call list_project_files and read all relevant assets with paged reads.
-2. On resume, call get_raw_workflow_checkpoint first.
-3. Checkpoint after each source or major milestone, stating coverage and work
+2. Before you finalize any node naming or `card_id`, call either
+   `search_workflow_cards` or `get_active_workflow_card_library` against the
+   newest workflow card base. Reuse an existing card/template when it is a
+   clear semantic match; otherwise keep `card_id` null and mark
+   `ontology_status` as `candidate` or `unmapped`.
+3. Repeat card-base lookup whenever you introduce a newly named node family or
+   revise a node's reusable concept.
+4. On resume, call get_raw_workflow_checkpoint first.
+5. Checkpoint after each source or major milestone, stating coverage and work
    remaining.
-4. Use exact request IDs. Node IDs are `raw:<extraction_id>:n0001`; edge IDs are
+6. Use exact request IDs. Node IDs are `raw:<extraction_id>:n0001`; edge IDs are
    `raw:<extraction_id>:e0001`.
-5. Save exactly once with save_raw_workflow, including an empty graph when no
+7. Save exactly once with save_raw_workflow, including an empty graph when no
    supported workflow exists. Use schema_version `workflow-cards/2.0`.
-6. Tool arguments must be strict JSON.
+8. Tool arguments must be strict JSON.
 """

@@ -169,7 +169,7 @@ function ProposalCard({
               {proposal.status.replace(/_/g, ' ')}
             </span>
             <span className="rounded-full border border-slate-600 px-2 py-0.5 text-[11px] text-slate-400">
-              {proposal.created_by.includes('schema-curator-agent') ? 'LLM agent draft' : 'deterministic draft'}
+              {proposal.created_by.includes('workflow-review-agent') || proposal.created_by.includes('ontology-induction-agent') ? 'LLM agent draft' : 'deterministic draft'}
             </span>
           </div>
           <p className="mt-1 text-xs text-slate-400">
@@ -292,6 +292,8 @@ export default function SchemaCuratorTab() {
   const [filter, setFilter] = useState<SchemaProposalStatus | 'all'>('pending')
   const [reviewer, setReviewer] = useState('human-reviewer')
   const [minSupport, setMinSupport] = useState(2)
+  const [reviewMode, setReviewMode] = useState<'global' | 'local'>('global')
+  const [sampleSize, setSampleSize] = useState(8)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [curating, setCurating] = useState(false)
@@ -333,8 +335,8 @@ export default function SchemaCuratorTab() {
     setError(null)
     setNotice(null)
     try {
-      const result = await curateWorkflowSchema(minSupport, 'schema-curator/ui')
-      setNotice(`LLM curator job ${result.job_id.slice(0, 8)} started. Evidence discovery runs before proposal drafting.`)
+      const result = await curateWorkflowSchema(minSupport, 'workflow-review/ui', reviewMode, sampleSize)
+      setNotice(`Workflow review agent job ${result.job_id.slice(0, 8)} started in ${reviewMode} mode.`)
       curatorPollRef.current?.cancel()
       curatorPollRef.current = startJobPolling({
         jobId: result.job_id,
@@ -342,18 +344,19 @@ export default function SchemaCuratorTab() {
           setCurating(false)
           const count = Number(job.result?.proposal_count ?? 0)
           const revisions = Number(job.result?.revision_count ?? 0)
-          setNotice(`LLM analysis complete: ${count} new proposal${count === 1 ? '' : 's'} and ${revisions} revision${revisions === 1 ? '' : 's'} drafted.`)
+          const mode = typeof job.result?.mode === 'string' ? job.result.mode : reviewMode
+          setNotice(`Workflow review complete in ${mode} mode: ${count} new proposal${count === 1 ? '' : 's'} and ${revisions} revision${revisions === 1 ? '' : 's'} drafted.`)
           setFilter('pending')
           load()
         },
         onFailed: job => {
           setCurating(false)
-          setError(job?.error ?? 'Schema curator agent failed')
+          setError(job?.error ?? 'Workflow review agent failed')
         },
       })
     } catch (err) {
       setCurating(false)
-      setError(err instanceof Error ? err.message : 'Schema analysis failed')
+      setError(err instanceof Error ? err.message : 'Workflow review failed')
     }
   }
 
@@ -428,35 +431,52 @@ export default function SchemaCuratorTab() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-violet-200">Workflow Schema Curator</h3>
-              <span className="rounded-full border border-violet-600 bg-violet-900/60 px-2 py-0.5 text-[11px] uppercase tracking-wide text-violet-200">Global</span>
+              <h3 className="font-semibold text-violet-200">Workflow Review Agent</h3>
+              <span className="rounded-full border border-violet-600 bg-violet-900/60 px-2 py-0.5 text-[11px] uppercase tracking-wide text-violet-200">{reviewMode}</span>
               <span className="rounded-full border border-sky-700 bg-sky-950/50 px-2 py-0.5 text-[11px] text-sky-300">LLM-assisted</span>
             </div>
             <p className="mt-1 max-w-2xl text-sm text-slate-400">
-              Deterministic discovery finds corpus-level signals; an LLM curator evaluates their semantics against workflow evidence. Humans can edit drafts, request revisions, and retain final approval authority.
+              Local mode starts from under-reviewed sampled workflows and expands by search. Global mode works from corpus statistics plus latest-per-project workflow retrieval. In both modes the agent can revise workflow nodes/edges and draft card-base proposals, while humans retain final approval authority.
             </p>
           </div>
           <div className="flex items-end gap-2">
+            <label className="text-xs text-slate-400">Mode
+              <select
+                value={reviewMode}
+                onChange={event => setReviewMode(event.target.value as 'global' | 'local')}
+                className="mt-1 block w-28 rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-slate-200"
+              >
+                <option value="local">Local</option>
+                <option value="global">Global</option>
+              </select>
+            </label>
             <label className="text-xs text-slate-400">Minimum support
               <input type="number" min={1} value={minSupport}
                 onChange={event => setMinSupport(Math.max(1, Number(event.target.value) || 1))}
                 className="mt-1 block w-24 rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-slate-200" />
             </label>
+            {reviewMode === 'local' && (
+              <label className="text-xs text-slate-400">Sample size
+                <input type="number" min={1} value={sampleSize}
+                  onChange={event => setSampleSize(Math.max(1, Number(event.target.value) || 1))}
+                  className="mt-1 block w-24 rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-slate-200" />
+              </label>
+            )}
             <button onClick={runCurator} disabled={curating}
               className="rounded bg-violet-700 px-4 py-2 text-sm text-white hover:bg-violet-600 disabled:opacity-40">
-              {curating ? 'Agent analyzing…' : 'Run LLM curator'}
+              {curating ? 'Agent analyzing…' : 'Run review agent'}
             </button>
           </div>
         </div>
       </div>
 
-      {schema && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      {schema && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <div className="rounded-lg border border-slate-700 bg-slate-800 p-3 sm:col-span-2">
           <p className="text-xs uppercase tracking-wide text-slate-500">Active schema</p>
           <p className="mt-1 text-lg font-semibold text-teal-300">{schema.schema_version}</p>
           <p className="mt-1 text-xs text-slate-400">{schema.change_summary}</p>
         </div>
-        {[['Object schemas', schema.object_schema_count], ['Operation templates', schema.operation_template_count], ['Queued recanonicalizations', schema.pending_recanonicalizations]].map(([label, value]) => (
+        {[['Object schemas', schema.object_schema_count], ['Operation templates', schema.operation_template_count], ['Cards', schema.card_count ?? 0], ['Queued recanonicalizations', schema.pending_recanonicalizations]].map(([label, value]) => (
           <div key={String(label)} className="rounded-lg border border-slate-700 bg-slate-800 p-3">
             <p className="text-xs text-slate-500">{label}</p>
             <p className="mt-1 text-xl font-semibold">{value}</p>
@@ -499,10 +519,10 @@ export default function SchemaCuratorTab() {
         </label>
       </div>
 
-      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading global schema proposals…</p>
+      {loading ? <p className="py-8 text-center text-sm text-slate-400">Loading workflow review proposals…</p>
         : proposals.length === 0 ? <div className="rounded-lg border border-dashed border-slate-700 p-8 text-center">
           <p className="text-slate-300">No {filter === 'all' ? '' : `${filter.replace(/_/g, ' ')} `}schema proposals.</p>
-          <p className="mt-1 text-sm text-slate-500">Run the LLM curator after canonical workflows have accumulated.</p>
+          <p className="mt-1 text-sm text-slate-500">Run the workflow review agent after workflow extractions have accumulated.</p>
         </div>
           : <div className="grid gap-3 lg:grid-cols-2">{proposals.map(proposal => <ProposalCard
             key={proposal.proposal_id} proposal={proposal} reviewer={reviewer}

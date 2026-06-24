@@ -10,10 +10,17 @@ import type {
 export const getWorkflowSchemaStatus = () =>
   client.get<WorkflowSchemaStatus>('/workflow-schema').then(r => r.data)
 
-export const curateWorkflowSchema = (minSupport: number, author: string) =>
+export const curateWorkflowSchema = (
+  minSupport: number,
+  author: string,
+  mode: 'global' | 'local' | 'auto',
+  sampleSize: number,
+) =>
   client.post<{ job_id: string }>('/workflow-schema/curate', {
     min_support: minSupport,
     author,
+    mode,
+    sample_size: sampleSize,
   }).then(r => r.data)
 
 export const listSchemaProposals = (status?: string) =>

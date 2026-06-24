@@ -218,6 +218,33 @@ def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):
 
     assert result["status"] == "checkpointed"
     assert result["checkpoint_count"] == 1
+
+
+def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
+    captured = {}
+
+    def _start_job(**kwargs):
+        captured.update(kwargs)
+        return "job-123"
+
+    monkeypatch.setattr(projects_router.jobs, "start_job", _start_job)
+
+    body = projects_router.SchemaCurateRequest(
+        min_support=3,
+        author="workflow-review/ui",
+        mode="local",
+        sample_size=12,
+        model="test-model",
+        verbose=True,
+    )
+
+    result = projects_router.curate_schema(body)
+
+    assert result == {"job_id": "job-123"}
+    assert captured["kind"] == "ontology_induction"
+    assert captured["kwargs"]["mode"] == "local"
+    assert captured["kwargs"]["sample_size"] == 12
+    assert captured["kwargs"]["min_support"] == 3
     assert fake_row.checkpoint["summary"].startswith("Read methods section")
     assert fake_row.checkpoint["graph"] == {"nodes": [{"node_id": "draft-1"}], "edges": []}
     assert fake_row.provenance["checkpoint_count"] == 1

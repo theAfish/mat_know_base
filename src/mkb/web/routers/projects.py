@@ -396,14 +396,21 @@ def workflow_schema_status():
 def curate_schema(body: SchemaCurateRequest):
     if body.min_support < 1:
         raise HTTPException(status_code=400, detail="min_support must be at least 1")
+    if body.sample_size < 1:
+        raise HTTPException(status_code=400, detail="sample_size must be at least 1")
+    if body.mode not in {"global", "local", "auto"}:
+        raise HTTPException(status_code=400, detail="mode must be global, local, or auto")
     from mkb.agents.ontology_induction import run_ontology_induction
 
     job_id = jobs.start_job(
-        kind="ontology_induction", label="Induce Global Workflow Ontology",
+        kind="ontology_induction",
+        label="Workflow Review Agent",
         target=run_ontology_induction,
         kwargs={
             "min_support": body.min_support,
-            "author": body.author.strip() or "schema-curator/ui",
+            "author": body.author.strip() or "workflow-review/ui",
+            "mode": body.mode,
+            "sample_size": body.sample_size,
             "model": body.model,
             "verbose": body.verbose,
         },

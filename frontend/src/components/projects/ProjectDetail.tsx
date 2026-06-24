@@ -18,6 +18,7 @@ import StatusBadge from '../StatusBadge'
 import ProjectAssetsPanel from './ProjectAssetsPanel'
 import WorkflowGraphTab from './WorkflowGraphTab'
 import GraphTab from '../frames/GraphTab'
+import { projectDisplayName } from '../../utils/projectName'
 
 
 export interface ProjectDetailProps {
@@ -144,7 +145,7 @@ export default function ProjectDetail({
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-700">
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-slate-100 truncate">
-              {project.label ?? project.source_path ?? project.project_id.slice(0, 12)}
+              {projectDisplayName(project)}
             </h3>
             <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
               <span>{project.asset_count} asset(s)</span>

@@ -328,6 +328,7 @@ export interface WorkflowSchemaStatus {
   created_at: string | null
   object_schema_count: number
   operation_template_count: number
+  card_count?: number
   granularity_relation_count: number
   proposal_counts: Record<string, number>
   pending_recanonicalizations: number

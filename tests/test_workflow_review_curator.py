@@ -10,6 +10,7 @@ from mkb.workflows.curator import (
 from mkb.workflows.review import audit_raw_graph, rebase_graph
 from mkb.workflows.contract import RawWorkflowGraph
 from mkb.workflows.validation import json_safe_validation_errors
+from mkb.agents.tools import workflows as workflow_tools
 
 
 def _raw_graph():
@@ -123,3 +124,36 @@ def test_object_and_operation_cards_evolve_symmetrically():
     card_id = "card:workflow-schema/2.0:object:xrd-spectrum"
     assert updated["cards"][card_id]["kind"] == "object"
     assert updated["cards"][card_id]["canonical_name"] == "XRD Spectrum"
+
+
+def test_extractor_card_search_uses_newest_library(monkeypatch):
+    monkeypatch.setattr(
+        workflow_tools,
+        "get_schema_library_payload",
+        lambda: {
+            "schema_version": "workflow-schema/9.9",
+            "cards": {
+                "card:workflow-schema/9.9:operation:annealing": {
+                    "canonical_name": "Annealing",
+                    "kind": "operation",
+                    "aliases": ["heat treatment"],
+                    "parameter_slots": [{"key": "temperature"}],
+                    "status": "active",
+                },
+            },
+            "operation_templates": {
+                "operation-template:workflow-schema/9.9:annealing": {
+                    "label": "Annealing",
+                    "aliases": ["thermal anneal"],
+                    "slots": [{"key": "duration"}],
+                    "parameters": {"method": "thermal"},
+                },
+            },
+        },
+    )
+
+    result = workflow_tools.search_workflow_cards("annealing", node_kind="operation")
+
+    assert result["schema_version"] == "workflow-schema/9.9"
+    assert result["results"][0]["match_type"] in {"card", "operation_template"}
+    assert any(item.get("canonical_name") == "Annealing" or item.get("label") == "Annealing" for item in result["results"])

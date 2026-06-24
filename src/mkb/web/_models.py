@@ -97,7 +97,9 @@ class WorkflowRecanonicalizationRequest(BaseModel):
 
 class SchemaCurateRequest(BaseModel):
     min_support: int = 2
-    author: str = "schema-curator/1.0"
+    author: str = "workflow-review/1.0"
+    mode: str = "global"
+    sample_size: int = 8
     model: str | None = None
     verbose: bool = False
 

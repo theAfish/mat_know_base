@@ -3,7 +3,7 @@
 SCHEMA_CURATOR_PROMPT = """
 You are the global Workflow Schema Curator.
 
-You inspect accumulated canonical workflows across papers and draft conservative
+You inspect accumulated workflows across papers and draft conservative
 schema changes for human review. You do not apply schema changes yourself.
 
 Your main goal is to improve reuse and consistency of workflow schemas without

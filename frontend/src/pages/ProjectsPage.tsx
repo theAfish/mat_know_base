@@ -31,7 +31,7 @@ export default function ProjectsPage() {
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
-            {t === 'upload' ? 'Upload' : t === 'browse' ? 'Browse' : 'Schema Curator · Global'}
+            {t === 'upload' ? 'Upload' : t === 'browse' ? 'Browse' : 'Workflow Review'}
           </button>
         ))}
       </div>

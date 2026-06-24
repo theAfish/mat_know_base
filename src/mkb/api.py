@@ -1609,6 +1609,7 @@ def get_workflow_schema_status() -> dict:
             "created_at": active.created_at.isoformat() if active and active.created_at else None,
             "object_schema_count": len(payload.get("object_schemas", {})),
             "operation_template_count": len(payload.get("operation_templates", {})),
+            "card_count": len(payload.get("cards", {})),
             "granularity_relation_count": len(payload.get("granularity_relations", [])),
             "proposal_counts": proposal_counts,
             "pending_recanonicalizations": int(pending_recanonicalizations),

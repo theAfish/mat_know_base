@@ -19,6 +19,7 @@ import GraphTab from './GraphTab'
 import KnowledgeFrameTab from './KnowledgeFrameTab'
 import ProjectionsTab from './ProjectionsTab'
 import WorkflowTab from './WorkflowTab'
+import { projectDisplayName } from '../../utils/projectName'
 
 
 type DetailTab = 'assets' | 'frame' | 'projections' | 'workflow' | 'graph' | 'feedback'
@@ -90,15 +91,13 @@ export default function ProjectDetail({
     }
   }
 
-  const label = project.label ?? project.source_path ?? project.project_id.slice(0, 12)
-
   return (
     <div className="flex flex-col h-full">
       <div className="px-6 py-4 border-b border-slate-700 flex-shrink-0 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <button onClick={onBack} className="text-sm text-teal-400 hover:text-teal-300 flex-shrink-0">← Back</button>
-            <h3 className="text-base font-semibold text-slate-100 truncate">{label}</h3>
+            <h3 className="text-base font-semibold text-slate-100 truncate">{projectDisplayName(project)}</h3>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} />
