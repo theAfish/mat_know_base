@@ -25,6 +25,56 @@ from mkb.spaces.schema_utils import normalize_projection_data
 logger = logging.getLogger(__name__)
 
 
+def _is_empty_value(value) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _summarize_data_changes(before, after, path: str = "") -> dict:
+    changed_paths: list[str] = []
+    sequence_filled_paths: list[str] = []
+    sequence_changed_paths: list[str] = []
+
+    def walk(old, new, current_path: str) -> None:
+        if old == new:
+            return
+        key_name = current_path.split(".")[-1].lower()
+        if not isinstance(old, (dict, list)) and not isinstance(new, (dict, list)):
+            changed_paths.append(current_path or "$")
+            if "sequence" in key_name:
+                sequence_changed_paths.append(current_path or "$")
+                if _is_empty_value(old) and not _is_empty_value(new):
+                    sequence_filled_paths.append(current_path or "$")
+            return
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in sorted(set(old) | set(new)):
+                next_path = f"{current_path}.{key}" if current_path else str(key)
+                walk(old.get(key), new.get(key), next_path)
+            return
+        if isinstance(old, list) and isinstance(new, list):
+            for idx in range(max(len(old), len(new))):
+                old_item = old[idx] if idx < len(old) else None
+                new_item = new[idx] if idx < len(new) else None
+                next_path = f"{current_path}[{idx}]" if current_path else f"[{idx}]"
+                walk(old_item, new_item, next_path)
+            return
+        changed_paths.append(current_path or "$")
+        if "sequence" in key_name:
+            sequence_changed_paths.append(current_path or "$")
+            if _is_empty_value(old) and not _is_empty_value(new):
+                sequence_filled_paths.append(current_path or "$")
+
+    walk(before, after, path)
+    return {
+        "changed_count": len(changed_paths),
+        "changed_paths": changed_paths[:40],
+        "truncated": len(changed_paths) > 40,
+        "sequence_changed_count": len(sequence_changed_paths),
+        "sequence_filled_count": len(sequence_filled_paths),
+        "sequence_changed_paths": sequence_changed_paths[:20],
+        "sequence_filled_paths": sequence_filled_paths[:20],
+    }
+
+
 def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
     """Get all projection data for a space+project combination.
 
@@ -59,6 +109,11 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
             .filter_by(space_id=sid, frame_id=frame.frame_id)
             .filter(Projection.deleted_at.is_(None))
             .filter(Projection.superseded_by_id.is_(None))
+            .filter(
+                Projection.status.in_(
+                    [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                )
+            )
             .order_by(Projection.created_at.desc())
             .all()
         )
@@ -172,6 +227,7 @@ def save_reviewed_projection(
             return {"error": f"Space {winner.space_id} not found."}
 
         # Normalize the data against the space schema
+        before_data = winner.data or {}
         normalized_data, validation_result = normalize_projection_data(
             data,
             space.extraction_schema,
@@ -184,6 +240,8 @@ def save_reviewed_projection(
             normalized_data = _inject_source_project_references(
                 normalized_data, str(frame.project_id)
             )
+
+        change_summary = _summarize_data_changes(before_data, normalized_data)
 
         trackable = bool(getattr(space, "review_trackable", True))
 
@@ -216,6 +274,7 @@ def save_reviewed_projection(
                 "trackable": False,
                 "times_reviewed": winner.times_reviewed,
                 "soft_deleted_count": len(siblings),
+                "change_summary": change_summary,
             }
 
         # ── Trackable: create a new REVIEWED projection that supersedes
@@ -254,6 +313,7 @@ def save_reviewed_projection(
             "trackable": True,
             "times_reviewed": reviewed.times_reviewed,
             "supersedes_count": len(supersedes),
+            "change_summary": change_summary,
         }
 
 

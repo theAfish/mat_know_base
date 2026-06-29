@@ -10,6 +10,7 @@ import {
 import type { Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
+const REVIEW_SEARCH_TOOL_OPTIONS = ['web', 'uniprot', 'crossref'] as const
 
 const PURPOSE_COLORS: Record<string, string> = {
   tabular_database: 'bg-teal-700 text-teal-100',
@@ -21,10 +22,40 @@ const PURPOSE_COLORS: Record<string, string> = {
 interface EditorState {
   mode: 'create' | 'edit' | 'import'
   space?: Space
-  jsonText: string
+  draft: SpaceDraft
 }
 
-const EMPTY_DRAFT = {
+type SchemaField = {
+  type?: string
+  item_type?: string
+  required?: boolean
+  description?: string
+  [key: string]: unknown
+}
+
+type SchemaSection = {
+  type?: string
+  description?: string
+  filter?: Record<string, unknown>
+  item_schema?: Record<string, SchemaField>
+  [key: string]: unknown
+}
+
+type SpaceDraft = {
+  name: string
+  domain: string
+  purpose: string
+  description: string
+  extraction_schema: Record<string, SchemaSection>
+  system_prompt: string
+  field_descriptions: Record<string, string>
+  review_prompt: string
+  review_trackable: boolean
+  review_allow_search: boolean
+  review_search_tools: string[]
+}
+
+const EMPTY_DRAFT: SpaceDraft = {
   name: 'my_new_space',
   domain: '',
   purpose: 'tabular_database',
@@ -34,7 +65,106 @@ const EMPTY_DRAFT = {
   field_descriptions: {},
   review_prompt: '',
   review_trackable: true,
+  review_allow_search: false,
+  review_search_tools: ['web'],
 }
+
+const FIELD_TYPE_OPTIONS = ['string', 'number', 'integer', 'boolean', 'list', 'object'] as const
+
+const toRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+
+const stringifyFieldDescription = (value: unknown) =>
+  typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
+
+const normalizeField = (value: unknown): SchemaField => {
+  const obj = toRecord(value)
+  return {
+    ...obj,
+    type: typeof obj.type === 'string' ? obj.type : 'string',
+    item_type: typeof obj.item_type === 'string' ? obj.item_type : 'string',
+    required: typeof obj.required === 'boolean' ? obj.required : false,
+    description: typeof obj.description === 'string' ? obj.description : '',
+  }
+}
+
+const normalizeSchema = (value: unknown): Record<string, SchemaSection> => {
+  const schema = toRecord(value)
+  return Object.fromEntries(
+    Object.entries(schema).map(([sectionKey, rawSection]) => {
+      const section = toRecord(rawSection)
+      const itemSchema = toRecord(section.item_schema)
+      return [
+        sectionKey,
+        {
+          ...section,
+          type: typeof section.type === 'string' ? section.type : 'list',
+          description: typeof section.description === 'string' ? section.description : '',
+          filter: toRecord(section.filter),
+          item_schema: Object.fromEntries(
+            Object.entries(itemSchema).map(([fieldKey, rawField]) => [
+              fieldKey,
+              normalizeField(rawField),
+            ]),
+          ),
+        },
+      ]
+    }),
+  )
+}
+
+const draftFromObject = (obj: Record<string, unknown>): SpaceDraft => ({
+  name: typeof obj.name === 'string' ? obj.name : EMPTY_DRAFT.name,
+  domain: typeof obj.domain === 'string' ? obj.domain : '',
+  purpose: typeof obj.purpose === 'string' ? obj.purpose : 'tabular_database',
+  description: typeof obj.description === 'string' ? obj.description : '',
+  extraction_schema: normalizeSchema(obj.extraction_schema),
+  system_prompt: typeof obj.system_prompt === 'string' ? obj.system_prompt : '',
+  field_descriptions: Object.fromEntries(
+    Object.entries(toRecord(obj.field_descriptions)).map(([key, value]) => [
+      key,
+      stringifyFieldDescription(value),
+    ]),
+  ),
+  review_prompt: typeof obj.review_prompt === 'string' ? obj.review_prompt : '',
+  review_trackable: typeof obj.review_trackable === 'boolean' ? obj.review_trackable : true,
+  review_allow_search:
+    typeof obj.review_allow_search === 'boolean' ? obj.review_allow_search : false,
+  review_search_tools: Array.isArray(obj.review_search_tools)
+    ? obj.review_search_tools.map(String)
+    : ['web'],
+})
+
+const draftFromSpace = (space: Space, reviewPrompt?: string): SpaceDraft =>
+  draftFromObject({
+    name: space.name,
+    domain: space.domain,
+    purpose: space.purpose ?? 'tabular_database',
+    description: space.description,
+    extraction_schema: space.extraction_schema,
+    system_prompt: space.system_prompt ?? '',
+    field_descriptions: space.field_descriptions ?? {},
+    review_prompt: reviewPrompt ?? space.review_prompt ?? '',
+    review_trackable: space.review_trackable ?? true,
+    review_allow_search: space.review_allow_search ?? false,
+    review_search_tools: space.review_search_tools ?? ['web'],
+  })
+
+const draftToPayload = (draft: SpaceDraft): SpaceCreatePayload => ({
+  name: draft.name.trim(),
+  domain: draft.domain.trim(),
+  purpose: draft.purpose,
+  description: draft.description,
+  extraction_schema: draft.extraction_schema,
+  system_prompt: draft.system_prompt,
+  field_descriptions: draft.field_descriptions,
+  review_prompt: draft.review_prompt.trim().length > 0 ? draft.review_prompt : null,
+  review_trackable: draft.review_trackable,
+  review_allow_search: draft.review_allow_search,
+  review_search_tools: draft.review_search_tools.length > 0 ? draft.review_search_tools : ['web'],
+})
 
 export default function SpacesPage() {
   const [spaces, setSpaces] = useState<Space[]>([])
@@ -85,41 +215,14 @@ export default function SpacesPage() {
     if (!editor) return
     setBusy(true); setError(null); setInfo(null)
     try {
-      const obj = JSON.parse(editor.jsonText)
-      if (!obj.name || !obj.extraction_schema) {
-        throw new Error('JSON must include at least `name` and `extraction_schema`.')
+      const payload = draftToPayload(editor.draft)
+      if (!payload.name || !payload.extraction_schema) {
+        throw new Error('Space must include at least a name and extraction schema.')
       }
       if (editor.mode === 'edit' && editor.space) {
-        const res = await updateSpace(editor.space.space_id, {
-          name: obj.name,
-          domain: obj.domain,
-          purpose: obj.purpose,
-          description: obj.description,
-          extraction_schema: obj.extraction_schema,
-          system_prompt: obj.system_prompt,
-          field_descriptions: obj.field_descriptions,
-          review_prompt:
-            typeof obj.review_prompt === 'string' ? obj.review_prompt : null,
-          review_trackable:
-            typeof obj.review_trackable === 'boolean' ? obj.review_trackable : true,
-        })
+        const res = await updateSpace(editor.space.space_id, payload)
         setInfo(`Updated. New version: ${res.version}`)
       } else {
-        const payload: SpaceCreatePayload = {
-          name: obj.name,
-          domain: obj.domain ?? '',
-          purpose: obj.purpose ?? 'tabular_database',
-          description: obj.description ?? '',
-          extraction_schema: obj.extraction_schema,
-          system_prompt: obj.system_prompt ?? '',
-          field_descriptions: obj.field_descriptions ?? {},
-          review_prompt:
-            typeof obj.review_prompt === 'string' && obj.review_prompt.length > 0
-              ? obj.review_prompt
-              : null,
-          review_trackable:
-            typeof obj.review_trackable === 'boolean' ? obj.review_trackable : true,
-        }
         const res = await createSpace(payload)
         setInfo(`Created space ${res.name} (${res.space_id.slice(0, 8)}…)`)
       }
@@ -154,7 +257,7 @@ export default function SpacesPage() {
           <h2 className="text-xl font-semibold">Spaces</h2>
           <p className="text-sm text-slate-400">
             Projection schemas for tabular DB, QA benchmarks, skill cards, or freeform extraction.
-            Create one with the Assistant, or edit raw JSON here.
+            Create one with the Assistant, import JSON, or tune it with structured controls.
           </p>
         </div>
         <div className="flex gap-2">
@@ -162,7 +265,7 @@ export default function SpacesPage() {
             onClick={() =>
               openEditor({
                 mode: 'create',
-                jsonText: JSON.stringify(EMPTY_DRAFT, null, 2),
+                draft: EMPTY_DRAFT,
               })
             }
             className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded text-sm transition-colors"
@@ -186,7 +289,11 @@ export default function SpacesPage() {
               const reader = new FileReader()
               reader.onload = evt => {
                 const text = evt.target?.result as string
-                openEditor({ mode: 'import', jsonText: text })
+                try {
+                  openEditor({ mode: 'import', draft: draftFromObject(JSON.parse(text)) })
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err))
+                }
               }
               reader.readAsText(file)
               // reset so the same file can be re-selected
@@ -267,7 +374,7 @@ export default function SpacesPage() {
                     : 'New space'}
                 </h3>
                 <span className="text-xs text-slate-500">
-                  Edit the full JSON below.
+                  Edit with normal fields; long prompts use real line breaks.
                 </span>
                 <div className="ml-auto flex gap-2">
                   <button
@@ -286,23 +393,9 @@ export default function SpacesPage() {
                   </button>
                 </div>
               </div>
-              <textarea
-                value={editor.jsonText}
-                onChange={e => setEditor({ ...editor, jsonText: e.target.value })}
-                spellCheck={false}
-                className="w-full h-[70vh] bg-slate-950 border border-slate-700 rounded-md p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-teal-500"
-                placeholder="Paste or write a space JSON here…"
-              />
-              <p className="text-xs text-slate-500">
-                Required keys: <code>name</code>, <code>extraction_schema</code>. Recommended:{' '}
-                <code>domain</code>, <code>purpose</code> (one of {PURPOSE_OPTIONS.join(', ')}),{' '}
-                <code>system_prompt</code>, <code>field_descriptions</code>. Optional:{' '}
-                <code>review_prompt</code> — leave empty to use the default reviewer prompt for the
-                chosen <code>purpose</code>.
-              </p>
-              <LoadDefaultReviewPromptButton
-                jsonText={editor.jsonText}
-                onApply={next => setEditor({ ...editor, jsonText: next })}
+              <SpaceForm
+                draft={editor.draft}
+                onChange={draft => setEditor({ ...editor, draft })}
               />
             </div>
           ) : selected ? (
@@ -312,21 +405,7 @@ export default function SpacesPage() {
                 openEditor({
                   mode: 'edit',
                   space: selected,
-                  jsonText: JSON.stringify(
-                    {
-                      name: selected.name,
-                      domain: selected.domain,
-                      purpose: selected.purpose ?? 'tabular_database',
-                      description: selected.description,
-                      extraction_schema: selected.extraction_schema,
-                      system_prompt: selected.system_prompt ?? '',
-                      field_descriptions: selected.field_descriptions ?? {},
-                      review_prompt: selected.review_prompt ?? '',
-                      review_trackable: selected.review_trackable ?? true,
-                    },
-                    null,
-                    2,
-                  ),
+                  draft: draftFromSpace(selected),
                 })
               }
               onDelete={() => handleDelete(selected)}
@@ -334,21 +413,7 @@ export default function SpacesPage() {
                 openEditor({
                   mode: 'edit',
                   space: selected,
-                  jsonText: JSON.stringify(
-                    {
-                      name: selected.name,
-                      domain: selected.domain,
-                      purpose: selected.purpose ?? 'tabular_database',
-                      description: selected.description,
-                      extraction_schema: selected.extraction_schema,
-                      system_prompt: selected.system_prompt ?? '',
-                      field_descriptions: selected.field_descriptions ?? {},
-                      review_prompt: defaultPrompt,
-                      review_trackable: selected.review_trackable ?? true,
-                    },
-                    null,
-                    2,
-                  ),
+                  draft: draftFromSpace(selected, defaultPrompt),
                 })
               }
             />
@@ -358,6 +423,410 @@ export default function SpacesPage() {
             </p>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function SpaceForm({
+  draft,
+  onChange,
+}: {
+  draft: SpaceDraft
+  onChange: (draft: SpaceDraft) => void
+}) {
+  const setDraft = (patch: Partial<SpaceDraft>) => onChange({ ...draft, ...patch })
+  const schemaEntries = Object.entries(draft.extraction_schema)
+
+  const updateSection = (sectionKey: string, patch: Partial<SchemaSection>) => {
+    setDraft({
+      extraction_schema: {
+        ...draft.extraction_schema,
+        [sectionKey]: { ...draft.extraction_schema[sectionKey], ...patch },
+      },
+    })
+  }
+
+  const renameSection = (oldKey: string, newKey: string) => {
+    const clean = newKey.trim()
+    if (!clean || clean === oldKey || draft.extraction_schema[clean]) return
+    const next = Object.fromEntries(
+      Object.entries(draft.extraction_schema).map(([key, value]) =>
+        key === oldKey ? [clean, value] : [key, value],
+      ),
+    )
+    const { [oldKey]: oldDescription, ...remainingDescriptions } = draft.field_descriptions
+    setDraft({
+      extraction_schema: next,
+      field_descriptions: {
+        ...remainingDescriptions,
+        [clean]: draft.field_descriptions[clean] ?? oldDescription ?? '',
+      },
+    })
+  }
+
+  const addSection = () => {
+    const base = 'new_section'
+    let key = base
+    let index = 2
+    while (draft.extraction_schema[key]) {
+      key = `${base}_${index}`
+      index += 1
+    }
+    setDraft({
+      extraction_schema: {
+        ...draft.extraction_schema,
+        [key]: { type: 'list', description: '', filter: {}, item_schema: {} },
+      },
+      field_descriptions: { ...draft.field_descriptions, [key]: '' },
+    })
+  }
+
+  const removeSection = (sectionKey: string) => {
+    const { [sectionKey]: _removed, ...nextSchema } = draft.extraction_schema
+    const { [sectionKey]: _removedDescription, ...nextDescriptions } = draft.field_descriptions
+    setDraft({ extraction_schema: nextSchema, field_descriptions: nextDescriptions })
+  }
+
+  const updateField = (sectionKey: string, fieldKey: string, patch: Partial<SchemaField>) => {
+    const section = draft.extraction_schema[sectionKey]
+    updateSection(sectionKey, {
+      item_schema: {
+        ...(section.item_schema ?? {}),
+        [fieldKey]: { ...(section.item_schema?.[fieldKey] ?? {}), ...patch },
+      },
+    })
+  }
+
+  const renameField = (sectionKey: string, oldKey: string, newKey: string) => {
+    const clean = newKey.trim()
+    const section = draft.extraction_schema[sectionKey]
+    const itemSchema = section.item_schema ?? {}
+    if (!clean || clean === oldKey || itemSchema[clean]) return
+    updateSection(sectionKey, {
+      item_schema: Object.fromEntries(
+        Object.entries(itemSchema).map(([key, value]) =>
+          key === oldKey ? [clean, value] : [key, value],
+        ),
+      ),
+    })
+  }
+
+  const addField = (sectionKey: string) => {
+    const section = draft.extraction_schema[sectionKey]
+    const itemSchema = section.item_schema ?? {}
+    const base = 'new_field'
+    let key = base
+    let index = 2
+    while (itemSchema[key]) {
+      key = `${base}_${index}`
+      index += 1
+    }
+    updateSection(sectionKey, {
+      item_schema: {
+        ...itemSchema,
+        [key]: { type: 'string', item_type: 'string', required: false, description: '' },
+      },
+    })
+  }
+
+  const removeField = (sectionKey: string, fieldKey: string) => {
+    const section = draft.extraction_schema[sectionKey]
+    const { [fieldKey]: _removed, ...nextFields } = section.item_schema ?? {}
+    updateSection(sectionKey, { item_schema: nextFields })
+  }
+
+  return (
+    <div className="space-y-4 pb-6">
+      <div className="grid grid-cols-2 gap-3">
+        <TextInput label="Name" value={draft.name} onChange={name => setDraft({ name })} />
+        <TextInput label="Domain" value={draft.domain} onChange={domain => setDraft({ domain })} />
+        <label className="text-xs text-slate-300">
+          <span className="block mb-1">Purpose</span>
+          <select
+            value={draft.purpose}
+            onChange={e => setDraft({ purpose: e.target.value })}
+            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-2 text-sm text-slate-100 focus:outline-none focus:border-teal-500"
+          >
+            {PURPOSE_OPTIONS.map(option => (
+              <option key={option} value={option}>{option.replace('_', ' ')}</option>
+            ))}
+          </select>
+        </label>
+        <TextInput
+          label="Description"
+          value={draft.description}
+          onChange={description => setDraft({ description })}
+        />
+      </div>
+
+      <Section title="Extraction schema">
+        <div className="space-y-3">
+          {schemaEntries.length === 0 && (
+            <p className="text-xs text-slate-500">No schema sections yet.</p>
+          )}
+          {schemaEntries.map(([sectionKey, section]) => (
+            <div key={sectionKey} className="border border-slate-700 bg-slate-900/40 rounded p-3 space-y-3">
+              <div className="grid grid-cols-[minmax(0,1fr)_120px_auto] gap-2 items-end">
+                <TextInput
+                  label="Section"
+                  value={sectionKey}
+                  onChange={value => renameSection(sectionKey, value)}
+                />
+                <label className="text-xs text-slate-300">
+                  <span className="block mb-1">Shape</span>
+                  <select
+                    value={section.type ?? 'list'}
+                    onChange={e => updateSection(sectionKey, { type: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-2 text-sm text-slate-100 focus:outline-none focus:border-teal-500"
+                  >
+                    <option value="list">list</option>
+                    <option value="object">object</option>
+                    <option value="string">string</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => removeSection(sectionKey)}
+                  className="px-2 py-2 bg-rose-900/60 hover:bg-rose-800 text-rose-100 rounded text-xs"
+                >
+                  Remove
+                </button>
+              </div>
+              <TextArea
+                label="Section description"
+                value={section.description ?? ''}
+                rows={2}
+                onChange={description => updateSection(sectionKey, { description })}
+              />
+              <TextInput
+                label="Field description shown to agents"
+                value={draft.field_descriptions[sectionKey] ?? ''}
+                onChange={value =>
+                  setDraft({
+                    field_descriptions: { ...draft.field_descriptions, [sectionKey]: value },
+                  })
+                }
+              />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-slate-300">Fields</span>
+                  <button
+                    type="button"
+                    onClick={() => addField(sectionKey)}
+                    className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs"
+                  >
+                    + Add field
+                  </button>
+                </div>
+                {(Object.entries(section.item_schema ?? {})).map(([fieldKey, field]) => (
+                  <div
+                    key={fieldKey}
+                    className="grid grid-cols-[minmax(120px,1fr)_110px_90px_minmax(160px,2fr)_auto] gap-2 items-end"
+                  >
+                    <TextInput
+                      label="Key"
+                      value={fieldKey}
+                      onChange={value => renameField(sectionKey, fieldKey, value)}
+                    />
+                    <label className="text-xs text-slate-300">
+                      <span className="block mb-1">Type</span>
+                      <select
+                        value={field.type ?? 'string'}
+                        onChange={e => updateField(sectionKey, fieldKey, { type: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-2 text-sm text-slate-100 focus:outline-none focus:border-teal-500"
+                      >
+                        {FIELD_TYPE_OPTIONS.map(option => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-slate-300">
+                      <span className="block mb-1">Required</span>
+                      <input
+                        type="checkbox"
+                        checked={field.required ?? false}
+                        onChange={e =>
+                          updateField(sectionKey, fieldKey, { required: e.target.checked })
+                        }
+                        className="mt-2 h-4 w-4 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+                      />
+                    </label>
+                    <TextInput
+                      label="Description"
+                      value={field.description ?? ''}
+                      onChange={description =>
+                        updateField(sectionKey, fieldKey, { description })
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeField(sectionKey, fieldKey)}
+                      className="px-2 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addSection}
+            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs"
+          >
+            + Add section
+          </button>
+        </div>
+      </Section>
+
+      <Section title="Prompts">
+        <div className="space-y-3">
+          <TextArea
+            label="System prompt"
+            value={draft.system_prompt}
+            rows={9}
+            onChange={system_prompt => setDraft({ system_prompt })}
+          />
+          <ReviewPromptEditor
+            purpose={draft.purpose}
+            value={draft.review_prompt}
+            onChange={review_prompt => setDraft({ review_prompt })}
+          />
+        </div>
+      </Section>
+
+      <Section title="Review settings">
+        <div className="space-y-3 text-xs text-slate-300">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={draft.review_trackable}
+              onChange={e => setDraft({ review_trackable: e.target.checked })}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+            />
+            Track review history by creating superseding projection rows
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={draft.review_allow_search}
+              onChange={e => setDraft({ review_allow_search: e.target.checked })}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+            />
+            Allow review search
+          </label>
+          <div className="flex items-center gap-3 flex-wrap">
+            {REVIEW_SEARCH_TOOL_OPTIONS.map(tool => {
+              const selected = draft.review_search_tools.includes(tool)
+              return (
+                <label key={tool} className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    disabled={!draft.review_allow_search}
+                    onChange={e => {
+                      const next = e.target.checked
+                        ? [...draft.review_search_tools, tool]
+                        : draft.review_search_tools.filter(value => value !== tool)
+                      setDraft({ review_search_tools: Array.from(new Set(next)) })
+                    }}
+                    className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+                  />
+                  {tool}
+                </label>
+              )
+            })}
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+function TextInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="text-xs text-slate-300">
+      <span className="block mb-1">{label}</span>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-2 text-sm text-slate-100 focus:outline-none focus:border-teal-500"
+      />
+    </label>
+  )
+}
+
+function TextArea({
+  label,
+  value,
+  rows,
+  onChange,
+}: {
+  label: string
+  value: string
+  rows: number
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="text-xs text-slate-300 block">
+      <span className="block mb-1">{label}</span>
+      <textarea
+        value={value}
+        rows={rows}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm text-slate-100 focus:outline-none focus:border-teal-500"
+      />
+    </label>
+  )
+}
+
+function ReviewPromptEditor({
+  purpose,
+  value,
+  onChange,
+}: {
+  purpose: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const handleLoadDefault = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const res = await getDefaultReviewPrompt(purpose)
+      onChange(res.review_prompt)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <TextArea label="Review prompt" value={value} rows={9} onChange={onChange} />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={handleLoadDefault}
+          className="px-2 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 rounded text-xs"
+        >
+          {busy ? 'Loading…' : 'Load default review prompt for purpose'}
+        </button>
+        {err && <span className="text-xs text-rose-300">{err}</span>}
       </div>
     </div>
   )
@@ -375,59 +844,80 @@ function SpaceDetail({
   onCustomizeReview: (defaultPrompt: string) => void
 }) {
   const purpose = space.purpose ?? 'tabular_database'
+  const schema = normalizeSchema(space.extraction_schema)
+  const sectionCount = Object.keys(schema).length
+  const fieldCount = Object.values(schema).reduce(
+    (sum, section) => sum + Object.keys(section.item_schema ?? {}).length,
+    0,
+  )
+  const searchTools = space.review_search_tools ?? ['web']
   return (
-    <div className="space-y-3 text-sm">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span
-          className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
-            PURPOSE_COLORS[purpose] ?? 'bg-slate-600 text-slate-100'
-          }`}
-        >
-          {purpose.replace('_', ' ')}
-        </span>
-        <h3 className="font-mono text-slate-100">{space.name}</h3>
-        <span className="text-slate-500 text-xs">v{space.version}</span>
-        <span className="text-slate-500 text-xs">·</span>
-        <span className="text-slate-400 text-xs">{space.domain}</span>
-        <div className="ml-auto flex gap-2">
-          <button
-            onClick={onEdit}
-            className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs"
-          >
-            Edit
-          </button>
-          <button
-            onClick={onDelete}
-            className="px-3 py-1 bg-rose-700 hover:bg-rose-600 text-white rounded text-xs"
-          >
-            Delete
-          </button>
+    <div className="space-y-4 text-sm pb-6">
+      <div className="border border-slate-700 bg-slate-900/50 rounded p-4 space-y-3">
+        <div className="flex items-start gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+                  PURPOSE_COLORS[purpose] ?? 'bg-slate-600 text-slate-100'
+                }`}
+              >
+                {purpose.replace('_', ' ')}
+              </span>
+              {space.version != null && (
+                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
+                  v{space.version}
+                </span>
+              )}
+            </div>
+            <h3 className="mt-2 text-lg font-semibold text-slate-100 break-words">{space.name}</h3>
+            <div className="mt-1 text-xs text-slate-400">{space.domain || 'No domain set'}</div>
+          </div>
+          <div className="ml-auto flex gap-2">
+            <button
+              onClick={onEdit}
+              className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs"
+            >
+              Edit
+            </button>
+            <button
+              onClick={onDelete}
+              className="px-3 py-1 bg-rose-700 hover:bg-rose-600 text-white rounded text-xs"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+
+        {space.description && (
+          <p className="text-slate-300 leading-relaxed">{space.description}</p>
+        )}
+
+        <div className="grid grid-cols-4 gap-2">
+          <SummaryTile label="Sections" value={String(sectionCount)} />
+          <SummaryTile label="Fields" value={String(fieldCount)} />
+          <SummaryTile label="Review history" value={space.review_trackable ?? true ? 'On' : 'Off'} />
+          <SummaryTile label="Search" value={space.review_allow_search ?? false ? 'On' : 'Off'} />
+        </div>
+
+        <div className="text-xs text-slate-500">
+          Created: {space.created_at ?? '—'} · Updated: {space.updated_at ?? '—'}
         </div>
       </div>
 
-      {space.description && (
-        <p className="text-slate-300 bg-slate-800/50 px-3 py-2 rounded">{space.description}</p>
-      )}
-
       <Section title="Extraction schema">
-        <pre className="bg-slate-950 text-slate-200 text-xs font-mono p-3 rounded max-h-[40vh] overflow-auto">
-{JSON.stringify(space.extraction_schema, null, 2)}
-        </pre>
+        <SchemaOverview schema={schema} />
       </Section>
 
-      {space.system_prompt && (
-        <Section title="System prompt">
-          <pre className="bg-slate-950 text-slate-200 text-xs font-mono p-3 rounded max-h-[30vh] overflow-auto whitespace-pre-wrap">
-{String(space.system_prompt)}
-          </pre>
+      {space.field_descriptions && Object.keys(space.field_descriptions).length > 0 && (
+        <Section title="Field descriptions">
+          <FieldDescriptionsView descriptions={space.field_descriptions} />
         </Section>
       )}
 
-      {space.field_descriptions && (
-        <Section title="Field descriptions">
-          <pre className="bg-slate-950 text-slate-200 text-xs font-mono p-3 rounded max-h-[30vh] overflow-auto">
-{JSON.stringify(space.field_descriptions, null, 2)}
-          </pre>
+      {space.system_prompt && (
+        <Section title="System prompt">
+          <PromptBlock text={space.system_prompt} />
         </Section>
       )}
 
@@ -439,21 +929,165 @@ function SpaceDetail({
         />
       </Section>
 
-      <Section title="Review history (trackable)">
-        <p className="text-xs text-slate-400">
-          When <code>review_trackable</code> is enabled, each review produces a NEW projection
-          row that supersedes the prior versions instead of overwriting them. Older versions
-          remain queryable for audit and diff. Disable to revert to the legacy in-place
-          update behavior.
-        </p>
-        <p className="mt-2 text-xs text-slate-300">
-          Current setting: <code>review_trackable = {String(space.review_trackable ?? true)}</code>
-        </p>
+      <Section title="Review settings">
+        <div className="grid grid-cols-2 gap-3">
+          <SettingPanel
+            label="Review history"
+            enabled={space.review_trackable ?? true}
+            enabledText="Creates superseding projection rows"
+            disabledText="Uses legacy in-place updates"
+          />
+          <div className="border border-slate-700 bg-slate-900/40 rounded p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-slate-300">Review search</span>
+              <StatusPill enabled={space.review_allow_search ?? false} />
+            </div>
+            <div className="mt-2 flex gap-1.5 flex-wrap">
+              {searchTools.map(tool => (
+                <span
+                  key={tool}
+                  className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px]"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
       </Section>
+    </div>
+  )
+}
 
-      <div className="text-xs text-slate-500">
-        Created: {space.created_at ?? '—'} · Updated: {space.updated_at ?? '—'}
+function SummaryTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-slate-950/70 border border-slate-800 rounded p-2">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500">{label}</div>
+      <div className="mt-1 text-sm font-semibold text-slate-100">{value}</div>
+    </div>
+  )
+}
+
+function SchemaOverview({ schema }: { schema: Record<string, SchemaSection> }) {
+  const entries = Object.entries(schema)
+
+  if (entries.length === 0) {
+    return (
+      <div className="border border-slate-800 bg-slate-950/60 rounded p-3 text-xs text-slate-500">
+        No extraction schema sections defined.
       </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {entries.map(([sectionKey, section]) => {
+        const fields = Object.entries(section.item_schema ?? {})
+        return (
+          <div key={sectionKey} className="border border-slate-700 bg-slate-900/40 rounded overflow-hidden">
+            <div className="px-3 py-2 border-b border-slate-800 bg-slate-950/40">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono text-sm text-slate-100">{sectionKey}</span>
+                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
+                  {section.type ?? 'list'}
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  {fields.length} field{fields.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {section.description && (
+                <p className="mt-1 text-xs text-slate-400 leading-relaxed">
+                  {section.description}
+                </p>
+              )}
+            </div>
+            {fields.length === 0 ? (
+              <div className="px-3 py-3 text-xs text-slate-500">No fields defined.</div>
+            ) : (
+              <div className="divide-y divide-slate-800">
+                {fields.map(([fieldKey, field]) => (
+                  <div
+                    key={fieldKey}
+                    className="grid grid-cols-[minmax(120px,1.2fr)_90px_80px_minmax(180px,2fr)] gap-3 px-3 py-2 items-start"
+                  >
+                    <span className="font-mono text-xs text-slate-200 break-words">{fieldKey}</span>
+                    <span className="text-xs text-slate-300">{field.type ?? 'string'}</span>
+                    <span className={field.required ? 'text-xs text-teal-300' : 'text-xs text-slate-500'}>
+                      {field.required ? 'required' : 'optional'}
+                    </span>
+                    <span className="text-xs text-slate-400 leading-relaxed">
+                      {field.description || '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function FieldDescriptionsView({
+  descriptions,
+}: {
+  descriptions: Record<string, unknown>
+}) {
+  return (
+    <div className="space-y-2">
+      {Object.entries(descriptions).map(([key, value]) => (
+        <div key={key} className="border border-slate-800 bg-slate-950/50 rounded p-3">
+          <div className="font-mono text-xs text-slate-200">{key}</div>
+          <p className="mt-1 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">
+            {stringifyFieldDescription(value) || '—'}
+          </p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PromptBlock({ text }: { text: string }) {
+  return (
+    <div className="bg-slate-950/70 border border-slate-800 text-slate-300 text-xs p-3 rounded max-h-[34vh] overflow-auto whitespace-pre-wrap leading-relaxed">
+      {text}
+    </div>
+  )
+}
+
+function StatusPill({ enabled }: { enabled: boolean }) {
+  return (
+    <span
+      className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+        enabled ? 'bg-teal-900/70 text-teal-200' : 'bg-slate-800 text-slate-400'
+      }`}
+    >
+      {enabled ? 'On' : 'Off'}
+    </span>
+  )
+}
+
+function SettingPanel({
+  label,
+  enabled,
+  enabledText,
+  disabledText,
+}: {
+  label: string
+  enabled: boolean
+  enabledText: string
+  disabledText: string
+}) {
+  return (
+    <div className="border border-slate-700 bg-slate-900/40 rounded p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-slate-300">{label}</span>
+        <StatusPill enabled={enabled} />
+      </div>
+      <p className="mt-2 text-xs text-slate-400">
+        {enabled ? enabledText : disabledText}
+      </p>
     </div>
   )
 }
@@ -469,53 +1103,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         {open ? '▾' : '▸'} {title}
       </button>
       {open && children}
-    </div>
-  )
-}
-
-function LoadDefaultReviewPromptButton({
-  jsonText,
-  onApply,
-}: {
-  jsonText: string
-  onApply: (next: string) => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-
-  const handleClick = async () => {
-    setErr(null)
-    let obj: Record<string, unknown>
-    try {
-      obj = JSON.parse(jsonText)
-    } catch (e) {
-      setErr(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
-      return
-    }
-    const purpose = (obj.purpose as string) || 'tabular_database'
-    setBusy(true)
-    try {
-      const res = await getDefaultReviewPrompt(purpose)
-      const next = { ...obj, review_prompt: res.review_prompt }
-      onApply(JSON.stringify(next, null, 2))
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={handleClick}
-        className="px-2 py-1 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-200 rounded text-xs"
-      >
-        {busy ? 'Loading…' : 'Load default review prompt for purpose'}
-      </button>
-      {err && <span className="text-xs text-rose-300">{err}</span>}
     </div>
   )
 }

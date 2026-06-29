@@ -526,6 +526,16 @@ class Space(Base):
         Boolean, nullable=False, server_default=text("true")
     )
 
+    # Optional review-time external search. Domain-specific instructions still
+    # belong in ``review_prompt``; these fields only control which lookup tools
+    # the reviewer is allowed to call.
+    review_allow_search: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    review_search_tools: Mapped[list | None] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[\"web\"]'::jsonb")
+    )
+
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(

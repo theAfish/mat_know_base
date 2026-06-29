@@ -27,6 +27,25 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _job_result_error(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    status = str(result.get("status") or "").strip().lower()
+    if status in {"error", "failed"}:
+        return str(result.get("message") or result.get("error") or "Job returned an error result.")
+    return None
+
+
+def _job_result_message(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    for key in ("message", "agent_summary", "status"):
+        value = result.get(key)
+        if value:
+            return str(value)
+    return None
+
+
 @dataclass
 class AssistantSession:
     runner: Any
@@ -146,16 +165,51 @@ class JobManager:
                         message = event.get("message") or event.get("label") or "Working"
                         job["current_message"] = str(message)
                         payload = {"message": str(message), "timestamp": _now_iso()}
-                        for key in ["stage", "tool", "action", "label", "element_type", "filename", "asset_id"]:
+                        for key in [
+                            "stage",
+                            "tool",
+                            "action",
+                            "label",
+                            "element_type",
+                            "filename",
+                            "asset_id",
+                            "payload",
+                        ]:
                             if key in event:
                                 payload[key] = event[key]
                         job["events"].append(payload)
                         if len(job["events"]) > _EVENT_LIMIT:
                             job["events"] = job["events"][-_EVENT_LIMIT:]
                     elif et == "done":
-                        job["status"] = "COMPLETED"
                         job["result"] = event.get("result")
-                        job["current_message"] = "Completed"
+                        error_message = _job_result_error(job["result"])
+                        if error_message:
+                            job["status"] = "FAILED"
+                            job["error"] = error_message
+                            job["current_message"] = error_message
+                            job["events"].append(
+                                {
+                                    "message": error_message,
+                                    "timestamp": _now_iso(),
+                                    "stage": "error_result",
+                                    "payload": job["result"],
+                                }
+                            )
+                        else:
+                            job["status"] = "COMPLETED"
+                            job["current_message"] = "Completed"
+                            result_message = _job_result_message(job["result"])
+                            if result_message:
+                                job["events"].append(
+                                    {
+                                        "message": result_message,
+                                        "timestamp": _now_iso(),
+                                        "stage": "result",
+                                        "payload": job["result"],
+                                    }
+                                )
+                        if len(job["events"]) > _EVENT_LIMIT:
+                            job["events"] = job["events"][-_EVENT_LIMIT:]
                         self._queues.pop(job_id, None)
                     elif et == "error":
                         job["status"] = "FAILED"

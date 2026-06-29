@@ -25,6 +25,7 @@ dependencies = [
     "pytesseract>=0.3",
     "mineru>=2.0",
     "google-adk",
+    "ddgs",
     "litellm>=1.75.5",
     "fastapi>=0.116",
     "uvicorn>=0.35",

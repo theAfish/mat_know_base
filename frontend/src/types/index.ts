@@ -117,6 +117,8 @@ export interface Space {
   field_descriptions?: Record<string, unknown>
   review_prompt?: string | null
   review_trackable?: boolean
+  review_allow_search?: boolean
+  review_search_tools?: string[]
   version?: number
   created_at?: string | null
   updated_at?: string | null
@@ -132,6 +134,8 @@ export interface SpaceCreatePayload {
   purpose?: string
   review_prompt?: string | null
   review_trackable?: boolean
+  review_allow_search?: boolean
+  review_search_tools?: string[]
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }
@@ -162,7 +166,17 @@ export interface Job {
   result: Record<string, unknown> | null
   error: string | null
   current_message: string | null
-  events: Array<{ message: string; stage?: string }>
+  events: Array<{
+    message: string
+    stage?: string
+    tool?: string
+    label?: string
+    action?: string
+    filename?: string
+    asset_id?: string
+    payload?: unknown
+    timestamp?: string
+  }>
   created_at: string
   updated_at: string
 }

@@ -301,4 +301,3 @@ def default_review_prompt_for(purpose: str | None) -> str:
     """Return the default reviewer prompt for a given space ``purpose``."""
     key = (purpose or "tabular_database").lower()
     return DEFAULT_REVIEW_PROMPTS.get(key, PROJECTION_REVIEW_PROMPT)
-

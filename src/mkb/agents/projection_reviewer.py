@@ -24,6 +24,10 @@ from mkb.agents.prompts.projection_review import (
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
 from mkb.agents.tools.projection_review import PROJECTION_REVIEW_TOOLS
+from mkb.agents.tools.review_search import (
+    get_projection_review_search_tools,
+    normalize_review_search_tool_names,
+)
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     KnowledgeFrame,
@@ -44,6 +48,7 @@ def build_projection_reviewer_agent(
     model: str | None = None,
     purpose: str | None = None,
     custom_prompt: str | None = None,
+    search_tool_names: list[str] | None = None,
 ) -> Agent:
     """Create a projection reviewer agent.
 
@@ -66,11 +71,16 @@ def build_projection_reviewer_agent(
             if purpose_key in {"skill_cards", "freeform"}
             else "projection_reviewer"
         )
+    search_tools = (
+        get_projection_review_search_tools(search_tool_names)
+        if search_tool_names
+        else []
+    )
     return Agent(
         name=agent_name,
         model=llm,
         instruction=instruction,
-        tools=REVIEWER_TOOLS,
+        tools=REVIEWER_TOOLS + search_tools,
     )
 
 
@@ -79,6 +89,7 @@ async def _run_review_async(
     project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection review on a single project for a given space."""
 
@@ -95,7 +106,11 @@ async def _run_review_async(
         projections_for_count = (
             db.query(Projection)
             .filter_by(space_id=space_id, frame_id=frame.frame_id)
-            .filter(Projection.status == ProjectionStatus.COMPLETED)
+            .filter(
+                Projection.status.in_(
+                    [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                )
+            )
             .filter(Projection.deleted_at.is_(None))
             .filter(Projection.superseded_by_id.is_(None))
             .all()
@@ -116,11 +131,17 @@ async def _run_review_async(
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
         space_review_prompt = getattr(space, "review_prompt", None)
+        search_tool_names = (
+            normalize_review_search_tool_names(getattr(space, "review_search_tools", None))
+            if bool(getattr(space, "review_allow_search", False))
+            else []
+        )
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
         custom_prompt=space_review_prompt,
+        search_tool_names=search_tool_names,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -151,11 +172,19 @@ async def _run_review_async(
         f"then systematically verify the data, pick the best projection "
         f"as the winner, merge corrections, and save it."
     )
+    if search_tool_names:
+        message += (
+            " External search is allowed for this space with these review "
+            f"search tool groups: {', '.join(search_tool_names)}. Use them only "
+            "when local source files and the knowledge frame do not fully "
+            "resolve a review decision."
+        )
 
     result = await runner.run(
         session_id=session_id,
         message=message,
         verbose=verbose,
+        progress_callback=progress_callback,
     )
 
     if not result.success:
@@ -198,9 +227,16 @@ async def run_projection_review(
     project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
 ) -> dict:
     """Run projection review on one project."""
-    return await _run_review_async(space_id, project_id, model, verbose)
+    return await _run_review_async(
+        space_id,
+        project_id,
+        model=model,
+        verbose=verbose,
+        progress_callback=progress_callback,
+    )
 
 
 @sync_agent_run
@@ -236,7 +272,12 @@ async def run_projection_review_all(
             # Keep only those that have a non-deleted completed projection
             live_frames = (
                 db.query(Projection.frame_id)
-                .filter_by(space_id=sid, status=ProjectionStatus.COMPLETED)
+                .filter_by(space_id=sid)
+                .filter(
+                    Projection.status.in_(
+                        [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                    )
+                )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
                 .filter(Projection.frame_id.in_(list(frame_by_pid.values())))
@@ -255,7 +296,12 @@ async def run_projection_review_all(
         else:
             projections = (
                 db.query(Projection.frame_id)
-                .filter_by(space_id=sid, status=ProjectionStatus.COMPLETED)
+                .filter_by(space_id=sid)
+                .filter(
+                    Projection.status.in_(
+                        [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                    )
+                )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
                 .distinct()
@@ -279,7 +325,13 @@ async def run_projection_review_all(
             progress_callback({
                 "message": f"Reviewing project {idx}/{total} ({str(pid)[:8]})",
             })
-        result = await _run_review_async(sid, pid, model=model, verbose=verbose)
+        result = await _run_review_async(
+            sid,
+            pid,
+            model=model,
+            verbose=verbose,
+            progress_callback=progress_callback,
+        )
         results.append(result)
         logger.info("  -> %s", result.get("status", "unknown"))
 
@@ -331,7 +383,12 @@ async def run_projection_review_session(
                 continue
             n = (
                 db.query(Projection)
-                .filter_by(space_id=sid, frame_id=fid, status=ProjectionStatus.COMPLETED)
+                .filter_by(space_id=sid, frame_id=fid)
+                .filter(
+                    Projection.status.in_(
+                        [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                    )
+                )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
                 .count()
@@ -348,11 +405,17 @@ async def run_projection_review_session(
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
         space_review_prompt = getattr(space, "review_prompt", None)
+        search_tool_names = (
+            normalize_review_search_tool_names(getattr(space, "review_search_tools", None))
+            if bool(getattr(space, "review_allow_search", False))
+            else []
+        )
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
         custom_prompt=space_review_prompt,
+        search_tool_names=search_tool_names,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -378,6 +441,13 @@ async def run_projection_review_session(
         f"projects to keep decisions consistent across the batch.\n\n"
         f"Do not skip any project. Report a brief per-project summary at the end."
     )
+    if search_tool_names:
+        message += (
+            "\n\nExternal search is allowed for this space with these review "
+            f"search tool groups: {', '.join(search_tool_names)}. Use them only "
+            "when local source files and the knowledge frame do not fully "
+            "resolve a review decision."
+        )
 
     if progress_callback:
         progress_callback({
@@ -388,6 +458,7 @@ async def run_projection_review_session(
         session_id=session_id,
         message=message,
         verbose=verbose,
+        progress_callback=progress_callback,
     )
 
     if not result.success:

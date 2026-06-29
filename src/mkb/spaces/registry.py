@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 VALID_PURPOSES = {"tabular_database", "qa_benchmark", "skill_cards", "freeform"}
+VALID_REVIEW_SEARCH_TOOLS = {"web", "uniprot", "crossref"}
 
 
 def _maybe_normalize_schema(extraction_schema: dict, purpose: str) -> dict:
@@ -28,6 +29,24 @@ def _maybe_normalize_schema(extraction_schema: dict, purpose: str) -> dict:
     if purpose == "tabular_database":
         return normalize_extraction_schema(extraction_schema)
     return extraction_schema if isinstance(extraction_schema, dict) else {}
+
+
+def _normalize_review_search_tools(value) -> list[str]:
+    if value is None:
+        return ["web"]
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = []
+
+    tools: list[str] = []
+    for item in candidates:
+        key = str(item).strip().lower()
+        if key in VALID_REVIEW_SEARCH_TOOLS and key not in tools:
+            tools.append(key)
+    return tools or ["web"]
 
 
 def create_space(
@@ -40,6 +59,8 @@ def create_space(
     purpose: str = "tabular_database",
     review_prompt: str | None = None,
     review_trackable: bool = True,
+    review_allow_search: bool = False,
+    review_search_tools: list[str] | None = None,
 ) -> dict:
     """Create a new space definition.
 
@@ -78,6 +99,8 @@ def create_space(
             field_descriptions=field_descriptions,
             review_prompt=(review_prompt or None),
             review_trackable=bool(review_trackable),
+            review_allow_search=bool(review_allow_search),
+            review_search_tools=_normalize_review_search_tools(review_search_tools),
             version=1,
         )
         session.add(space)
@@ -127,6 +150,8 @@ def update_space(
         "name",
         "review_prompt",
         "review_trackable",
+        "review_allow_search",
+        "review_search_tools",
     }
 
     with SyncSessionLocal() as session:
@@ -150,6 +175,10 @@ def update_space(
                 value = value if (value and str(value).strip()) else None
             if key == "review_trackable":
                 value = bool(value)
+            if key == "review_allow_search":
+                value = bool(value)
+            if key == "review_search_tools":
+                value = _normalize_review_search_tools(value)
             setattr(space, key, value)
 
         space.version = space.version + 1
@@ -195,6 +224,8 @@ def load_space_from_file(filepath: str | Path) -> dict:
         purpose=data.get("purpose", "tabular_database"),
         review_prompt=data.get("review_prompt"),
         review_trackable=bool(data.get("review_trackable", True)),
+        review_allow_search=bool(data.get("review_allow_search", False)),
+        review_search_tools=_normalize_review_search_tools(data.get("review_search_tools")),
     )
 
 
@@ -214,6 +245,10 @@ def _space_to_dict(space: Space) -> dict:
         "field_descriptions": space.field_descriptions,
         "review_prompt": getattr(space, "review_prompt", None),
         "review_trackable": bool(getattr(space, "review_trackable", True)),
+        "review_allow_search": bool(getattr(space, "review_allow_search", False)),
+        "review_search_tools": _normalize_review_search_tools(
+            getattr(space, "review_search_tools", None)
+        ),
         "version": space.version,
         "created_at": space.created_at.isoformat() if space.created_at else None,
         "updated_at": space.updated_at.isoformat() if space.updated_at else None,

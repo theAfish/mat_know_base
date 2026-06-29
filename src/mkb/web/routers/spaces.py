@@ -44,6 +44,8 @@ def create_space(body: SpaceCreateRequest):
         purpose=body.purpose,
         review_prompt=body.review_prompt,
         review_trackable=body.review_trackable,
+        review_allow_search=body.review_allow_search,
+        review_search_tools=body.review_search_tools,
     )
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])

@@ -2232,6 +2232,8 @@ def create_space(
     purpose: str = "tabular_database",
     review_prompt: str | None = None,
     review_trackable: bool = True,
+    review_allow_search: bool = False,
+    review_search_tools: list[str] | None = None,
 ) -> dict:
     """Create a new space (domain-specific extraction configuration)."""
     from mkb.spaces.registry import create_space as _create
@@ -2246,6 +2248,8 @@ def create_space(
         purpose=purpose,
         review_prompt=review_prompt,
         review_trackable=review_trackable,
+        review_allow_search=review_allow_search,
+        review_search_tools=review_search_tools,
     )
 
 
@@ -2836,7 +2840,13 @@ def review_projections(
     pid = uuid.UUID(str(project_id))
     if progress_callback:
         progress_callback({"message": f"Reviewing projections for project {str(pid)[:8]}"})
-    return run_projection_review(sid, pid, model=model, verbose=verbose)
+    return run_projection_review(
+        sid,
+        pid,
+        model=model,
+        verbose=verbose,
+        progress_callback=progress_callback,
+    )
 
 
 def review_projections_all(

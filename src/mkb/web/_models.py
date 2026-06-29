@@ -30,6 +30,8 @@ class SpaceCreateRequest(BaseModel):
     purpose: str = "tabular_database"
     review_prompt: str | None = None
     review_trackable: bool = True
+    review_allow_search: bool = False
+    review_search_tools: list[str] | None = None
 
 
 class SpaceUpdateRequest(BaseModel):
@@ -42,6 +44,8 @@ class SpaceUpdateRequest(BaseModel):
     field_descriptions: dict | None = None
     review_prompt: str | None = None
     review_trackable: bool | None = None
+    review_allow_search: bool | None = None
+    review_search_tools: list[str] | None = None
 
 
 class ProjectionReviewRequest(BaseModel):

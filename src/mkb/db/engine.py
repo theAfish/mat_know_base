@@ -43,6 +43,16 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                 "ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE"
             ),
         },
+        "spaces": {
+            "review_allow_search": (
+                "ALTER TABLE spaces "
+                "ADD COLUMN review_allow_search BOOLEAN NOT NULL DEFAULT false"
+            ),
+            "review_search_tools": (
+                "ALTER TABLE spaces "
+                "ADD COLUMN review_search_tools JSONB NOT NULL DEFAULT '[\"web\"]'::jsonb"
+            ),
+        },
         "raw_workflow_extractions": {
             "record_status": (
                 "ALTER TABLE raw_workflow_extractions "
