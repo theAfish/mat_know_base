@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { listProjects } from '../../api/projects'
 import ProjectGroupedList from '../ProjectGroupedList'
-import StatusBadge from '../StatusBadge'
 import type { Project, Space } from '../../types'
 import ProjectDetail from './ProjectDetail'
+import StatusLights from './StatusLights'
 
 
 export default function BrowseTab({ spaces }: { spaces: Space[] }) {
@@ -46,10 +46,19 @@ export default function BrowseTab({ spaces }: { spaces: Space[] }) {
         columns={[
           { header: 'Assets', cellClassName: 'text-slate-400',
             render: p => p.asset_count },
-          { header: 'Processed',
-            render: p => <StatusBadge status={p.processing_status ?? 'UNPROCESSED'} /> },
-          { header: 'Frame',
-            render: p => <StatusBadge status={p.frame_status ?? 'NO_FRAME'} /> },
+          {
+            header: 'Pipeline',
+            headerClassName: 'w-28',
+            cellClassName: 'w-28',
+            render: p => (
+              <StatusLights
+                processed={p.processing_status ?? 'UNPROCESSED'}
+                frame={p.frame_status ?? 'NO_FRAME'}
+                workflow={p.workflow_status ?? 'NO_WORKFLOW'}
+                normalized={p.canonical_workflow_status ?? 'NO_CANONICAL_WORKFLOW'}
+              />
+            ),
+          },
           { header: 'Created', cellClassName: 'text-slate-500 text-xs',
             render: p => p.created_at?.slice(0, 10) },
         ]}

@@ -43,6 +43,46 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                 "ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE"
             ),
         },
+        "spaces": {
+            "review_allow_search": (
+                "ALTER TABLE spaces "
+                "ADD COLUMN review_allow_search BOOLEAN NOT NULL DEFAULT false"
+            ),
+            "review_search_tools": (
+                "ALTER TABLE spaces "
+                "ADD COLUMN review_search_tools JSONB NOT NULL DEFAULT '[\"web\"]'::jsonb"
+            ),
+            "post_processors": (
+                "ALTER TABLE spaces "
+                "ADD COLUMN post_processors JSONB NOT NULL DEFAULT '[]'::jsonb"
+            ),
+        },
+        "raw_workflow_extractions": {
+            "record_status": (
+                "ALTER TABLE raw_workflow_extractions "
+                "ADD COLUMN record_status VARCHAR(32) NOT NULL DEFAULT 'active'"
+            ),
+            "supersedes_extraction_id": (
+                "ALTER TABLE raw_workflow_extractions "
+                "ADD COLUMN supersedes_extraction_id UUID"
+            ),
+            "correction_reason": "ALTER TABLE raw_workflow_extractions ADD COLUMN correction_reason TEXT",
+            "correction_author": "ALTER TABLE raw_workflow_extractions ADD COLUMN correction_author VARCHAR(255)",
+            "correction_details": "ALTER TABLE raw_workflow_extractions ADD COLUMN correction_details JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "review_flags": "ALTER TABLE raw_workflow_extractions ADD COLUMN review_flags JSONB NOT NULL DEFAULT '[]'::jsonb",
+            "checkpoint": "ALTER TABLE raw_workflow_extractions ADD COLUMN checkpoint JSONB",
+            "checkpoint_updated_at": (
+                "ALTER TABLE raw_workflow_extractions "
+                "ADD COLUMN checkpoint_updated_at TIMESTAMP WITH TIME ZONE"
+            ),
+        },
+        "canonical_workflows": {
+            "checkpoint": "ALTER TABLE canonical_workflows ADD COLUMN checkpoint JSONB",
+            "checkpoint_updated_at": (
+                "ALTER TABLE canonical_workflows "
+                "ADD COLUMN checkpoint_updated_at TIMESTAMP WITH TIME ZONE"
+            ),
+        },
     }
 
     with engine.begin() as conn:

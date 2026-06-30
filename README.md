@@ -428,10 +428,15 @@ counts = api.get_graph_review_counts()
 Knowledge extraction uses google-adk with LiteLLM. Configure in `.env`:
 
 ```bash
-MKB_EXTRACTION_MODEL=openai/qwen-plus
-OPENAI_API_KEY=<your_key>
-OPENAI_API_BASE=<your_openai_compatible_base_url>
+MKB_EXTRACTION_MODEL=openai/deepseek-v4-pro-guan
+LLM_API_KEY=<your_provider_key>
+LLM_API_BASE=<your_openai_compatible_base_url>
 ```
+
+For OpenAI itself, `OPENAI_API_KEY` / `OPENAI_API_BASE` still work. For
+non-OpenAI models exposed through an OpenAI-compatible endpoint, prefer the
+provider-agnostic `LLM_API_KEY` / `LLM_API_BASE` names above, and use
+`openai/<upstream-model-name>` as the model id.
 
 ## Project Structure
 

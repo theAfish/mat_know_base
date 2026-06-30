@@ -12,3 +12,6 @@ export const cancelJob = (id: string) =>
 
 export const cancelAllJobs = (params?: { project_id?: string }) =>
   client.post<{ ok: boolean; cancelled: string[]; count: number }>('/jobs/cancel-all', null, { params }).then(r => r.data)
+
+export const sendReviewJobChat = (id: string, message: string): Promise<{ job_id: string }> =>
+  client.post<{ job_id: string }>(`/jobs/${id}/review-chat`, { message }).then(r => r.data)

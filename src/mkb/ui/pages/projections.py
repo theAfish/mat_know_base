@@ -44,7 +44,7 @@ def _build_project_paper_lookup(projections: list[dict]) -> dict[str, str]:
         project_id = project.get("project_id")
         if not project_id:
             continue
-        paper_name = _paper_folder_name(project.get("source_path")) or str(project.get("label") or "")
+        paper_name = str(project.get("label") or "") or _paper_folder_name(project.get("source_path"))
         if paper_name:
             lookup[str(project_id)] = paper_name
     return lookup

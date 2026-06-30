@@ -7,6 +7,7 @@ import {
 import StatusBadge from './StatusBadge'
 import BatchActionBar from './BatchActionBar'
 import type { Project, ProjectGroup, Space } from '../types'
+import { projectDisplayName } from '../utils/projectName'
 
 // ─── Auto-scroll during drag ────────────────────────────────────────────────
 // When the user drags near the top or bottom edge of the viewport, scroll the
@@ -636,7 +637,7 @@ export default function ProjectGroupedList({
                         </td>
                         <td className="py-2 pr-3 text-slate-200 max-w-xs truncate">
                           <span className="text-slate-600 cursor-grab select-none mr-1" title="Drag to move">⋮⋮</span>
-                          {p.label ?? p.source_path ?? p.project_id.slice(0, 12)}
+                          {projectDisplayName(p)}
                         </td>
                         {columns.map((c, i) => (
                           <td key={i} className={`py-2 pr-3 ${c.cellClassName ?? ''}`}>

@@ -8,6 +8,10 @@ export interface Project {
   asset_count: number
   processing_status: string
   frame_status: string | null
+  workflow_status: string
+  workflow_version: number | null
+  canonical_workflow_status: string
+  canonical_workflow_version: number | null
   created_at: string
   group_id?: string | null
 }
@@ -46,6 +50,7 @@ export interface ProcessedAsset {
   processed_asset_id: string
   asset_id: string
   filename: string | null
+  primary_relpath?: string | null
   processing_type: string
   output_format: string
   artifact_count: number
@@ -112,9 +117,21 @@ export interface Space {
   field_descriptions?: Record<string, unknown>
   review_prompt?: string | null
   review_trackable?: boolean
+  review_allow_search?: boolean
+  review_search_tools?: string[]
+  post_processors?: PostProcessorProfile[]
   version?: number
   created_at?: string | null
   updated_at?: string | null
+}
+
+export interface PostProcessorProfile {
+  id: string
+  name: string
+  description?: string
+  prompt?: string | null
+  tool_groups: string[]
+  enabled?: boolean
 }
 
 export interface SpaceCreatePayload {
@@ -127,6 +144,9 @@ export interface SpaceCreatePayload {
   purpose?: string
   review_prompt?: string | null
   review_trackable?: boolean
+  review_allow_search?: boolean
+  review_search_tools?: string[]
+  post_processors?: PostProcessorProfile[]
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }
@@ -157,7 +177,17 @@ export interface Job {
   result: Record<string, unknown> | null
   error: string | null
   current_message: string | null
-  events: Array<{ message: string; stage?: string }>
+  events: Array<{
+    message: string
+    stage?: string
+    tool?: string
+    label?: string
+    action?: string
+    filename?: string
+    asset_id?: string
+    payload?: unknown
+    timestamp?: string
+  }>
   created_at: string
   updated_at: string
 }
@@ -195,6 +225,193 @@ export interface KnowledgeGraph {
 export interface GraphPayload {
   graph: KnowledgeGraph
   projection_count: number
+}
+
+export interface RawWorkflowNode {
+  node_id: string
+  raw_name: string
+  node_kind_guess: 'object' | 'operation' | 'unknown'
+  canonical_name?: string
+  card_id?: string | null
+  node_kind?: 'object' | 'operation' | 'unknown'
+  semantic_type?: string | null
+  parameters?: Record<string, unknown>
+  identity?: Record<string, unknown>
+  state?: Record<string, unknown>
+  role?: Record<string, unknown>
+  context?: Record<string, unknown>
+  unparsed_modifiers?: string[]
+  ontology_status?: 'matched' | 'candidate' | 'unmapped'
+  attributes_explicitly_mentioned: Record<string, unknown>
+  evidence_text: string
+  paper_location: Record<string, unknown>
+  confidence: number
+}
+
+export interface RawWorkflowEdge {
+  edge_id: string
+  source_node: string
+  target_node: string
+  relation_type: string
+  evidence_text: string
+  paper_location?: Record<string, unknown> | null
+  confidence: number
+}
+
+export interface RawWorkflowGraph {
+  schema_version: string
+  paper_id: string
+  extraction_id: string
+  nodes: RawWorkflowNode[]
+  edges: RawWorkflowEdge[]
+  ontology_version?: string | null
+  reproducibility?: {
+    level: 'complete' | 'approximate' | 'insufficient' | 'not_applicable'
+    missing_details: string[]
+    assumptions: string[]
+    notes?: string | null
+  }
+  unresolved_information?: Record<string, unknown>[]
+}
+
+export interface RawWorkflowVersion {
+  extraction_id: string
+  project_id: string
+  version: number
+  schema_version: string
+  extractor_version: string
+  status: string
+  record_status: string
+  supersedes_extraction_id: string | null
+  model: string | null
+  provenance: Record<string, unknown>
+  error: string | null
+  created_at: string | null
+  extracted_at: string | null
+  has_checkpoint?: boolean
+  checkpoint_summary?: string | null
+  checkpoint_updated_at?: string | null
+  resumable?: boolean
+  node_count?: number
+  edge_count?: number
+  graph?: RawWorkflowGraph | null
+}
+
+export interface CanonicalWorkflowNode {
+  node_id: string
+  label: string
+  node_kind: 'object' | 'operation'
+  object_schema?: string | null
+  operation_template_id?: string | null
+  attributes: Record<string, unknown>
+  raw_node_ids: string[]
+}
+
+export interface CanonicalWorkflowGraph {
+  schema_version: string
+  canonicalization_id: string
+  paper_id: string
+  raw_extraction_id: string
+  nodes: CanonicalWorkflowNode[]
+  edges: Array<{ edge_id: string; source_node: string; target_node: string; relation_type: string; raw_edge_ids: string[] }>
+  raw_to_canonical_mappings: Array<Record<string, unknown>>
+  unmatched_raw_information: Array<Record<string, unknown>>
+  granularity_mappings: Array<Record<string, unknown>>
+  proposed_schema_updates: Array<Record<string, unknown>>
+}
+
+export interface CanonicalWorkflowVersion {
+  canonicalization_id: string
+  project_id: string
+  raw_extraction_id: string
+  version: number
+  schema_version: string
+  canonicalizer_version: string
+  status: string
+  model: string | null
+  provenance: Record<string, unknown>
+  error: string | null
+  created_at: string | null
+  canonicalized_at: string | null
+  has_checkpoint?: boolean
+  checkpoint_summary?: string | null
+  checkpoint_updated_at?: string | null
+  resumable?: boolean
+  node_count?: number
+  edge_count?: number
+  graph?: CanonicalWorkflowGraph | null
+}
+
+export type SchemaProposalStatus = 'pending' | 'revision_requested' | 'approved' | 'rejected'
+
+export interface WorkflowSchemaStatus {
+  schema_version: string
+  version_number: number
+  status: string
+  change_summary: string | null
+  created_by: string
+  created_at: string | null
+  object_schema_count: number
+  operation_template_count: number
+  card_count?: number
+  granularity_relation_count: number
+  proposal_counts: Record<string, number>
+  pending_recanonicalizations: number
+}
+
+export interface SchemaProposal {
+  proposal_id: string
+  proposal_type: string
+  status: SchemaProposalStatus
+  payload: Record<string, unknown>
+  evidence_workflow_ids: string[]
+  analysis: Record<string, unknown>
+  rationale: string | null
+  base_schema_version: string
+  created_by: string
+  reviewed_by: string | null
+  reviewer_notes: string | null
+  reviewed_at: string | null
+  created_at: string | null
+  validation_errors: string[]
+  revision_count: number
+}
+
+export interface SchemaProposalReviewResult {
+  proposal_id: string
+  status: SchemaProposalStatus
+  schema_version?: string
+  recanonicalization_scheduled?: number
+  rebased_from_schema?: string | null
+  queues_created?: number
+  queues_updated?: number
+  duplicate_queues_removed?: number
+}
+
+export interface SchemaProposalRevision {
+  revision_id: string
+  revision_number: number
+  payload: Record<string, unknown>
+  evidence_workflow_ids: string[]
+  analysis: Record<string, unknown>
+  rationale: string | null
+  author: string
+  author_type: 'agent' | 'human' | 'system'
+  change_note: string | null
+  validation_errors: string[]
+  created_at: string | null
+}
+
+export interface WorkflowMaintenanceTask {
+  task_id: string
+  project_id: string
+  task_type: 'reextract' | 'recanonicalize'
+  reason: string
+  scope: Record<string, unknown>
+  status: string
+  target_schema_version: string | null
+  result: Record<string, unknown>
+  error: string | null
 }
 
 // ─── Upload types ─────────────────────────────────────────────────────────────

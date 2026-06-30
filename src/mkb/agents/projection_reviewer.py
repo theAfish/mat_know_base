@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from google.adk.agents import Agent
 
@@ -24,6 +25,9 @@ from mkb.agents.prompts.projection_review import (
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
 from mkb.agents.tools.projection_review import PROJECTION_REVIEW_TOOLS
+from mkb.agents.tools.review_search import (
+    get_projection_review_search_tools,
+)
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     KnowledgeFrame,
@@ -31,19 +35,25 @@ from mkb.db.models import (
     ProjectionStatus,
     Space,
 )
+from mkb.spaces.registry import resolve_post_processor
 
 logger = logging.getLogger(__name__)
 
 APP_NAME = "mkb_projection_reviewer"
 
-# Combine reading tools (for direct source verification) with review tools
-REVIEWER_TOOLS = READING_TOOLS + PROJECTION_REVIEW_TOOLS
+BASE_REVIEWER_TOOLS = PROJECTION_REVIEW_TOOLS
+
+
+def _compact_followup_context(value: Any, *, max_chars: int = 8000) -> str:
+    text = str(value or "")
+    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
 
 
 def build_projection_reviewer_agent(
     model: str | None = None,
     purpose: str | None = None,
     custom_prompt: str | None = None,
+    tool_groups: list[str] | None = None,
 ) -> Agent:
     """Create a projection reviewer agent.
 
@@ -66,11 +76,30 @@ def build_projection_reviewer_agent(
             if purpose_key in {"skill_cards", "freeform"}
             else "projection_reviewer"
         )
+    groups = [str(group).strip().lower() for group in (tool_groups or ["reading"]) if str(group).strip()]
+    optional_tools = []
+    if "reading" in groups:
+        optional_tools.extend(READING_TOOLS)
+    search_names = [group for group in groups if group in {"web", "uniprot", "crossref", "ncbi"}]
+    if search_names:
+        optional_tools.extend(get_projection_review_search_tools(search_names))
     return Agent(
         name=agent_name,
         model=llm,
         instruction=instruction,
-        tools=REVIEWER_TOOLS,
+        tools=BASE_REVIEWER_TOOLS + optional_tools,
+    )
+
+
+def _processor_runtime(space: Space, reviewer_id: str | None = None) -> tuple[str | None, str | None, list[str], dict]:
+    processor = resolve_post_processor(space, reviewer_id)
+    prompt = processor.get("prompt") or getattr(space, "review_prompt", None)
+    groups = processor.get("tool_groups") or ["reading"]
+    return (
+        str(processor.get("id") or "default"),
+        prompt,
+        [str(group).strip().lower() for group in groups],
+        processor,
     )
 
 
@@ -79,6 +108,8 @@ async def _run_review_async(
     project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run projection review on a single project for a given space."""
 
@@ -91,48 +122,83 @@ async def _run_review_async(
         if not frame:
             return {"status": "error", "message": f"No frame found for project {project_id}"}
 
-        # Count non-deleted completed projections
-        projection_count = (
+        # Count non-deleted completed projections and detect stale schema versions
+        projections_for_count = (
             db.query(Projection)
             .filter_by(space_id=space_id, frame_id=frame.frame_id)
-            .filter(Projection.status == ProjectionStatus.COMPLETED)
+            .filter(
+                Projection.status.in_(
+                    [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                )
+            )
             .filter(Projection.deleted_at.is_(None))
             .filter(Projection.superseded_by_id.is_(None))
-            .count()
+            .all()
         )
+        projection_count = len(projections_for_count)
         if projection_count == 0:
             return {
                 "status": "error",
                 "message": f"No completed projections for space {space_id} and project {project_id}",
             }
 
+        current_space_version = space.version
+        stale_versions = [
+            p.space_version
+            for p in projections_for_count
+            if p.space_version < current_space_version
+        ]
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
-        space_review_prompt = getattr(space, "review_prompt", None)
+        selected_reviewer_id, processor_prompt, tool_groups, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
-        custom_prompt=space_review_prompt,
+        custom_prompt=processor_prompt,
+        tool_groups=tool_groups,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"review_proj_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"
     await runner.create_session(session_id)
 
+    schema_change_hint = ""
+    if stale_versions:
+        schema_change_hint = (
+            f" IMPORTANT: The space template has been updated — "
+            f"the current schema version is v{current_space_version}, but "
+            f"{len(stale_versions)} of the projection run(s) were extracted "
+            f"with an older version (v{min(stale_versions)}). "
+            f"The extraction_schema returned by get_all_projections_for_review "
+            f"is the CURRENT (authoritative) schema. When reviewing, "
+            f"revise the projection data to conform to the new schema: "
+            f"populate any new or renamed fields that are present in the current "
+            f"schema but missing from old projections, and remove or remap fields "
+            f"that no longer appear in the current schema."
+        )
+
     message = (
         f"Review all projections for space {space_id} ('{space_name}') "
         f"and project {project_id}. "
-        f"There are {projection_count} completed projection run(s) to review. "
+        f"There are {projection_count} completed projection run(s) to review."
+        f"{schema_change_hint} "
         f"Start by loading all projections and the knowledge frame, "
         f"then systematically verify the data, pick the best projection "
         f"as the winner, merge corrections, and save it."
     )
+    if tool_groups:
+        message += (
+            f" Use the selected post-processor '{processor.get('name')}' "
+            f"(id={selected_reviewer_id}) with these tool groups: "
+            f"{', '.join(tool_groups)}."
+        )
 
     result = await runner.run(
         session_id=session_id,
         message=message,
         verbose=verbose,
+        progress_callback=progress_callback,
     )
 
     if not result.success:
@@ -163,6 +229,8 @@ async def _run_review_async(
         "projection_id": projection_id,
         "space_id": str(space_id),
         "space_name": space_name,
+        "reviewer_id": selected_reviewer_id,
+        "reviewer_name": processor.get("name"),
         "project_id": str(project_id),
         "projections_reviewed": projection_count,
         "agent_summary": result.final_text,
@@ -175,9 +243,134 @@ async def run_projection_review(
     project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    progress_callback=None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run projection review on one project."""
-    return await _run_review_async(space_id, project_id, model, verbose)
+    return await _run_review_async(
+        space_id,
+        project_id,
+        model=model,
+        verbose=verbose,
+        progress_callback=progress_callback,
+        reviewer_id=reviewer_id,
+    )
+
+
+@sync_agent_run
+async def run_projection_review_followup(
+    space_id: uuid.UUID,
+    project_id: uuid.UUID,
+    message: str,
+    previous_job: dict | None = None,
+    model: str | None = None,
+    verbose: bool = False,
+    progress_callback=None,
+    reviewer_id: str | None = None,
+) -> dict:
+    """Run a follow-up reviewer turn after a projection review job.
+
+    This creates a fresh reviewer agent with the same space prompt and tools,
+    gives it the previous job result/events as context, and lets it answer or
+    make additional projection edits using the normal review save tools.
+    """
+    cleaned_message = (message or "").strip()
+    if not cleaned_message:
+        return {"status": "error", "message": "Follow-up message is required."}
+
+    with SyncSessionLocal() as db:
+        space = db.query(Space).filter_by(space_id=space_id).first()
+        if not space:
+            return {"status": "error", "message": f"Space {space_id} not found"}
+        frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
+        if not frame:
+            return {"status": "error", "message": f"No frame found for project {project_id}"}
+        live_count = (
+            db.query(Projection)
+            .filter_by(space_id=space_id, frame_id=frame.frame_id)
+            .filter(
+                Projection.status.in_(
+                    [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                )
+            )
+            .filter(Projection.deleted_at.is_(None))
+            .filter(Projection.superseded_by_id.is_(None))
+            .count()
+        )
+        if live_count == 0:
+            return {
+                "status": "error",
+                "message": f"No active projections for space {space_id} and project {project_id}",
+            }
+
+        space_name = space.name
+        space_purpose = getattr(space, "purpose", None)
+        selected_reviewer_id, processor_prompt, tool_groups, processor = _processor_runtime(space, reviewer_id)
+
+    agent = build_projection_reviewer_agent(
+        model,
+        purpose=space_purpose,
+        custom_prompt=processor_prompt,
+        tool_groups=tool_groups,
+    )
+    runner = AgentRunner(agent=agent, app_name=APP_NAME)
+    session_id = f"review_followup_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"
+    await runner.create_session(session_id)
+
+    prior_result = (previous_job or {}).get("result")
+    prior_events = (previous_job or {}).get("events") or []
+    compact_events = [
+        {
+            "stage": event.get("stage"),
+            "tool": event.get("tool"),
+            "message": event.get("message"),
+            "payload": event.get("payload"),
+        }
+        for event in prior_events[-20:]
+        if isinstance(event, dict)
+    ]
+    followup_prompt = (
+        f"You are continuing a completed projection review for space {space_id} "
+        f"('{space_name}') and project {project_id}.\n\n"
+        f"Selected post-processor: {processor.get('name')} "
+        f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}.\n\n"
+        f"User follow-up request:\n{cleaned_message}\n\n"
+        f"Previous review job result, if available:\n"
+        f"{_compact_followup_context(prior_result)}\n\n"
+        f"Recent previous review events, if available:\n"
+        f"{_compact_followup_context(compact_events)}\n\n"
+        "Start by calling get_all_projections_for_review for this space and "
+        "project so you operate on the current live projection. Use "
+        "get_frame_for_review and your available tools as needed. If the user "
+        "asks you to fill, correct, or write projection data and you verify a "
+        "small number of values, prefer save_reviewed_projection_patch with "
+        "path/value updates. After saving, inspect change_summary. If "
+        "change_summary.data_changed is false, say clearly that no projection "
+        "data was changed. Do not treat review notes as a data update."
+    )
+    result = await runner.run(
+        session_id=session_id,
+        message=followup_prompt,
+        verbose=verbose,
+        progress_callback=progress_callback,
+    )
+    if not result.success:
+        return {
+            "status": "error",
+            "space_id": str(space_id),
+            "project_id": str(project_id),
+            "message": result.error,
+        }
+    return {
+        "status": "completed",
+        "mode": "followup",
+        "space_id": str(space_id),
+        "space_name": space_name,
+        "reviewer_id": selected_reviewer_id,
+        "reviewer_name": processor.get("name"),
+        "project_id": str(project_id),
+        "agent_summary": result.final_text,
+    }
 
 
 @sync_agent_run
@@ -187,6 +380,7 @@ async def run_projection_review_all(
     verbose: bool = False,
     progress_callback=None,
     project_ids: list[uuid.UUID] | None = None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run projection review on projects in a space (separate sessions).
 
@@ -213,7 +407,12 @@ async def run_projection_review_all(
             # Keep only those that have a non-deleted completed projection
             live_frames = (
                 db.query(Projection.frame_id)
-                .filter_by(space_id=sid, status=ProjectionStatus.COMPLETED)
+                .filter_by(space_id=sid)
+                .filter(
+                    Projection.status.in_(
+                        [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                    )
+                )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
                 .filter(Projection.frame_id.in_(list(frame_by_pid.values())))
@@ -232,7 +431,12 @@ async def run_projection_review_all(
         else:
             projections = (
                 db.query(Projection.frame_id)
-                .filter_by(space_id=sid, status=ProjectionStatus.COMPLETED)
+                .filter_by(space_id=sid)
+                .filter(
+                    Projection.status.in_(
+                        [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                    )
+                )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
                 .distinct()
@@ -256,7 +460,14 @@ async def run_projection_review_all(
             progress_callback({
                 "message": f"Reviewing project {idx}/{total} ({str(pid)[:8]})",
             })
-        result = await _run_review_async(sid, pid, model=model, verbose=verbose)
+        result = await _run_review_async(
+            sid,
+            pid,
+            model=model,
+            verbose=verbose,
+            progress_callback=progress_callback,
+            reviewer_id=reviewer_id,
+        )
         results.append(result)
         logger.info("  -> %s", result.get("status", "unknown"))
 
@@ -275,6 +486,7 @@ async def run_projection_review_session(
     model: str | None = None,
     verbose: bool = False,
     progress_callback=None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run a SINGLE reviewer session that handles every selected project.
 
@@ -308,7 +520,12 @@ async def run_projection_review_session(
                 continue
             n = (
                 db.query(Projection)
-                .filter_by(space_id=sid, frame_id=fid, status=ProjectionStatus.COMPLETED)
+                .filter_by(space_id=sid, frame_id=fid)
+                .filter(
+                    Projection.status.in_(
+                        [ProjectionStatus.COMPLETED, ProjectionStatus.REVIEWED]
+                    )
+                )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
                 .count()
@@ -324,12 +541,13 @@ async def run_projection_review_session(
 
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
-        space_review_prompt = getattr(space, "review_prompt", None)
+        selected_reviewer_id, processor_prompt, tool_groups, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
-        custom_prompt=space_review_prompt,
+        custom_prompt=processor_prompt,
+        tool_groups=tool_groups,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -343,6 +561,8 @@ async def run_projection_review_session(
     message = (
         f"You are running a SINGLE consolidated review session over "
         f"{len(per_project_counts)} project(s) in space {sid} ('{space_name}').\n\n"
+        f"Selected post-processor: {processor.get('name')} "
+        f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}.\n\n"
         f"Projects to review (one at a time, in order):\n{project_lines}\n\n"
         f"For EACH project, in order:\n"
         f"  1. Call get_all_projections_for_review(space_id, project_id) to "
@@ -365,6 +585,7 @@ async def run_projection_review_session(
         session_id=session_id,
         message=message,
         verbose=verbose,
+        progress_callback=progress_callback,
     )
 
     if not result.success:
@@ -398,6 +619,8 @@ async def run_projection_review_session(
         "mode": "session",
         "space_id": str(sid),
         "space_name": space_name,
+        "reviewer_id": selected_reviewer_id,
+        "reviewer_name": processor.get("name"),
         "total_projects": len(per_project_counts),
         "completed": sum(1 for s in summary if s["status"] == "completed"),
         "results": summary,

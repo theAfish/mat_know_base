@@ -12,6 +12,7 @@ import {
   GLOBAL_KG_SPACE,
   buildSectionRows,
   paperName,
+  slugifyExportName,
 } from '../components/projections/helpers'
 import StatusBadge from '../components/StatusBadge'
 import type { Job, Project, ProjectGroup, Projection, Space } from '../types'
@@ -25,12 +26,12 @@ export default function ProjectionsPage() {
   const [allProjects, setAllProjects] = useState<Project[]>([])
   const [groups, setGroups] = useState<ProjectGroup[]>([])
   const [paperLookup, setPaperLookup] = useState<Record<string, string>>({})
-  const [sectionRows, setSectionRows] = useState<Record<string, Array<Record<string, string>>>>({})
   const [loading, setLoading] = useState(false)
   const [newestOnly, setNewestOnly] = useState(true)
   const [showHistory, setShowHistory] = useState(false)
   const [reviewJob, setReviewJob] = useState<Job | null>(null)
   const [isReviewing, setIsReviewing] = useState(false)
+  const [selectedReviewerId, setSelectedReviewerId] = useState<string>('')
   const [showSpaceDetail, setShowSpaceDetail] = useState(false)
   const [selectedProjectionIds, setSelectedProjectionIds] = useState<Set<string>>(new Set())
   const [batchDeleting, setBatchDeleting] = useState(false)
@@ -97,7 +98,6 @@ export default function ProjectionsPage() {
       setPaperLookup(lookup)
       setAllProjects(projects)
       setProjections(projs)
-      setSectionRows(buildSectionRows(projs, lookup))
       getSpace(selectedSpaceId).then(setSpaceDetail).catch(() => {})
     } finally {
       setLoading(false)
@@ -105,6 +105,20 @@ export default function ProjectionsPage() {
   }, [selectedSpaceId, newestOnly, showHistory])
 
   useEffect(() => { loadProjections() }, [loadProjections])
+
+  useEffect(() => {
+    const processors = spaceDetail?.post_processors ?? []
+    const enabled = processors.filter(processor => processor.enabled !== false)
+    if (enabled.length === 0) {
+      setSelectedReviewerId('')
+      return
+    }
+    if (!enabled.some(processor => processor.id === selectedReviewerId)) {
+      setSelectedReviewerId(enabled[0].id)
+    }
+  }, [spaceDetail?.space_id, spaceDetail?.post_processors, selectedReviewerId])
+
+  const sectionRows = useMemo(() => buildSectionRows(projections, paperLookup), [projections, paperLookup])
 
   const [reviewMode, setReviewMode] = useState<'per_project' | 'session'>('per_project')
 
@@ -140,10 +154,11 @@ export default function ProjectionsPage() {
         }
         return Array.from(pids)
       })()
-      const params: { space_id: string; project_ids?: string[]; mode: 'per_project' | 'session' } = {
+      const params: { space_id: string; project_ids?: string[]; mode: 'per_project' | 'session'; reviewer_id?: string } = {
         space_id: selectedSpaceId, mode: reviewMode,
       }
       if (projectIds.length > 0) params.project_ids = projectIds
+      if (selectedReviewerId) params.reviewer_id = selectedReviewerId
       const { job_id } = await reviewProjections(params)
       pollJob(job_id)
     } catch { setIsReviewing(false) }
@@ -201,6 +216,10 @@ export default function ProjectionsPage() {
   }, [])
 
   const userSpaces = spaces
+  const selectedSpaceName = useMemo(
+    () => userSpaces.find(space => space.space_id === selectedSpaceId)?.name ?? selectedSpaceId ?? 'space',
+    [selectedSpaceId, userSpaces],
+  )
 
   return (
     <div className="p-6 max-w-6xl space-y-5">
@@ -210,6 +229,19 @@ export default function ProjectionsPage() {
           <p className="text-sm text-slate-400">Aggregated extraction results per space.</p>
         </div>
         <div className="flex items-center gap-2">
+          <label className="text-xs text-slate-400">Reviewer:</label>
+          <select
+            value={selectedReviewerId}
+            onChange={e => setSelectedReviewerId(e.target.value)}
+            disabled={isReviewing}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-teal-500"
+          >
+            {(spaceDetail?.post_processors ?? []).filter(processor => processor.enabled !== false).map(processor => (
+              <option key={processor.id} value={processor.id}>
+                {processor.name}
+              </option>
+            ))}
+          </select>
           <label className="text-xs text-slate-400">Mode:</label>
           <select
             value={reviewMode}
@@ -409,6 +441,7 @@ export default function ProjectionsPage() {
                                 name={section}
                                 rows={sectionRowData}
                                 schemaOrder={schemaOrder}
+                                exportBasename={`${slugifyExportName(selectedSpaceName)}__${slugifyExportName(label)}__${slugifyExportName(section)}`}
                                 onRequestDeleteProjection={batchDeleteIds}
                                 onRequestReview={ids => startReview(ids)}
                                 reviewDisabled={isReviewing || !selectedSpaceId}
@@ -436,6 +469,7 @@ export default function ProjectionsPage() {
                       name={section}
                       rows={rows}
                       schemaOrder={schemaOrder}
+                      exportBasename={`${slugifyExportName(selectedSpaceName)}__${slugifyExportName(section)}`}
                       onRequestDeleteProjection={batchDeleteIds}
                       onRequestReview={ids => startReview(ids)}
                       reviewDisabled={isReviewing || !selectedSpaceId}

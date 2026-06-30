@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from mkb import api
-from mkb.agents.runner import AgentRunner
+from mkb.agents.runner import AgentRunner, RunResult, _is_retryable_provider_error
 
 
 def test_api_process_forwards_progress_callback(monkeypatch):
@@ -122,3 +122,47 @@ def test_agent_runner_uses_latest_text_when_no_final_response_flag():
         "I am your MKB assistant.",
         "How can I help next?",
     ]
+
+
+def test_agent_runner_reports_retry_progress_for_transient_errors():
+    progress_events = []
+    attempts = []
+
+    async def fake_run_once(**_kwargs):
+        attempts.append("x")
+        if len(attempts) == 1:
+            return RunResult(success=False, error="Timeout on reading data from socket")
+        return RunResult(success=True, final_text="Recovered")
+
+    runner = object.__new__(AgentRunner)
+    runner._run_once = fake_run_once
+
+    result = asyncio.run(
+        runner.run(
+            session_id="session-3",
+            message="extract",
+            progress_callback=progress_events.append,
+            max_retries=2,
+            retry_delay=0,
+        )
+    )
+
+    assert result.success is True
+    assert result.final_text == "Recovered"
+    assert len(attempts) == 2
+    assert progress_events == [
+        {
+            "label": "retry",
+            "message": (
+                "Transient model error on attempt 1/2: Timeout on reading data from socket. "
+                "Retrying in 0.0s."
+            ),
+            "stage": "retry",
+        }
+    ]
+
+
+def test_retryable_provider_error_includes_tool_call_json_parse_failures():
+    assert _is_retryable_provider_error(
+        "JSONDecodeError: Expecting ',' delimiter while parsing tool call arguments"
+    ) is True

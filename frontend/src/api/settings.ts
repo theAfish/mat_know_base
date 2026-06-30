@@ -14,6 +14,8 @@ export interface RuntimeSettings {
   // LLM / Agent
   extraction_model: string
   vision_model: string
+  agent_llm_timeout: number
+  agent_retry_count: number
   // System
   log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR'
   max_concurrent_jobs: number

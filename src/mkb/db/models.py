@@ -122,6 +122,212 @@ class ProjectAsset(Base):
     asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
 
 
+# ── Raw workflow extraction ───────────────────────────────────
+
+
+class RawWorkflowExtraction(Base):
+    """Immutable, paper-level workflow extraction version.
+
+    ``graph`` follows the versioned contract in :mod:`mkb.workflows.contract`.
+    A row may move from IN_PROGRESS to COMPLETED/FAILED while it is being
+    produced; once completed its graph is never updated in place.
+    """
+
+    __tablename__ = "raw_workflow_extractions"
+
+    extraction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="IN_PROGRESS"
+    )
+    record_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="active"
+    )
+    supersedes_extraction_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    correction_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correction_author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    correction_details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    review_flags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    checkpoint: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    checkpoint_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_raw_workflow_project_version"),
+        Index("ix_raw_workflow_project_created", "project_id", "created_at"),
+    )
+
+
+class CanonicalWorkflow(Base):
+    """Append-only canonicalization derived from one raw extraction version."""
+
+    __tablename__ = "canonical_workflows"
+
+    canonicalization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    raw_extraction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonicalizer_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="IN_PROGRESS")
+    graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    checkpoint: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonicalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkpoint_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_canonical_workflow_project_version"),
+        Index("ix_canonical_workflow_project_created", "project_id", "created_at"),
+        Index("ix_canonical_workflow_raw", "raw_extraction_id"),
+    )
+
+
+class WorkflowSchemaVersion(Base):
+    """Immutable snapshot of the curator-managed workflow schema library."""
+
+    __tablename__ = "workflow_schema_versions"
+    schema_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="active")
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SchemaProposal(Base):
+    """Evidence-backed, reviewable schema change proposed by the curator."""
+
+    __tablename__ = "schema_proposals"
+    proposal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    proposal_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_workflow_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    analysis: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SchemaProposalRevision(Base):
+    """Immutable author-attributed snapshot of a schema proposal draft."""
+
+    __tablename__ = "schema_proposal_revisions"
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    proposal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_workflow_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    analysis: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author: Mapped[str] = mapped_column(String(255), nullable=False)
+    author_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_errors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "revision_number", name="uq_schema_proposal_revision"),
+        Index("ix_schema_proposal_revision_history", "proposal_id", "revision_number"),
+    )
+
+
+class WorkflowMaintenanceTask(Base):
+    """Auditable request to re-extract or recanonicalize a workflow."""
+
+    __tablename__ = "workflow_maintenance_tasks"
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    task_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_raw_extraction_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    source_canonicalization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    target_schema_version: Mapped[str | None] = mapped_column(String(32))
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_workflow_maintenance_status", "status", "task_type", "created_at"),
+        Index("ix_workflow_maintenance_project", "project_id", "created_at"),
+    )
+
+
+class WorkflowIndexEntry(Base):
+    """Persisted lookup entry derived from one completed canonical workflow."""
+
+    __tablename__ = "workflow_index_entries"
+    entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    canonicalization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    index_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_label: Mapped[str] = mapped_column(Text, nullable=False)
+    target_label: Mapped[str] = mapped_column(Text, nullable=False)
+    operation_label: Mapped[str | None] = mapped_column(Text)
+    source_schema: Mapped[str | None] = mapped_column(String(64))
+    target_schema: Mapped[str | None] = mapped_column(String(64))
+    operation_template_id: Mapped[str | None] = mapped_column(Text)
+    aliases: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    granularity_terms: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    path_node_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    raw_edge_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    evidence: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_workflow_index_direct", "index_type", "source_label", "target_label"),
+        Index("ix_workflow_index_template", "source_schema", "operation_template_id", "target_schema"),
+        Index("ix_workflow_index_canonical", "canonicalization_id"),
+        Index("ix_workflow_index_aliases", "aliases", postgresql_using="gin"),
+        Index("ix_workflow_index_granularity", "granularity_terms", postgresql_using="gin"),
+    )
+
+
 # ── Assets (core raw-data table) ───────────────────────────────
 
 
@@ -320,6 +526,19 @@ class Space(Base):
         Boolean, nullable=False, server_default=text("true")
     )
 
+    # Optional review-time external search. Domain-specific instructions still
+    # belong in ``review_prompt``; these fields only control which lookup tools
+    # the reviewer is allowed to call.
+    review_allow_search: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    review_search_tools: Mapped[list | None] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[\"web\"]'::jsonb")
+    )
+    post_processors: Mapped[list | None] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -486,4 +705,3 @@ class GraphElementReview(Base):
         UniqueConstraint("space_id", "element_type", "element_key", name="uq_graph_element_review"),
         Index("ix_graph_element_review_space", "space_id", "element_type"),
     )
-

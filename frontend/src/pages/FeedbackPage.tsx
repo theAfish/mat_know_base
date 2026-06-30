@@ -113,7 +113,7 @@ function ResolveModal({
 export default function FeedbackPage() {
   const [items, setItems] = useState<FeedbackItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState('OPEN')
+  const [statusFilter, setStatusFilter] = useState('all')
   const [resolveTarget, setResolveTarget] = useState<FeedbackItem | null>(null)
   const [reviewJob, setReviewJob] = useState<Job | null>(null)
   const [isReviewing, setIsReviewing] = useState(false)

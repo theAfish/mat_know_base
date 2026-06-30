@@ -32,6 +32,8 @@ ALLOWED_KEYS: set[str] = {
     # LLM / Agent
     "extraction_model",
     "vision_model",
+    "agent_llm_timeout",
+    "agent_retry_count",
     # System
     "log_level",
     "max_concurrent_jobs",
@@ -105,6 +107,22 @@ def update_settings(updates: dict[str, Any]) -> dict[str, Any]:
     max_jobs = updates.get("max_concurrent_jobs")
     if max_jobs is not None and (not isinstance(max_jobs, int) or max_jobs < 1):
         raise ValueError(f"max_concurrent_jobs must be a positive integer, got {max_jobs!r}")
+
+    agent_llm_timeout = updates.get("agent_llm_timeout")
+    if agent_llm_timeout is not None and (
+        not isinstance(agent_llm_timeout, int) or agent_llm_timeout < 1
+    ):
+        raise ValueError(
+            f"agent_llm_timeout must be a positive integer, got {agent_llm_timeout!r}"
+        )
+
+    agent_retry_count = updates.get("agent_retry_count")
+    if agent_retry_count is not None and (
+        not isinstance(agent_retry_count, int) or agent_retry_count < 1
+    ):
+        raise ValueError(
+            f"agent_retry_count must be a positive integer, got {agent_retry_count!r}"
+        )
 
     with _lock:
         current = _load_raw()

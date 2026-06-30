@@ -151,6 +151,7 @@ def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
     total_ingested = 0
     total_dupes = 0
     created: list[str] = []
+    reused = 0
     upload_id = payload[0].get("upload_id", "")
     temp_root = session_dir(upload_id)
 
@@ -185,19 +186,24 @@ def _run_upload_ingest(payload: list[dict], progress_callback=None) -> dict:
             result = api.ingest(upload_dir)
             total_ingested += result.get("ingested", 0)
             total_dupes += result.get("duplicates", 0)
-            created.append(upload_dir.name)
+            if result.get("project_reused"):
+                reused += 1
+                shutil.rmtree(upload_dir, ignore_errors=True)
+            else:
+                created.append(upload_dir.name)
     finally:
         if temp_root.is_dir():
             shutil.rmtree(temp_root, ignore_errors=True)
 
     message = (
-        f"Created {len(created)} project(s) · "
+        f"Created {len(created)} project(s), reused {reused} existing project(s) · "
         f"{total_ingested} file(s) ingested, {total_dupes} duplicate(s) skipped."
     )
     return {
         "status": "completed",
         "message": message,
         "created_projects": created,
+        "reused_projects": reused,
         "ingested": total_ingested,
         "duplicates": total_dupes,
     }
@@ -466,11 +472,12 @@ def _render_project_detail(project_id: str):
     # ── Detail tabs ───────────────────────────────────────────────
     feedback_items = api.list_feedback(project_id=project_id)
 
-    tab_assets, tab_frame, tab_projections, tab_graph, tab_feedback = st.tabs(
+    tab_assets, tab_frame, tab_projections, tab_workflow, tab_graph, tab_feedback = st.tabs(
         [
             "Assets",
             "Knowledge Frame",
             "Projections",
+            "Workflow",
             "Knowledge Graph",
             f"Feedback ({len(feedback_items)})",
         ]
@@ -484,6 +491,9 @@ def _render_project_detail(project_id: str):
 
     with tab_projections:
         _render_projections_tab(project_id)
+
+    with tab_workflow:
+        _render_workflow_tab(project_id)
 
     with tab_graph:
         _render_graph_tab(project_id)
@@ -624,6 +634,50 @@ def _render_projections_tab(project_id: str):
                         st.write(f"**{section_title}**")
                         st.json(section_val)
 
+
+def _render_workflow_tab(project_id: str):
+    project = next((x for x in api.list_projects(limit=100) if x["project_id"] == project_id), None)
+    if not project:
+        st.error("Project not found.")
+        return
+
+    raw_workflow = api.get_raw_workflow(project_id)
+    raw_job = get_running_job(project_id, "raw_workflow")
+
+    summary_cols = st.columns(2)
+    summary_cols[0].write(f"Workflow status: **{project.get('workflow_status') or 'NO_WORKFLOW'}**")
+    summary_cols[1].write(f"Card graph version: {project.get('workflow_version') or '—'}")
+
+    if raw_workflow:
+        st.caption(
+            f"Latest workflow-card graph v{raw_workflow.get('version')} "
+            f"({raw_workflow.get('status')}, {raw_workflow.get('record_status')})"
+        )
+    else:
+        st.caption("No completed workflow-card graph yet.")
+
+    action_cols = st.columns([1])
+    with action_cols[0]:
+        if st.button(
+            "Extract Workflow",
+            key=f"wf_extract_{project_id}",
+            help="Extract a structured, reusable workflow-card graph",
+            disabled=raw_job is not None,
+        ):
+            readiness = api.get_raw_workflow_extraction_readiness(project_id)
+            if not readiness.get("ready"):
+                st.error(readiness.get("message") or "Project is not ready for workflow extraction.")
+                return
+            start_job(
+                kind="raw_workflow",
+                label="Extract Workflow",
+                project_id=project_id,
+                target=api.extract_raw_workflow,
+                kwargs={"project_id": project_id},
+            )
+            st.rerun()
+        if raw_job:
+            st.caption(raw_job.get("current_message") or "Running")
 
 def _render_graph_tab(project_id: str):
     kg = get_knowledge_graph_cached(project_id=project_id)

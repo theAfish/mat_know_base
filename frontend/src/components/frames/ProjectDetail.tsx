@@ -8,6 +8,7 @@ import {
   kgExtractProject,
   processProject,
   projectToSpace,
+  workflowExtractProject,
 } from '../../api/projects'
 import { listSpaces } from '../../api/spaces'
 import type { Job, Project, Space } from '../../types'
@@ -17,9 +18,11 @@ import FeedbackTab from './FeedbackTab'
 import GraphTab from './GraphTab'
 import KnowledgeFrameTab from './KnowledgeFrameTab'
 import ProjectionsTab from './ProjectionsTab'
+import WorkflowTab from './WorkflowTab'
+import { projectDisplayName } from '../../utils/projectName'
 
 
-type DetailTab = 'assets' | 'frame' | 'projections' | 'graph' | 'feedback'
+type DetailTab = 'assets' | 'frame' | 'projections' | 'workflow' | 'graph' | 'feedback'
 
 export default function ProjectDetail({
   project,
@@ -38,6 +41,7 @@ export default function ProjectDetail({
   const [projectionSource, setProjectionSource] = useState<'frame' | 'markdown'>('frame')
   const [feedbackCount, setFeedbackCount] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const refreshFeedbackCount = useCallback(() => {
     listFeedback({ project_id: project.project_id, limit: 100 })
@@ -77,10 +81,15 @@ export default function ProjectDetail({
 
   const run = async (fn: () => Promise<{ job_id: string }>, onDone?: () => void) => {
     if (activeJobId) return
-    try { const { job_id } = await fn(); pollJob(job_id, onDone) } catch { /* ignore */ }
+    try {
+      setActionError(null)
+      const { job_id } = await fn()
+      pollJob(job_id, onDone)
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { detail?: string } }; message?: string }
+      setActionError(e?.response?.data?.detail ?? e?.message ?? 'Action failed')
+    }
   }
-
-  const label = project.label ?? project.source_path ?? project.project_id.slice(0, 12)
 
   return (
     <div className="flex flex-col h-full">
@@ -88,11 +97,12 @@ export default function ProjectDetail({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <button onClick={onBack} className="text-sm text-teal-400 hover:text-teal-300 flex-shrink-0">← Back</button>
-            <h3 className="text-base font-semibold text-slate-100 truncate">{label}</h3>
+            <h3 className="text-base font-semibold text-slate-100 truncate">{projectDisplayName(project)}</h3>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} />
             <StatusBadge status={project.frame_status ?? 'NO_FRAME'} />
+            <StatusBadge status={project.workflow_status ?? 'NO_WORKFLOW'} />
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -128,6 +138,11 @@ export default function ProjectDetail({
             🕸 Extract Graph
           </button>
         </div>
+        {actionError && (
+          <div className="rounded border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+            {actionError}
+          </div>
+        )}
         {activeJob && (
           <div className="flex items-center gap-2 text-xs text-slate-400">
             {activeJobId && <span className="inline-block w-3 h-3 border-2 border-teal-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />}
@@ -143,6 +158,7 @@ export default function ProjectDetail({
           ['assets', 'Assets'],
           ['frame', 'Knowledge Frame'],
           ['projections', 'Projections'],
+          ['workflow', 'Workflow'],
           ['graph', 'Knowledge Graph'],
           ['feedback', `Feedback${feedbackCount > 0 ? ` (${feedbackCount})` : ''}`],
         ] as [DetailTab, string][]).map(([tab, name]) => (
@@ -159,6 +175,18 @@ export default function ProjectDetail({
         {activeTab === 'assets'      && <AssetsTab key={`assets-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'frame'       && <KnowledgeFrameTab key={`frame-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'projections' && <ProjectionsTab key={`proj-${refreshKey}`} projectId={project.project_id} />}
+        {activeTab === 'workflow'    && (
+          <WorkflowTab
+            key={`workflow-${project.project_id}-${project.workflow_version ?? 0}-${refreshKey}`}
+            project={project}
+            activeJobId={activeJobId}
+            onExtractWorkflow={() => run(() => workflowExtractProject(project.project_id))}
+            onWorkflowVersionDeleted={() => {
+              setRefreshKey(k => k + 1)
+              refreshProject()
+            }}
+          />
+        )}
         {activeTab === 'graph'       && <GraphTab key={`graph-${refreshKey}`} projectId={project.project_id} />}
         {activeTab === 'feedback'    && <FeedbackTab key={`fb-${refreshKey}`} projectId={project.project_id} />}
       </div>

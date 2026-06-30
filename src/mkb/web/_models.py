@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SpaceRef(BaseModel):
@@ -30,6 +30,9 @@ class SpaceCreateRequest(BaseModel):
     purpose: str = "tabular_database"
     review_prompt: str | None = None
     review_trackable: bool = True
+    review_allow_search: bool = False
+    review_search_tools: list[str] | None = None
+    post_processors: list[dict[str, Any]] | None = None
 
 
 class SpaceUpdateRequest(BaseModel):
@@ -42,6 +45,9 @@ class SpaceUpdateRequest(BaseModel):
     field_descriptions: dict | None = None
     review_prompt: str | None = None
     review_trackable: bool | None = None
+    review_allow_search: bool | None = None
+    review_search_tools: list[str] | None = None
+    post_processors: list[dict[str, Any]] | None = None
 
 
 class ProjectionReviewRequest(BaseModel):
@@ -54,6 +60,7 @@ class ProjectionReviewRequest(BaseModel):
     #   "per_project" — default. One reviewer session per project (legacy).
     #   "session"     — one reviewer session sees ALL selected projects.
     mode: str = "per_project"
+    reviewer_id: str | None = None
 
 
 class FeedbackResolveRequest(BaseModel):
@@ -74,8 +81,52 @@ class AssistantChatRequest(BaseModel):
     message: str
 
 
+class ReviewJobChatRequest(BaseModel):
+    message: str
+
+
 class ProjectUpdateRequest(BaseModel):
     label: str
+
+
+class WorkflowCanonicalizeRequest(BaseModel):
+    raw_extraction_id: str | None = None
+
+
+class WorkflowReextractionRequest(BaseModel):
+    reason: str
+    requested_by: str = "api"
+    scope: dict[str, Any] = Field(default_factory=lambda: {"type": "full"})
+    raw_extraction_id: str | None = None
+
+
+class WorkflowRecanonicalizationRequest(BaseModel):
+    reason: str = "manual_request"
+    requested_by: str = "api"
+    raw_extraction_id: str | None = None
+
+
+class SchemaCurateRequest(BaseModel):
+    min_support: int = 2
+    author: str = "workflow-review/1.0"
+    mode: str = "global"
+    sample_size: int = 8
+    model: str | None = None
+    verbose: bool = False
+
+
+class SchemaProposalReviewRequest(BaseModel):
+    decision: str
+    reviewer: str
+    notes: str = ""
+
+
+class SchemaProposalEditRequest(BaseModel):
+    payload: dict[str, Any]
+    evidence_workflow_ids: list[str]
+    rationale: str
+    editor: str
+    change_note: str
 
 
 class ProjectGroupCreate(BaseModel):
@@ -109,6 +160,8 @@ class SettingsUpdateRequest(BaseModel):
     mineru_api_timeout: int | None = None
     extraction_model: str | None = None
     vision_model: str | None = None
+    agent_llm_timeout: int | None = None
+    agent_retry_count: int | None = None
     log_level: str | None = None
     max_concurrent_jobs: int | None = None
 

@@ -10,11 +10,15 @@ import {
   kgExtractProject,
   processProject,
   projectToSpace,
+  workflowExtractProject,
 } from '../../api/projects'
 import type { Job, Project, Space } from '../../types'
 import JobProgress from '../JobProgress'
 import StatusBadge from '../StatusBadge'
 import ProjectAssetsPanel from './ProjectAssetsPanel'
+import WorkflowGraphTab from './WorkflowGraphTab'
+import GraphTab from '../frames/GraphTab'
+import { projectDisplayName } from '../../utils/projectName'
 
 
 export interface ProjectDetailProps {
@@ -42,6 +46,8 @@ export default function ProjectDetail({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [graphView, setGraphView] = useState<'knowledge' | 'workflow'>('workflow')
   const pollHandleRef = useRef<JobPollHandle | null>(null)
 
   const userSpaces = spaces.filter(s => s.name !== '__global_kg__')
@@ -88,10 +94,13 @@ export default function ProjectDetail({
 
   const runAction = async (fn: () => Promise<{ job_id: string }>) => {
     try {
+      setActionError(null)
       const { job_id } = await fn()
       pollJob(job_id)
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Action failed', err)
+      const e = err as { response?: { data?: { detail?: string } }; message?: string }
+      setActionError(e?.response?.data?.detail ?? e?.message ?? 'Action failed')
     }
   }
 
@@ -123,15 +132,20 @@ export default function ProjectDetail({
   }
 
   const activeJob = jobs.find(j => j.job_id === activeJobId) ?? null
+  const workflowActionLabel = project.workflow_status === 'IN_PROGRESS'
+    ? '⛓ Resume Workflow'
+    : project.workflow_status === 'FAILED'
+      ? '⛓ Retry Workflow'
+      : '⛓ Extract Workflow'
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+      <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-700">
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-slate-100 truncate">
-              {project.label ?? project.source_path ?? project.project_id.slice(0, 12)}
+              {projectDisplayName(project)}
             </h3>
             <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
               <span>{project.asset_count} asset(s)</span>
@@ -139,6 +153,8 @@ export default function ProjectDetail({
               <span>Processed: <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} /></span>
               <span className="text-slate-600">·</span>
               <span>Frame: <StatusBadge status={project.frame_status ?? 'NO_FRAME'} /></span>
+              <span className="text-slate-600">·</span>
+              <span>Workflow: <StatusBadge status={project.workflow_status ?? 'NO_WORKFLOW'} /></span>
             </p>
           </div>
           <button
@@ -150,6 +166,11 @@ export default function ProjectDetail({
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {/* Action buttons */}
+          {actionError && (
+            <div className="rounded border border-red-700 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+              {actionError}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => runAction(() => processProject(project.project_id))}
@@ -179,6 +200,33 @@ export default function ProjectDetail({
             >
               🕸 Extract graph
             </button>
+            <button
+              onClick={() => runAction(() => workflowExtractProject(project.project_id))}
+              disabled={!!activeJobId}
+              className="px-3 py-2 bg-violet-900/70 hover:bg-violet-800 disabled:opacity-40 rounded text-xs text-violet-100"
+            >
+              {workflowActionLabel}
+            </button>
+          </div>
+
+          <div>
+            <div className="flex gap-1 border-b border-slate-700 mb-3">
+              {([['knowledge', 'Knowledge Graph'], ['workflow', 'Workflow Cards']] as const).map(([key, label]) => (
+                <button key={key} onClick={() => setGraphView(key)}
+                  className={`px-3 py-2 text-sm border-b-2 -mb-px ${graphView === key ? 'border-violet-400 text-violet-300' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {graphView === 'knowledge' && <GraphTab projectId={project.project_id} />}
+            {graphView === 'workflow' && (
+              <WorkflowGraphTab
+                key={`${project.project_id}-${project.workflow_version ?? 0}`}
+                projectId={project.project_id}
+                actionsDisabled={!!activeJobId}
+                onWorkflowVersionDeleted={refreshProject}
+              />
+            )}
           </div>
 
           {/* Space selector */}

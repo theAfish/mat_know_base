@@ -42,6 +42,8 @@ export default function SettingsPage() {
         mineru_api_timeout: data.mineru_api_timeout,
         extraction_model: data.extraction_model,
         vision_model: data.vision_model,
+        agent_llm_timeout: data.agent_llm_timeout,
+        agent_retry_count: data.agent_retry_count,
         log_level: data.log_level,
         max_concurrent_jobs: data.max_concurrent_jobs,
       }
@@ -271,6 +273,30 @@ export default function SettingsPage() {
             onChange={e => setData({ ...data, vision_model: e.target.value })}
           />
         </Field>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="LLM Timeout (seconds)" hint="Per-request timeout for agent model calls. Increase this if extraction times out while reading or writing a large workflow.">
+            <input
+              type="number"
+              min={30}
+              max={3600}
+              className="w-32 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100"
+              value={data.agent_llm_timeout}
+              onChange={e => setData({ ...data, agent_llm_timeout: Math.max(1, Number(e.target.value) || 300) })}
+            />
+          </Field>
+
+          <Field label="Retry Count" hint="Retries for transient model/network errors such as socket read timeouts.">
+            <input
+              type="number"
+              min={1}
+              max={20}
+              className="w-32 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-100"
+              value={data.agent_retry_count}
+              onChange={e => setData({ ...data, agent_retry_count: Math.max(1, Number(e.target.value) || 5) })}
+            />
+          </Field>
+        </div>
       </section>
 
       {/* System */}

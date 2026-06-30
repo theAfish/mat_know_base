@@ -5,7 +5,10 @@
 
 # ── LLM / Agent ──────────────────────────────────────────────────────────────
 # LiteLLM model string used for extraction and projection agents.
-# Format: "provider/model-name"  e.g. "openai/gpt-4o", "openai/glm-5.1"
+# Format: "provider/model-name"  e.g. "openai/gpt-4o", "openai/glm-5.1".
+# For non-OpenAI providers exposed via an OpenAI-compatible endpoint, use
+# "openai/<upstream-model-name>" plus LLM_API_KEY and LLM_API_BASE in .env
+# (or the legacy OPENAI_API_* names).
 extraction_model: openai/glm-5.1
 
 # Multimodal model for vision tools (list_project_images / read_image_with_vision).

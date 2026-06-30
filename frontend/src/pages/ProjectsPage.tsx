@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react'
 import { listSpaces } from '../api/spaces'
 import BrowseTab from '../components/projects/BrowseTab'
 import UploadTab from '../components/projects/UploadTab'
+import SchemaCuratorTab from '../components/projects/SchemaCuratorTab'
 import type { Space } from '../types'
 
 
 export default function ProjectsPage() {
-  const [tab, setTab] = useState<'upload' | 'browse'>('upload')
+  const [tab, setTab] = useState<'upload' | 'browse' | 'schema'>('upload')
   const [spaces, setSpaces] = useState<Space[]>([])
 
   useEffect(() => {
@@ -20,7 +21,7 @@ export default function ProjectsPage() {
       <p className="text-sm text-slate-400 mb-5">Manage and process your research documents.</p>
 
       <div className="flex gap-1 mb-6 border-b border-slate-700">
-        {(['upload', 'browse'] as const).map(t => (
+        {(['upload', 'browse', 'schema'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -30,12 +31,16 @@ export default function ProjectsPage() {
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
-            {t === 'upload' ? 'Upload' : 'Browse'}
+            {t === 'upload' ? 'Upload' : t === 'browse' ? 'Browse' : 'Workflow Review'}
           </button>
         ))}
       </div>
 
-      {tab === 'upload' ? <UploadTab /> : <BrowseTab spaces={spaces} />}
+      {tab === 'upload'
+        ? <UploadTab />
+        : tab === 'browse'
+          ? <BrowseTab spaces={spaces} />
+          : <SchemaCuratorTab />}
     </div>
   )
 }

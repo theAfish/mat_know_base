@@ -33,6 +33,11 @@ def _is_retryable_provider_error(error: str) -> bool:
         "temporar",
         "timeout",
         "429",
+        "jsondecodeerror",
+        "expecting ',' delimiter",
+        "unterminated string",
+        "extra data",
+        "tool call arguments",
     ]
     return any(marker in e for marker in retry_markers)
 
@@ -98,6 +103,17 @@ class AgentRunner:
             error_str = result.error or ""
             if _is_retryable_provider_error(error_str):
                 if attempt < max_retries:
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "label": "retry",
+                                "message": (
+                                    f"Transient model error on attempt {attempt}/{max_retries}: "
+                                    f"{error_str[:180]}. Retrying in {retry_delay:.1f}s."
+                                ),
+                                "stage": "retry",
+                            }
+                        )
                     logger.warning(
                         "Transient provider error on attempt %d/%d: %s — retrying in %.1fs",
                         attempt, max_retries, error_str[:200], retry_delay,
@@ -130,18 +146,45 @@ class AgentRunner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=initial_message,
-                run_config=RunConfig(max_llm_calls=self.max_llm_calls),
+                run_config=RunConfig(max_llm_calls=getattr(self, "max_llm_calls", 40)),
             ):
                 if progress_callback and event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.function_call:
                             name = part.function_call.name or "tool"
+                            args = dict(part.function_call.args or {})
                             progress_callback(
                                 {
                                     "tool": name,
                                     "label": name,
                                     "message": f"Agent called {name}",
                                     "stage": "tool_call",
+                                    "payload": args,
+                                }
+                            )
+                        elif getattr(part, "function_response", None):
+                            resp = part.function_response
+                            response_name = getattr(resp, "name", None) or "tool"
+                            payload = getattr(resp, "response", None)
+                            if isinstance(payload, dict):
+                                if payload.get("error"):
+                                    message = f"{response_name} error: {str(payload['error'])[:220]}"
+                                else:
+                                    message = f"{response_name} returned data"
+                            else:
+                                preview = str(payload)[:220] if payload is not None else "no data"
+                                message = f"{response_name} result: {preview}"
+                            progress_callback(
+                                {
+                                    "tool": response_name,
+                                    "label": response_name,
+                                    "message": message,
+                                    "stage": "tool_result",
+                                    "payload": (
+                                        payload
+                                        if isinstance(payload, (dict, list, str, int, float, bool)) or payload is None
+                                        else str(payload)
+                                    ),
                                 }
                             )
                         elif part.text:
@@ -151,7 +194,7 @@ class AgentRunner:
                                 progress_callback(
                                     {
                                         "label": "agent",
-                                        "message": text[:240],
+                                        "message": text[:1200],
                                         "stage": "agent_text",
                                     }
                                 )

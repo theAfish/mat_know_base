@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     # Falls back to extraction_model when empty; set to e.g. "openai/qwen-vl-plus".
     vision_model: str = ""
     google_api_key: str = ""
+    llm_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("LLM_API_KEY", "MKB_LLM_API_KEY"),
+    )
+    llm_api_base: str = Field(
+        default="",
+        validation_alias=AliasChoices("LLM_API_BASE", "MKB_LLM_API_BASE"),
+    )
     openai_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("OPENAI_API_KEY", "MKB_OPENAI_API_KEY"),
@@ -84,6 +92,10 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("OPENAI_API_BASE", "MKB_OPENAI_API_BASE"),
     )
+    # Timeout passed through LiteLLM/httpx for agent model calls.
+    agent_llm_timeout: int = 300
+    # Retries for transient provider/network issues during agent runs.
+    agent_retry_count: int = 5
 
     # ── Job concurrency ─────────────────────────────────────────
     # Maximum number of background agent jobs (extract/project/etc.) that run
