@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 VALID_PURPOSES = {"tabular_database", "qa_benchmark", "skill_cards", "freeform"}
-VALID_REVIEW_SEARCH_TOOLS = {"web", "uniprot", "crossref"}
-VALID_POST_PROCESSOR_TOOL_GROUPS = {"reading", "web", "uniprot", "crossref"}
+VALID_REVIEW_SEARCH_TOOLS = {"web", "uniprot", "crossref", "ncbi"}
+VALID_POST_PROCESSOR_TOOL_GROUPS = {"reading", "web", "uniprot", "crossref", "ncbi"}
 
 
 def _maybe_normalize_schema(extraction_schema: dict, purpose: str) -> dict:

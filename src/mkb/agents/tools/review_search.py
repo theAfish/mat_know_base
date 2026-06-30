@@ -11,7 +11,8 @@ DEFAULT_TIMEOUT = 20
 UNIPROT_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
 UNIPROT_ENTRY_URL = "https://rest.uniprot.org/uniprotkb/{accession}.json"
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
-VALID_REVIEW_SEARCH_TOOL_NAMES = {"web", "uniprot", "crossref"}
+NCBI_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+VALID_REVIEW_SEARCH_TOOL_NAMES = {"web", "uniprot", "crossref", "ncbi"}
 
 
 def _truncate(value: str | None, max_chars: int = 500) -> str | None:
@@ -150,6 +151,102 @@ def fetch_uniprot_sequence(accession: str) -> dict:
     return _uniprot_entry_summary(resp.json(), include_sequence=True)
 
 
+def _first_genbank_qualifier(record: str, qualifier: str) -> str | None:
+    match = re.search(rf'/{re.escape(qualifier)}="([^"]*)"', record, flags=re.DOTALL)
+    if not match:
+        return None
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _parse_genbank_translations(record: str) -> list[dict[str, Any]]:
+    translations: list[dict[str, Any]] = []
+    feature_matches = list(re.finditer(r"^     CDS\s+(.+?)(?=^     \S|\Z)", record, flags=re.MULTILINE | re.DOTALL))
+    for idx, feature in enumerate(feature_matches, start=1):
+        text = feature.group(0)
+        translation = _first_genbank_qualifier(text, "translation")
+        if not translation:
+            continue
+        sequence = re.sub(r"[^A-Za-z*]", "", translation)
+        location = (text.splitlines()[0].split("CDS", 1)[1] or "").strip()
+        translations.append({
+            "index": idx,
+            "location": location,
+            "protein_id": _first_genbank_qualifier(text, "protein_id"),
+            "product": _first_genbank_qualifier(text, "product"),
+            "gene": _first_genbank_qualifier(text, "gene"),
+            "translation_length": len(sequence.replace("*", "")),
+            "translation": sequence,
+        })
+    return translations
+
+
+def fetch_ncbi_nucleotide_record(accession: str) -> dict:
+    """Fetch a GenBank/NCBI nuccore record and return CDS translations.
+
+    Use this for nucleotide accessions such as GenBank IDs in source fields
+    (for example MF496231). Prefer this direct database lookup over web_search
+    when the user asks to recover protein sequences from a nucleotide record.
+    If multiple CDS translations are returned, pick one only when product/gene
+    and source-row context make the match clear.
+    """
+    cleaned = (accession or "").strip()
+    if not re.fullmatch(r"[A-Za-z]{1,4}_?[A-Za-z0-9]+(?:\.\d+)?", cleaned):
+        return {"error": "accession must look like a nucleotide accession/id"}
+
+    try:
+        resp = requests.get(
+            NCBI_EFETCH_URL,
+            params={
+                "db": "nuccore",
+                "id": cleaned,
+                "rettype": "gb",
+                "retmode": "text",
+            },
+            timeout=DEFAULT_TIMEOUT,
+            headers={"User-Agent": "mat-know-base/0.1 (mailto:unknown@example.com)"},
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        return {"error": f"NCBI fetch failed: {exc}", "accession": cleaned}
+
+    record = resp.text or ""
+    if not record.strip() or "Error" in record[:200]:
+        return {"error": "NCBI returned an empty or error record", "accession": cleaned}
+
+    locus = None
+    definition = None
+    organism = None
+    locus_match = re.search(r"^LOCUS\s+(.+)$", record, flags=re.MULTILINE)
+    if locus_match:
+        locus = re.sub(r"\s+", " ", locus_match.group(1)).strip()
+    definition_match = re.search(
+        r"^DEFINITION\s+(.+?)(?=^ACCESSION\s)",
+        record,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if definition_match:
+        definition = re.sub(r"\s+", " ", definition_match.group(1)).strip()
+    organism_match = re.search(
+        r"^\s+ORGANISM\s+(.+)$",
+        record,
+        flags=re.MULTILINE,
+    )
+    if organism_match:
+        organism = organism_match.group(1).strip()
+
+    translations = _parse_genbank_translations(record)
+    return {
+        "accession": cleaned,
+        "source": f"https://www.ncbi.nlm.nih.gov/nuccore/{cleaned}",
+        "locus": locus,
+        "definition": definition,
+        "organism": organism,
+        "translation_count": len(translations),
+        "translations": translations,
+        "record_preview": _truncate(record, 1200),
+    }
+
+
 def search_crossref_works(query: str, limit: int = 5) -> dict:
     """Search Crossref works for a likely publication/reference match.
 
@@ -213,6 +310,7 @@ def search_crossref_works(query: str, limit: int = 5) -> dict:
 REVIEW_SEARCH_TOOL_GROUPS = {
     "web": [web_search],
     "uniprot": [search_uniprot, fetch_uniprot_sequence],
+    "ncbi": [fetch_ncbi_nucleotide_record],
     "crossref": [search_crossref_works],
 }
 

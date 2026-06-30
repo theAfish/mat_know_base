@@ -80,7 +80,7 @@ def build_projection_reviewer_agent(
     optional_tools = []
     if "reading" in groups:
         optional_tools.extend(READING_TOOLS)
-    search_names = [group for group in groups if group in {"web", "uniprot", "crossref"}]
+    search_names = [group for group in groups if group in {"web", "uniprot", "crossref", "ncbi"}]
     if search_names:
         optional_tools.extend(get_projection_review_search_tools(search_names))
     return Agent(

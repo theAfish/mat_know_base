@@ -10,8 +10,8 @@ import {
 import type { PostProcessorProfile, Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
-const REVIEW_SEARCH_TOOL_OPTIONS = ['web', 'uniprot', 'crossref'] as const
-const POST_PROCESSOR_TOOL_OPTIONS = ['reading', 'web', 'uniprot', 'crossref'] as const
+const REVIEW_SEARCH_TOOL_OPTIONS = ['web', 'uniprot', 'ncbi', 'crossref'] as const
+const POST_PROCESSOR_TOOL_OPTIONS = ['reading', 'web', 'uniprot', 'ncbi', 'crossref'] as const
 
 const PURPOSE_COLORS: Record<string, string> = {
   tabular_database: 'bg-teal-700 text-teal-100',
