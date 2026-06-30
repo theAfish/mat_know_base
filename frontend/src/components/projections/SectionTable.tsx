@@ -24,6 +24,7 @@ type ProjectionTableRow = Record<string, string>
 type ColumnDataType = 'boolean' | 'number' | 'date' | 'text'
 
 const SELECTION_COLUMN_ID = '__projection_selection__'
+const PAGE_STORAGE_PREFIX = 'mkb:projection-table-page:'
 
 function isBlank(value: unknown): boolean {
   return String(value ?? '').trim() === ''
@@ -79,6 +80,18 @@ function sortArrow(sorted: false | 'asc' | 'desc'): string {
   return sorted === 'asc' ? '↑' : '↓'
 }
 
+function loadSavedPage(key: string): number {
+  if (typeof window === 'undefined') return 1
+  const saved = window.sessionStorage.getItem(`${PAGE_STORAGE_PREFIX}${key}`)
+  const page = saved ? Number(saved) : 1
+  return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+}
+
+function savePage(key: string, page: number): void {
+  if (typeof window === 'undefined') return
+  window.sessionStorage.setItem(`${PAGE_STORAGE_PREFIX}${key}`, String(page))
+}
+
 export default function SectionTable({
   name,
   rows,
@@ -102,7 +115,8 @@ export default function SectionTable({
   onClearSelection: () => void
   reviewDisabled?: boolean
 }) {
-  const [page, setPage] = useState(1)
+  const pageStorageKey = exportBasename ?? name
+  const [page, setPage] = useState(() => loadSavedPage(pageStorageKey))
   const [sorting, setSorting] = useState<SortingState>([])
   const [exportingFormat, setExportingFormat] = useState<'csv' | 'excel' | null>(null)
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
@@ -111,6 +125,14 @@ export default function SectionTable({
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
   }, [page, totalPages])
+
+  useEffect(() => {
+    setPage(loadSavedPage(pageStorageKey))
+  }, [pageStorageKey])
+
+  useEffect(() => {
+    savePage(pageStorageKey, Math.min(page, totalPages))
+  }, [page, pageStorageKey, totalPages])
 
   const allCols = useMemo(() => {
     const seen = new Set<string>()
@@ -209,6 +231,7 @@ export default function SectionTable({
   const cycleSort = (columnId: string) => {
     const current = sorting.find(sort => sort.id === columnId)
     setPage(1)
+    savePage(pageStorageKey, 1)
     if (!current) setSorting([{ id: columnId, desc: false }])
     else if (!current.desc) setSorting([{ id: columnId, desc: true }])
     else setSorting([])
@@ -289,9 +312,11 @@ export default function SectionTable({
     onPaginationChange: updater => {
       const next = functionalUpdate(updater, pagination)
       setPage(next.pageIndex + 1)
+      savePage(pageStorageKey, next.pageIndex + 1)
     },
     onSortingChange: updater => {
       setPage(1)
+      savePage(pageStorageKey, 1)
       setSorting(functionalUpdate(updater, sorting))
     },
     getCoreRowModel: getCoreRowModel(),

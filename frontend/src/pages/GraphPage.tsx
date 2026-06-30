@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Network, type Options } from 'vis-network'
 import { DataSet } from 'vis-data'
 import { getKnowledgeGraph, getReviewCounts, reviewGraph, clearGraph } from '../api/graph'
-import { startJobPolling } from '../api/jobPolling'
+import { JOB_FINISHED_EVENT, startJobPolling } from '../api/jobPolling'
 import JobProgress from '../components/JobProgress'
 import type { GraphConcept, GraphRelation, GraphPayload, Job } from '../types'
 
@@ -783,8 +783,8 @@ export default function GraphPage() {
 
   const REVIEW_MODES_SET = new Set(['review_coverage', 'modification_heat'])
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true)
     try {
       const data = await getKnowledgeGraph()
       setPayload(data)
@@ -792,7 +792,18 @@ export default function GraphPage() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (job.status === 'COMPLETED' && ['knowledge_graph', 'graph_review'].includes(job.kind)) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load])
 
   // Load review counts when a review-based mode is selected
   useEffect(() => {

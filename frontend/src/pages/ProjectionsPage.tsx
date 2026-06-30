@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { startJobPolling } from '../api/jobPolling'
+import { JOB_FINISHED_EVENT, isJobTerminal, startJobPolling } from '../api/jobPolling'
 import { listProjectGroups } from '../api/projectGroups'
 import { deleteProjection, exportProjections, listProjections, reviewProjections } from '../api/projections'
 import { listProjects } from '../api/projects'
@@ -29,7 +29,7 @@ export default function ProjectionsPage() {
   const [loading, setLoading] = useState(false)
   const [newestOnly, setNewestOnly] = useState(true)
   const [showHistory, setShowHistory] = useState(false)
-  const [reviewJob, setReviewJob] = useState<Job | null>(null)
+  const [reviewJobs, setReviewJobs] = useState<Job[]>([])
   const [isReviewing, setIsReviewing] = useState(false)
   const [selectedReviewerId, setSelectedReviewerId] = useState<string>('')
   const [showSpaceDetail, setShowSpaceDetail] = useState(false)
@@ -107,6 +107,20 @@ export default function ProjectionsPage() {
   useEffect(() => { loadProjections() }, [loadProjections])
 
   useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        ['project', 'projection_review', 'upload'].includes(job.kind)
+      ) {
+        loadProjections()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [loadProjections])
+
+  useEffect(() => {
     const processors = spaceDetail?.post_processors ?? []
     const enabled = processors.filter(processor => processor.enabled !== false)
     if (enabled.length === 0) {
@@ -131,14 +145,34 @@ export default function ProjectionsPage() {
     return Array.from(pids)
   }, [selectedProjectionIds, projections])
 
-  const pollJob = useCallback((jobId: string) => {
-    startJobPolling({
-      jobId,
-      onUpdate: setReviewJob,
-      onComplete: () => { setIsReviewing(false); loadProjections() },
-      onFailed: () => setIsReviewing(false),
+  const updateReviewJob = useCallback((updatedJob: Job) => {
+    setReviewJobs(prev => {
+      const index = prev.findIndex(job => job.job_id === updatedJob.job_id)
+      if (index === -1) return [...prev, updatedJob]
+      const next = [...prev]
+      next[index] = updatedJob
+      return next
     })
-  }, [loadProjections])
+  }, [])
+
+  const pollJobs = useCallback((jobIds: string[]) => {
+    const remaining = new Set(jobIds)
+    const finishJob = (jobId: string) => {
+      remaining.delete(jobId)
+      if (remaining.size === 0) {
+        setIsReviewing(false)
+        loadProjections()
+      }
+    }
+    jobIds.forEach(jobId => {
+      startJobPolling({
+        jobId,
+        onUpdate: updateReviewJob,
+        onComplete: job => finishJob(job.job_id),
+        onFailed: job => finishJob(job?.job_id ?? jobId),
+      })
+    })
+  }, [loadProjections, updateReviewJob])
 
   const startReview = async (overrideProjectionIds?: string[]) => {
     try {
@@ -159,8 +193,22 @@ export default function ProjectionsPage() {
       }
       if (projectIds.length > 0) params.project_ids = projectIds
       if (selectedReviewerId) params.reviewer_id = selectedReviewerId
-      const { job_id } = await reviewProjections(params)
-      pollJob(job_id)
+      const response = await reviewProjections(params)
+      const jobIds = response.job_ids?.length ? response.job_ids : [response.job_id]
+      setReviewJobs(jobIds.map(jobId => ({
+        job_id: jobId,
+        kind: 'projection_review',
+        label: 'Projection Review',
+        status: 'QUEUED',
+        project_id: null,
+        result: null,
+        error: null,
+        current_message: 'Queued',
+        events: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })))
+      pollJobs(jobIds)
     } catch { setIsReviewing(false) }
   }
 
@@ -220,6 +268,40 @@ export default function ProjectionsPage() {
     () => userSpaces.find(space => space.space_id === selectedSpaceId)?.name ?? selectedSpaceId ?? 'space',
     [selectedSpaceId, userSpaces],
   )
+
+  const reviewSummary = useMemo(() => {
+    if (reviewJobs.length === 0) return null
+    const completed = reviewJobs.filter(job => job.status === 'COMPLETED').length
+    const failed = reviewJobs.filter(job => job.status === 'FAILED').length
+    const cancelled = reviewJobs.filter(job => job.status === 'CANCELLED').length
+    const active = reviewJobs.filter(job => !isJobTerminal(job.status)).length
+    const latestActive = [...reviewJobs]
+      .reverse()
+      .find(job => !isJobTerminal(job.status))
+    const latestTerminal = [...reviewJobs]
+      .reverse()
+      .find(job => isJobTerminal(job.status))
+    const visibleJob = latestActive ?? latestTerminal ?? reviewJobs[reviewJobs.length - 1]
+    const status = failed > 0
+      ? 'FAILED'
+      : cancelled > 0 && active === 0
+        ? 'CANCELLED'
+        : completed === reviewJobs.length
+          ? 'COMPLETED'
+          : 'RUNNING'
+    const parts = [
+      `${completed}/${reviewJobs.length} completed`,
+      active > 0 ? `${active} running or queued` : null,
+      failed > 0 ? `${failed} failed` : null,
+      cancelled > 0 ? `${cancelled} cancelled` : null,
+    ].filter(Boolean)
+    return {
+      status: status as Job['status'],
+      message: reviewJobs.length === 1
+        ? (visibleJob.current_message || visibleJob.status)
+        : parts.join(' · '),
+    }
+  }, [reviewJobs])
 
   return (
     <div className="p-6 max-w-6xl space-y-5">
@@ -387,15 +469,15 @@ export default function ProjectionsPage() {
         </div>
       )}
 
-      {reviewJob && (
+      {reviewSummary && (
         <div className={`rounded-lg px-4 py-3 text-sm ${
-          reviewJob.status === 'COMPLETED' ? 'bg-green-900/30 border border-green-700/50 text-green-200' :
-          reviewJob.status === 'FAILED' ? 'bg-red-900/30 border border-red-700/50 text-red-200' :
+          reviewSummary.status === 'COMPLETED' ? 'bg-green-900/30 border border-green-700/50 text-green-200' :
+          reviewSummary.status === 'FAILED' ? 'bg-red-900/30 border border-red-700/50 text-red-200' :
           'bg-slate-800 border border-slate-700 text-slate-300'
         }`}>
           {isReviewing && <span className="inline-block w-3 h-3 border-2 border-teal-400 border-t-transparent rounded-full animate-spin mr-2" />}
-          <StatusBadge status={reviewJob.status} />
-          <span className="ml-2">{reviewJob.current_message || reviewJob.status}</span>
+          <StatusBadge status={reviewSummary.status} />
+          <span className="ml-2">{reviewSummary.message}</span>
         </div>
       )}
 

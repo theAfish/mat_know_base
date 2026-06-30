@@ -36,6 +36,7 @@ from mkb.db.models import (
     Space,
 )
 from mkb.spaces.registry import resolve_post_processor
+from mkb.skills.registry import skill_instruction_block
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ def build_projection_reviewer_agent(
     purpose: str | None = None,
     custom_prompt: str | None = None,
     tool_groups: list[str] | None = None,
+    skill_ids: list[str] | None = None,
 ) -> Agent:
     """Create a projection reviewer agent.
 
@@ -76,6 +78,9 @@ def build_projection_reviewer_agent(
             if purpose_key in {"skill_cards", "freeform"}
             else "projection_reviewer"
         )
+    skill_block = skill_instruction_block(skill_ids)
+    if skill_block:
+        instruction = f"{instruction.rstrip()}\n\n{skill_block}"
     groups = [str(group).strip().lower() for group in (tool_groups or ["reading"]) if str(group).strip()]
     optional_tools = []
     if "reading" in groups:
@@ -91,14 +96,16 @@ def build_projection_reviewer_agent(
     )
 
 
-def _processor_runtime(space: Space, reviewer_id: str | None = None) -> tuple[str | None, str | None, list[str], dict]:
+def _processor_runtime(space: Space, reviewer_id: str | None = None) -> tuple[str | None, str | None, list[str], list[str], dict]:
     processor = resolve_post_processor(space, reviewer_id)
     prompt = processor.get("prompt") or getattr(space, "review_prompt", None)
     groups = processor.get("tool_groups") or ["reading"]
+    skill_ids = [str(skill_id).strip() for skill_id in (processor.get("skill_ids") or []) if str(skill_id).strip()]
     return (
         str(processor.get("id") or "default"),
         prompt,
         [str(group).strip().lower() for group in groups],
+        skill_ids,
         processor,
     )
 
@@ -150,13 +157,14 @@ async def _run_review_async(
         ]
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
-        selected_reviewer_id, processor_prompt, tool_groups, processor = _processor_runtime(space, reviewer_id)
+        selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
+        skill_ids=skill_ids,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -193,6 +201,8 @@ async def _run_review_async(
             f"(id={selected_reviewer_id}) with these tool groups: "
             f"{', '.join(tool_groups)}."
         )
+    if skill_ids:
+        message += f" Apply attached skill IDs: {', '.join(skill_ids)}."
 
     result = await runner.run(
         session_id=session_id,
@@ -305,13 +315,14 @@ async def run_projection_review_followup(
 
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
-        selected_reviewer_id, processor_prompt, tool_groups, processor = _processor_runtime(space, reviewer_id)
+        selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
+        skill_ids=skill_ids,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
     session_id = f"review_followup_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"
@@ -333,7 +344,8 @@ async def run_projection_review_followup(
         f"You are continuing a completed projection review for space {space_id} "
         f"('{space_name}') and project {project_id}.\n\n"
         f"Selected post-processor: {processor.get('name')} "
-        f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}.\n\n"
+        f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}; "
+        f"skill IDs: {', '.join(skill_ids) if skill_ids else 'none'}.\n\n"
         f"User follow-up request:\n{cleaned_message}\n\n"
         f"Previous review job result, if available:\n"
         f"{_compact_followup_context(prior_result)}\n\n"
@@ -541,13 +553,14 @@ async def run_projection_review_session(
 
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
-        selected_reviewer_id, processor_prompt, tool_groups, processor = _processor_runtime(space, reviewer_id)
+        selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
+        skill_ids=skill_ids,
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -562,7 +575,8 @@ async def run_projection_review_session(
         f"You are running a SINGLE consolidated review session over "
         f"{len(per_project_counts)} project(s) in space {sid} ('{space_name}').\n\n"
         f"Selected post-processor: {processor.get('name')} "
-        f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}.\n\n"
+        f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}; "
+        f"skill IDs: {', '.join(skill_ids) if skill_ids else 'none'}.\n\n"
         f"Projects to review (one at a time, in order):\n{project_lines}\n\n"
         f"For EACH project, in order:\n"
         f"  1. Call get_all_projections_for_review(space_id, project_id) to "

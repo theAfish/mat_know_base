@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { getFrame, getFrameHistory } from '../../api/frames'
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
 import { getProject } from '../../api/projects'
-import type { ExtractionPass, Frame, Project } from '../../types'
+import type { ExtractionPass, Frame, Job, Project } from '../../types'
 import StatusBadge from '../StatusBadge'
 import { FrameHeader, FrameSection } from './frameRender'
 
@@ -14,7 +15,8 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
   const [loading, setLoading] = useState(true)
   const [showRaw, setShowRaw] = useState(false)
 
-  useEffect(() => {
+  const load = useCallback((showLoading = false) => {
+    if (showLoading) setLoading(true)
     Promise.all([getFrame(projectId), getFrameHistory(projectId), getProject(projectId)])
       .then(([f, h, p]) => {
         setFrame(f)
@@ -24,6 +26,23 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [projectId])
+
+  useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        job.project_id === projectId &&
+        ['extract', 'raw_workflow', 'canonical_workflow', 'workflow_maintenance'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load, projectId])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
   if (!frame) return <p className="text-sm text-slate-400">No knowledge frame yet. Run Extract to generate one.</p>

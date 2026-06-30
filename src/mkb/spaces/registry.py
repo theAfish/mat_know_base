@@ -93,6 +93,7 @@ def _default_post_processor_from_legacy(
         "description": "General projection review and correction.",
         "prompt": review_prompt or None,
         "tool_groups": tool_groups,
+        "skill_ids": [],
         "enabled": True,
     }
 
@@ -111,6 +112,7 @@ def _normalize_post_processors(value, *, legacy_defaults: dict | None = None) ->
                 "description": str(raw.get("description") or ""),
                 "prompt": raw.get("prompt") if isinstance(raw.get("prompt"), str) and raw.get("prompt").strip() else None,
                 "tool_groups": _normalize_tool_groups(raw.get("tool_groups") or raw.get("tools")),
+                "skill_ids": _normalize_skill_ids(raw.get("skill_ids") or raw.get("skills")),
                 "enabled": bool(raw.get("enabled", True)),
             })
 
@@ -135,6 +137,23 @@ def _normalize_post_processors(value, *, legacy_defaults: dict | None = None) ->
         seen.add(processor["id"])
         unique.append(processor)
     return unique
+
+
+def _normalize_skill_ids(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = []
+    skill_ids: list[str] = []
+    for item in candidates:
+        key = str(item).strip()
+        if key and key not in skill_ids:
+            skill_ids.append(key)
+    return skill_ids
 
 
 def resolve_post_processor(space: Space, processor_id: str | None = None) -> dict:

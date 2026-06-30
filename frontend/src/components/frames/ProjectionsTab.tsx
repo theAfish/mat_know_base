@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
 import { listProjections } from '../../api/projections'
 import { listSpaces } from '../../api/spaces'
-import type { Projection, Space } from '../../types'
+import type { Job, Projection, Space } from '../../types'
 import StatusBadge from '../StatusBadge'
 import { FrameSection } from './frameRender'
 
@@ -12,7 +13,8 @@ export default function ProjectionsTab({ projectId }: { projectId: string }) {
   const [spaces, setSpaces] = useState<Space[]>([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  const load = useCallback((showLoading = false) => {
+    if (showLoading) setLoading(true)
     Promise.all([
       listProjections({ project_id: projectId, include_data: true, limit: 50 }),
       listSpaces(),
@@ -21,6 +23,23 @@ export default function ProjectionsTab({ projectId }: { projectId: string }) {
       setSpaces(sps.filter(s => s.name !== '__global_kg__'))
     }).finally(() => setLoading(false))
   }, [projectId])
+
+  useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        job.project_id === projectId &&
+        ['project', 'projection_review'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load, projectId])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
   if (projections.length === 0) return <p className="text-sm text-slate-400">No projections yet. Select a space and run Project.</p>

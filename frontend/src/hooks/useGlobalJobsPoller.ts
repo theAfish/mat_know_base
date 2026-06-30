@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { listJobs } from '../api/jobs'
-import { nextJobPollDelayMs } from '../api/jobPolling'
+import { announceJobFinished, isJobTerminal, nextJobPollDelayMs } from '../api/jobPolling'
 import { JOB_STARTED_EVENT } from '../api/client'
 import { useJobsStore, isJobActive } from '../store/jobsStore'
+import type { Job } from '../types'
 
 /**
  * Single global poll of /api/jobs. Mount exactly once near the app root.
@@ -17,6 +18,7 @@ export function useGlobalJobsPoller() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const errorsRef = useRef(0)
   const fetchingRef = useRef(false)
+  const previousJobsRef = useRef<Map<string, Job> | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -25,6 +27,16 @@ export function useGlobalJobsPoller() {
       try {
         const data = await listJobs({ limit: 200 })
         errorsRef.current = 0
+        const previousJobs = previousJobsRef.current
+        if (previousJobs) {
+          for (const job of data) {
+            const previous = previousJobs.get(job.job_id)
+            if (previous && isJobActive(previous) && isJobTerminal(job.status)) {
+              announceJobFinished(job)
+            }
+          }
+        }
+        previousJobsRef.current = new Map(data.map(job => [job.job_id, job]))
         useJobsStore.getState().setJobs(data)
         return data
       } catch {

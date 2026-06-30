@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
 import { listProjects } from '../../api/projects'
 import ProjectGroupedList from '../ProjectGroupedList'
-import type { Project, Space } from '../../types'
+import type { Job, Project, Space } from '../../types'
 import ProjectDetail from './ProjectDetail'
 import StatusLights from './StatusLights'
 
@@ -26,6 +27,30 @@ export default function BrowseTab({ spaces }: { spaces: Space[] }) {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        [
+          'process',
+          'extract',
+          'project',
+          'knowledge_graph',
+          'raw_workflow',
+          'canonical_workflow',
+          'workflow_maintenance',
+          'workflow_maintenance_batch',
+          'upload',
+        ].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load])
 
   const getStatus = useCallback(
     (id: string) => projects.find(p => p.project_id === id)?.frame_status ?? 'NO_FRAME',

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { listFrames } from '../api/frames'
+import { JOB_FINISHED_EVENT } from '../api/jobPolling'
 import { listProjects } from '../api/projects'
 import { listSpaces } from '../api/spaces'
 import ProjectDetail from '../components/frames/ProjectDetail'
 import ProjectGroupedList from '../components/ProjectGroupedList'
 import StatusBadge from '../components/StatusBadge'
-import type { Project, Space } from '../types'
+import type { Job, Project, Space } from '../types'
 
 
 export default function FramesPage() {
@@ -34,6 +35,19 @@ export default function FramesPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        ['process', 'extract', 'raw_workflow', 'canonical_workflow', 'workflow_maintenance', 'upload'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load])
   useEffect(() => { listSpaces().then(setSpaces).catch(() => {}) }, [])
 
   const getStatus = useCallback(

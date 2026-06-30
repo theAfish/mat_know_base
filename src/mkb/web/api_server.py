@@ -345,6 +345,7 @@ from mkb.web.routers import (  # noqa: E402
     projections,
     projects,
     settings as settings_router,
+    skills,
     spaces,
 )
 
@@ -353,6 +354,7 @@ for _r in (
     projects,
     frames,
     spaces,
+    skills,
     projections,
     feedback,
     graph,

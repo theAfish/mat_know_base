@@ -216,6 +216,23 @@ def review_projections(body: ProjectionReviewRequest):
             target=api.review_projections,
             kwargs={"space_id": body.space_id, "project_id": project_ids[0], "reviewer_id": body.reviewer_id},
         )
+    elif project_ids:
+        job_ids = []
+        for project_id in project_ids:
+            job_ids.append(
+                jobs.start_job(
+                    kind="projection_review",
+                    label="Projection Review",
+                    project_id=project_id,
+                    target=api.review_projections,
+                    kwargs={
+                        "space_id": body.space_id,
+                        "project_id": project_id,
+                        "reviewer_id": body.reviewer_id,
+                    },
+                )
+            )
+        return {"job_id": job_ids[0], "job_ids": job_ids}
     else:
         job_id = jobs.start_job(
             kind="projection_review",

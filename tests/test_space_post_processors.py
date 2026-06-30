@@ -20,6 +20,7 @@ def test_normalize_post_processors_builds_default_from_legacy_settings():
             "description": "General projection review and correction.",
             "prompt": "legacy prompt",
             "tool_groups": ["reading", "uniprot"],
+            "skill_ids": [],
             "enabled": True,
         }
     ]
@@ -52,3 +53,17 @@ def test_resolve_post_processor_selects_named_profile_without_forcing_reading():
     assert selected["prompt"] == "sequence prompt"
     assert selected["tool_groups"] == ["uniprot"]
 
+
+def test_normalize_post_processors_preserves_attached_skill_ids():
+    processors = _normalize_post_processors(
+        [
+            {
+                "id": "skilled",
+                "name": "Skilled reviewer",
+                "tool_groups": ["reading"],
+                "skill_ids": ["abc", "abc", "def"],
+            }
+        ]
+    )
+
+    assert processors[0]["skill_ids"] == ["abc", "def"]

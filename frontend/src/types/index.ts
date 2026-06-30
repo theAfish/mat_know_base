@@ -131,7 +131,25 @@ export interface PostProcessorProfile {
   description?: string
   prompt?: string | null
   tool_groups: string[]
+  skill_ids?: string[]
   enabled?: boolean
+}
+
+export interface CustomSkill {
+  skill_id: string
+  name: string
+  slug: string
+  description: string | null
+  source_type: string
+  file_count: number
+  metadata: {
+    files?: string[]
+    [key: string]: unknown
+  }
+  skill_md?: string
+  storage_path?: string
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export interface SpaceCreatePayload {
@@ -445,4 +463,4 @@ export interface UploadExpandResponse {
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
-export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces' | 'settings'
+export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces' | 'skills' | 'settings'

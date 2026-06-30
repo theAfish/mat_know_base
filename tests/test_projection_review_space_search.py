@@ -75,6 +75,35 @@ def test_projection_review_all_projects_uses_space_search_settings(
     assert "allow_search" not in calls[0]["kwargs"]
 
 
+def test_projection_review_selected_projects_starts_isolated_jobs(
+    monkeypatch,
+    projections_router,
+):
+    calls = []
+
+    def fake_start_job(**kwargs):
+        calls.append(kwargs)
+        return f"job-{len(calls)}"
+
+    monkeypatch.setattr(projections_router.jobs, "start_job", fake_start_job)
+
+    result = projections_router.review_projections(
+        ProjectionReviewRequest(
+            space_id=SPACE_ID,
+            project_ids=[PROJECT_ID, OTHER_PROJECT_ID],
+        )
+    )
+
+    assert result == {"job_id": "job-1", "job_ids": ["job-1", "job-2"]}
+    assert [call["target"] for call in calls] == [
+        projections_router.api.review_projections,
+        projections_router.api.review_projections,
+    ]
+    assert [call["project_id"] for call in calls] == [PROJECT_ID, OTHER_PROJECT_ID]
+    assert [call["kwargs"]["project_id"] for call in calls] == [PROJECT_ID, OTHER_PROJECT_ID]
+    assert all("allow_search" not in call["kwargs"] for call in calls)
+
+
 def test_projection_review_session_uses_space_search_settings(
     monkeypatch,
     projections_router,

@@ -21,12 +21,7 @@ build/
 .env
 
 # Data
-data/inbox/*
-!data/inbox/.gitkeep
-
-data/processed/*
-data/papers/*
-data/uploads/*
+data/
 
 # Docker volumes
 docker_volumes/

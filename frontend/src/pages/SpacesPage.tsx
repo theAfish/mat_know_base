@@ -7,7 +7,8 @@ import {
   deleteSpace,
   getDefaultReviewPrompt,
 } from '../api/spaces'
-import type { PostProcessorProfile, Space, SpaceCreatePayload } from '../types'
+import { listSkills } from '../api/skills'
+import type { CustomSkill, PostProcessorProfile, Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
 const REVIEW_SEARCH_TOOL_OPTIONS = ['web', 'uniprot', 'ncbi', 'crossref'] as const
@@ -76,6 +77,7 @@ const EMPTY_DRAFT: SpaceDraft = {
       description: 'General projection review and correction.',
       prompt: null,
       tool_groups: ['reading'],
+      skill_ids: [],
       enabled: true,
     },
   ],
@@ -154,6 +156,9 @@ const normalizePostProcessors = (value: unknown): PostProcessorProfile[] => {
         description: typeof obj.description === 'string' ? obj.description : '',
         prompt: typeof obj.prompt === 'string' && obj.prompt.trim() ? obj.prompt : null,
         tool_groups: toolGroups.length > 0 ? Array.from(new Set(toolGroups)) : ['reading'],
+        skill_ids: Array.isArray(obj.skill_ids)
+          ? Array.from(new Set(obj.skill_ids.map(String).filter(Boolean)))
+          : [],
         enabled: typeof obj.enabled === 'boolean' ? obj.enabled : true,
       }
     })
@@ -218,14 +223,16 @@ export default function SpacesPage() {
   const [selected, setSelected] = useState<Space | null>(null)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [busy, setBusy] = useState(false)
+  const [skills, setSkills] = useState<CustomSkill[]>([])
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
   const importFileRef = useRef<HTMLInputElement>(null)
 
   const refresh = async () => {
     try {
-      const list = await listSpaces()
+      const [list, skillList] = await Promise.all([listSpaces(), listSkills()])
       setSpaces(list)
+      setSkills(skillList)
       if (selected) {
         const fresh = list.find(s => s.space_id === selected.space_id) ?? null
         if (fresh) {
@@ -442,12 +449,14 @@ export default function SpacesPage() {
               </div>
               <SpaceForm
                 draft={editor.draft}
+                skills={skills}
                 onChange={draft => setEditor({ ...editor, draft })}
               />
             </div>
           ) : selected ? (
             <SpaceDetail
               space={selected}
+              skills={skills}
               onEdit={() =>
                 openEditor({
                   mode: 'edit',
@@ -477,9 +486,11 @@ export default function SpacesPage() {
 
 function SpaceForm({
   draft,
+  skills,
   onChange,
 }: {
   draft: SpaceDraft
+  skills: CustomSkill[]
   onChange: (draft: SpaceDraft) => void
 }) {
   const setDraft = (patch: Partial<SpaceDraft>) => onChange({ ...draft, ...patch })
@@ -792,6 +803,7 @@ function SpaceForm({
       <Section title="Post processors">
         <PostProcessorEditor
           processors={draft.post_processors}
+          skills={skills}
           onChange={post_processors => setDraft({ post_processors })}
         />
       </Section>
@@ -801,9 +813,11 @@ function SpaceForm({
 
 function PostProcessorEditor({
   processors,
+  skills,
   onChange,
 }: {
   processors: PostProcessorProfile[]
+  skills: CustomSkill[]
   onChange: (processors: PostProcessorProfile[]) => void
 }) {
   const update = (index: number, patch: Partial<PostProcessorProfile>) => {
@@ -833,6 +847,7 @@ function PostProcessorEditor({
         description: '',
         prompt: null,
         tool_groups: ['reading'],
+        skill_ids: [],
         enabled: true,
       },
     ])
@@ -894,6 +909,35 @@ function PostProcessorEditor({
                 </label>
               )
             })}
+          </div>
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-slate-300">Attached skills</div>
+            {skills.length === 0 ? (
+              <div className="text-xs text-slate-500">No custom skills uploaded.</div>
+            ) : (
+              <div className="flex items-center gap-3 flex-wrap">
+                {skills.map(skill => {
+                  const selected = (processor.skill_ids ?? []).includes(skill.skill_id)
+                  return (
+                    <label key={skill.skill_id} className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={e => {
+                          const current = processor.skill_ids ?? []
+                          const next = e.target.checked
+                            ? [...current, skill.skill_id]
+                            : current.filter(value => value !== skill.skill_id)
+                          update(index, { skill_ids: Array.from(new Set(next)) })
+                        }}
+                        className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+                      />
+                      <span>{skill.name}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
           </div>
           <div className="flex justify-end">
             <button
@@ -1007,11 +1051,13 @@ function ReviewPromptEditor({
 
 function SpaceDetail({
   space,
+  skills,
   onEdit,
   onDelete,
   onCustomizeReview,
 }: {
   space: Space
+  skills: CustomSkill[]
   onEdit: () => void
   onDelete: () => void
   onCustomizeReview: (defaultPrompt: string) => void
@@ -1025,6 +1071,7 @@ function SpaceDetail({
   )
   const searchTools = space.review_search_tools ?? ['web']
   const processors = space.post_processors ?? []
+  const skillNames = new Map(skills.map(skill => [skill.skill_id, skill.name]))
   return (
     <div className="space-y-4 text-sm pb-6">
       <div className="border border-slate-700 bg-slate-900/50 rounded p-4 space-y-3">
@@ -1151,6 +1198,15 @@ function SpaceDetail({
                   </span>
                 ))}
               </div>
+              {(processor.skill_ids ?? []).length > 0 && (
+                <div className="mt-2 flex gap-1.5 flex-wrap">
+                  {(processor.skill_ids ?? []).map(skillId => (
+                    <span key={skillId} className="px-1.5 py-0.5 rounded bg-teal-950/70 text-teal-200 text-[11px]">
+                      {skillNames.get(skillId) ?? skillId}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
