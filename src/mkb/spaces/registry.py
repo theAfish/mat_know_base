@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 VALID_PURPOSES = {"tabular_database", "qa_benchmark", "skill_cards", "freeform"}
 VALID_REVIEW_SEARCH_TOOLS = {"web", "uniprot", "crossref"}
+VALID_POST_PROCESSOR_TOOL_GROUPS = {"reading", "web", "uniprot", "crossref"}
 
 
 def _maybe_normalize_schema(extraction_schema: dict, purpose: str) -> dict:
@@ -49,6 +50,113 @@ def _normalize_review_search_tools(value) -> list[str]:
     return tools or ["web"]
 
 
+def _slug_processor_id(value: str | None, fallback: str = "default") -> str:
+    text = (value or fallback).strip().lower()
+    chars = [ch if ch.isalnum() else "_" for ch in text]
+    slug = "".join(chars).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug or fallback
+
+
+def _normalize_tool_groups(value) -> list[str]:
+    if value is None:
+        candidates = ["reading"]
+    elif isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = []
+    groups: list[str] = []
+    for item in candidates:
+        key = str(item).strip().lower()
+        if key in VALID_POST_PROCESSOR_TOOL_GROUPS and key not in groups:
+            groups.append(key)
+    return groups or ["reading"]
+
+
+def _default_post_processor_from_legacy(
+    *,
+    review_prompt: str | None,
+    review_allow_search: bool,
+    review_search_tools,
+) -> dict:
+    tool_groups = ["reading"]
+    if review_allow_search:
+        for tool in _normalize_review_search_tools(review_search_tools):
+            if tool not in tool_groups:
+                tool_groups.append(tool)
+    return {
+        "id": "default",
+        "name": "Default reviewer",
+        "description": "General projection review and correction.",
+        "prompt": review_prompt or None,
+        "tool_groups": tool_groups,
+        "enabled": True,
+    }
+
+
+def _normalize_post_processors(value, *, legacy_defaults: dict | None = None) -> list[dict]:
+    processors: list[dict] = []
+    if isinstance(value, list):
+        for index, raw in enumerate(value):
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or raw.get("id") or f"Reviewer {index + 1}").strip()
+            processor_id = _slug_processor_id(str(raw.get("id") or name), fallback=f"reviewer_{index + 1}")
+            processors.append({
+                "id": processor_id,
+                "name": name or processor_id,
+                "description": str(raw.get("description") or ""),
+                "prompt": raw.get("prompt") if isinstance(raw.get("prompt"), str) and raw.get("prompt").strip() else None,
+                "tool_groups": _normalize_tool_groups(raw.get("tool_groups") or raw.get("tools")),
+                "enabled": bool(raw.get("enabled", True)),
+            })
+
+    if not processors:
+        legacy_defaults = legacy_defaults or {}
+        processors.append(_default_post_processor_from_legacy(
+            review_prompt=legacy_defaults.get("review_prompt"),
+            review_allow_search=bool(legacy_defaults.get("review_allow_search", False)),
+            review_search_tools=legacy_defaults.get("review_search_tools"),
+        ))
+
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for processor in processors:
+        pid = processor["id"]
+        if pid in seen:
+            suffix = 2
+            base = pid
+            while f"{base}_{suffix}" in seen:
+                suffix += 1
+            processor = {**processor, "id": f"{base}_{suffix}"}
+        seen.add(processor["id"])
+        unique.append(processor)
+    return unique
+
+
+def resolve_post_processor(space: Space, processor_id: str | None = None) -> dict:
+    processors = _normalize_post_processors(
+        getattr(space, "post_processors", None),
+        legacy_defaults={
+            "review_prompt": getattr(space, "review_prompt", None),
+            "review_allow_search": getattr(space, "review_allow_search", False),
+            "review_search_tools": getattr(space, "review_search_tools", None),
+        },
+    )
+    if processor_id:
+        wanted = _slug_processor_id(processor_id)
+        for processor in processors:
+            if processor["id"] == wanted:
+                return processor
+    for processor in processors:
+        if processor.get("enabled", True):
+            return processor
+    return processors[0]
+
+
 def create_space(
     name: str,
     domain: str,
@@ -61,6 +169,7 @@ def create_space(
     review_trackable: bool = True,
     review_allow_search: bool = False,
     review_search_tools: list[str] | None = None,
+    post_processors: list[dict] | None = None,
 ) -> dict:
     """Create a new space definition.
 
@@ -87,6 +196,15 @@ def create_space(
             return {"error": f"Space '{name}' already exists.", "space_id": str(existing.space_id)}
 
         normalized_schema = _maybe_normalize_schema(extraction_schema, purpose)
+        normalized_search_tools = _normalize_review_search_tools(review_search_tools)
+        normalized_processors = _normalize_post_processors(
+            post_processors,
+            legacy_defaults={
+                "review_prompt": review_prompt,
+                "review_allow_search": review_allow_search,
+                "review_search_tools": normalized_search_tools,
+            },
+        )
 
         space = Space(
             space_id=uuid.uuid4(),
@@ -100,7 +218,8 @@ def create_space(
             review_prompt=(review_prompt or None),
             review_trackable=bool(review_trackable),
             review_allow_search=bool(review_allow_search),
-            review_search_tools=_normalize_review_search_tools(review_search_tools),
+            review_search_tools=normalized_search_tools,
+            post_processors=normalized_processors,
             version=1,
         )
         session.add(space)
@@ -152,6 +271,7 @@ def update_space(
         "review_trackable",
         "review_allow_search",
         "review_search_tools",
+        "post_processors",
     }
 
     with SyncSessionLocal() as session:
@@ -179,6 +299,15 @@ def update_space(
                 value = bool(value)
             if key == "review_search_tools":
                 value = _normalize_review_search_tools(value)
+            if key == "post_processors":
+                value = _normalize_post_processors(
+                    value,
+                    legacy_defaults={
+                        "review_prompt": changes.get("review_prompt", space.review_prompt),
+                        "review_allow_search": changes.get("review_allow_search", space.review_allow_search),
+                        "review_search_tools": changes.get("review_search_tools", space.review_search_tools),
+                    },
+                )
             setattr(space, key, value)
 
         space.version = space.version + 1
@@ -226,6 +355,7 @@ def load_space_from_file(filepath: str | Path) -> dict:
         review_trackable=bool(data.get("review_trackable", True)),
         review_allow_search=bool(data.get("review_allow_search", False)),
         review_search_tools=_normalize_review_search_tools(data.get("review_search_tools")),
+        post_processors=data.get("post_processors"),
     )
 
 
@@ -248,6 +378,14 @@ def _space_to_dict(space: Space) -> dict:
         "review_allow_search": bool(getattr(space, "review_allow_search", False)),
         "review_search_tools": _normalize_review_search_tools(
             getattr(space, "review_search_tools", None)
+        ),
+        "post_processors": _normalize_post_processors(
+            getattr(space, "post_processors", None),
+            legacy_defaults={
+                "review_prompt": getattr(space, "review_prompt", None),
+                "review_allow_search": getattr(space, "review_allow_search", False),
+                "review_search_tools": getattr(space, "review_search_tools", None),
+            },
         ),
         "version": space.version,
         "created_at": space.created_at.isoformat() if space.created_at else None,

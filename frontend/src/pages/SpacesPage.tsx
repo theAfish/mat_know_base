@@ -7,10 +7,11 @@ import {
   deleteSpace,
   getDefaultReviewPrompt,
 } from '../api/spaces'
-import type { Space, SpaceCreatePayload } from '../types'
+import type { PostProcessorProfile, Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
 const REVIEW_SEARCH_TOOL_OPTIONS = ['web', 'uniprot', 'crossref'] as const
+const POST_PROCESSOR_TOOL_OPTIONS = ['reading', 'web', 'uniprot', 'crossref'] as const
 
 const PURPOSE_COLORS: Record<string, string> = {
   tabular_database: 'bg-teal-700 text-teal-100',
@@ -53,6 +54,7 @@ type SpaceDraft = {
   review_trackable: boolean
   review_allow_search: boolean
   review_search_tools: string[]
+  post_processors: PostProcessorProfile[]
 }
 
 const EMPTY_DRAFT: SpaceDraft = {
@@ -67,6 +69,16 @@ const EMPTY_DRAFT: SpaceDraft = {
   review_trackable: true,
   review_allow_search: false,
   review_search_tools: ['web'],
+  post_processors: [
+    {
+      id: 'default',
+      name: 'Default reviewer',
+      description: 'General projection review and correction.',
+      prompt: null,
+      tool_groups: ['reading'],
+      enabled: true,
+    },
+  ],
 }
 
 const FIELD_TYPE_OPTIONS = ['string', 'number', 'integer', 'boolean', 'list', 'object'] as const
@@ -115,6 +127,38 @@ const normalizeSchema = (value: unknown): Record<string, SchemaSection> => {
   )
 }
 
+const slugifyProcessorId = (value: string) => {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return slug || 'reviewer'
+}
+
+const normalizePostProcessors = (value: unknown): PostProcessorProfile[] => {
+  if (!Array.isArray(value) || value.length === 0) return EMPTY_DRAFT.post_processors
+  return value
+    .filter(item => item && typeof item === 'object' && !Array.isArray(item))
+    .map((item, index) => {
+      const obj = item as Record<string, unknown>
+      const name = typeof obj.name === 'string' && obj.name.trim()
+        ? obj.name
+        : `Reviewer ${index + 1}`
+      const id = typeof obj.id === 'string' && obj.id.trim()
+        ? slugifyProcessorId(obj.id)
+        : slugifyProcessorId(name)
+      const rawTools = Array.isArray(obj.tool_groups) ? obj.tool_groups : []
+      const toolGroups = rawTools
+        .map(String)
+        .filter(tool => POST_PROCESSOR_TOOL_OPTIONS.includes(tool as (typeof POST_PROCESSOR_TOOL_OPTIONS)[number]))
+      return {
+        id,
+        name,
+        description: typeof obj.description === 'string' ? obj.description : '',
+        prompt: typeof obj.prompt === 'string' && obj.prompt.trim() ? obj.prompt : null,
+        tool_groups: toolGroups.length > 0 ? Array.from(new Set(toolGroups)) : ['reading'],
+        enabled: typeof obj.enabled === 'boolean' ? obj.enabled : true,
+      }
+    })
+}
+
 const draftFromObject = (obj: Record<string, unknown>): SpaceDraft => ({
   name: typeof obj.name === 'string' ? obj.name : EMPTY_DRAFT.name,
   domain: typeof obj.domain === 'string' ? obj.domain : '',
@@ -135,6 +179,7 @@ const draftFromObject = (obj: Record<string, unknown>): SpaceDraft => ({
   review_search_tools: Array.isArray(obj.review_search_tools)
     ? obj.review_search_tools.map(String)
     : ['web'],
+  post_processors: normalizePostProcessors(obj.post_processors),
 })
 
 const draftFromSpace = (space: Space, reviewPrompt?: string): SpaceDraft =>
@@ -150,6 +195,7 @@ const draftFromSpace = (space: Space, reviewPrompt?: string): SpaceDraft =>
     review_trackable: space.review_trackable ?? true,
     review_allow_search: space.review_allow_search ?? false,
     review_search_tools: space.review_search_tools ?? ['web'],
+    post_processors: space.post_processors,
   })
 
 const draftToPayload = (draft: SpaceDraft): SpaceCreatePayload => ({
@@ -164,6 +210,7 @@ const draftToPayload = (draft: SpaceDraft): SpaceCreatePayload => ({
   review_trackable: draft.review_trackable,
   review_allow_search: draft.review_allow_search,
   review_search_tools: draft.review_search_tools.length > 0 ? draft.review_search_tools : ['web'],
+  post_processors: draft.post_processors,
 })
 
 export default function SpacesPage() {
@@ -741,6 +788,132 @@ function SpaceForm({
           </div>
         </div>
       </Section>
+
+      <Section title="Post processors">
+        <PostProcessorEditor
+          processors={draft.post_processors}
+          onChange={post_processors => setDraft({ post_processors })}
+        />
+      </Section>
+    </div>
+  )
+}
+
+function PostProcessorEditor({
+  processors,
+  onChange,
+}: {
+  processors: PostProcessorProfile[]
+  onChange: (processors: PostProcessorProfile[]) => void
+}) {
+  const update = (index: number, patch: Partial<PostProcessorProfile>) => {
+    onChange(processors.map((processor, i) => (
+      i === index ? { ...processor, ...patch } : processor
+    )))
+  }
+  const remove = (index: number) => {
+    if (processors.length <= 1) return
+    onChange(processors.filter((_, i) => i !== index))
+  }
+  const add = () => {
+    const nextNumber = processors.length + 1
+    const idBase = `reviewer_${nextNumber}`
+    let id = idBase
+    let suffix = 2
+    const ids = new Set(processors.map(processor => processor.id))
+    while (ids.has(id)) {
+      id = `${idBase}_${suffix}`
+      suffix += 1
+    }
+    onChange([
+      ...processors,
+      {
+        id,
+        name: `Reviewer ${nextNumber}`,
+        description: '',
+        prompt: null,
+        tool_groups: ['reading'],
+        enabled: true,
+      },
+    ])
+  }
+
+  return (
+    <div className="space-y-3 text-xs text-slate-300">
+      {processors.map((processor, index) => (
+        <div key={`${processor.id}-${index}`} className="rounded border border-slate-700 bg-slate-900/40 p-3 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <TextInput
+              label="ID"
+              value={processor.id}
+              onChange={id => update(index, { id: slugifyProcessorId(id) })}
+            />
+            <TextInput
+              label="Name"
+              value={processor.name}
+              onChange={name => update(index, { name })}
+            />
+          </div>
+          <TextInput
+            label="Description"
+            value={processor.description ?? ''}
+            onChange={description => update(index, { description })}
+          />
+          <TextArea
+            label="Prompt override"
+            value={processor.prompt ?? ''}
+            rows={6}
+            onChange={prompt => update(index, { prompt: prompt.trim() ? prompt : null })}
+          />
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={processor.enabled !== false}
+                onChange={e => update(index, { enabled: e.target.checked })}
+                className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+              />
+              enabled
+            </label>
+            {POST_PROCESSOR_TOOL_OPTIONS.map(tool => {
+              const selected = processor.tool_groups.includes(tool)
+              return (
+                <label key={tool} className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={e => {
+                      const next = e.target.checked
+                        ? [...processor.tool_groups, tool]
+                        : processor.tool_groups.filter(value => value !== tool)
+                      update(index, { tool_groups: Array.from(new Set(next)) })
+                    }}
+                    className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-teal-500 focus:ring-teal-500"
+                  />
+                  {tool}
+                </label>
+              )
+            })}
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={processors.length <= 1}
+              onClick={() => remove(index)}
+              className="px-2 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={add}
+        className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs"
+      >
+        + Add post processor
+      </button>
     </div>
   )
 }
@@ -851,6 +1024,7 @@ function SpaceDetail({
     0,
   )
   const searchTools = space.review_search_tools ?? ['web']
+  const processors = space.post_processors ?? []
   return (
     <div className="space-y-4 text-sm pb-6">
       <div className="border border-slate-700 bg-slate-900/50 rounded p-4 space-y-3">
@@ -897,7 +1071,7 @@ function SpaceDetail({
           <SummaryTile label="Sections" value={String(sectionCount)} />
           <SummaryTile label="Fields" value={String(fieldCount)} />
           <SummaryTile label="Review history" value={space.review_trackable ?? true ? 'On' : 'Off'} />
-          <SummaryTile label="Search" value={space.review_allow_search ?? false ? 'On' : 'Off'} />
+          <SummaryTile label="Processors" value={String(processors.length)} />
         </div>
 
         <div className="text-xs text-slate-500">
@@ -953,6 +1127,32 @@ function SpaceDetail({
               ))}
             </div>
           </div>
+        </div>
+      </Section>
+
+      <Section title="Post processors">
+        <div className="space-y-2">
+          {processors.map(processor => (
+            <div key={processor.id} className="border border-slate-700 bg-slate-900/40 rounded p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium text-slate-200">{processor.name}</div>
+                  <div className="text-[11px] text-slate-500">{processor.id}</div>
+                </div>
+                <StatusPill enabled={processor.enabled !== false} />
+              </div>
+              {processor.description && (
+                <p className="mt-2 text-xs text-slate-400">{processor.description}</p>
+              )}
+              <div className="mt-2 flex gap-1.5 flex-wrap">
+                {(processor.tool_groups ?? []).map(tool => (
+                  <span key={tool} className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px]">
+                    {tool}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </Section>
     </div>

@@ -535,6 +535,9 @@ class Space(Base):
     review_search_tools: Mapped[list | None] = mapped_column(
         JSONB, nullable=False, server_default=text("'[\"web\"]'::jsonb")
     )
+    post_processors: Mapped[list | None] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
 
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 

@@ -52,6 +52,10 @@ def _apply_schema_compatibility(engine: Engine) -> None:
                 "ALTER TABLE spaces "
                 "ADD COLUMN review_search_tools JSONB NOT NULL DEFAULT '[\"web\"]'::jsonb"
             ),
+            "post_processors": (
+                "ALTER TABLE spaces "
+                "ADD COLUMN post_processors JSONB NOT NULL DEFAULT '[]'::jsonb"
+            ),
         },
         "raw_workflow_extractions": {
             "record_status": (

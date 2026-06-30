@@ -2234,6 +2234,7 @@ def create_space(
     review_trackable: bool = True,
     review_allow_search: bool = False,
     review_search_tools: list[str] | None = None,
+    post_processors: list[dict] | None = None,
 ) -> dict:
     """Create a new space (domain-specific extraction configuration)."""
     from mkb.spaces.registry import create_space as _create
@@ -2250,6 +2251,7 @@ def create_space(
         review_trackable=review_trackable,
         review_allow_search=review_allow_search,
         review_search_tools=review_search_tools,
+        post_processors=post_processors,
     )
 
 
@@ -2826,6 +2828,7 @@ def review_projections(
     model: str | None = None,
     verbose: bool = False,
     progress_callback=None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run projection review — consolidate and correct all projections for a project.
 
@@ -2846,6 +2849,7 @@ def review_projections(
         model=model,
         verbose=verbose,
         progress_callback=progress_callback,
+        reviewer_id=reviewer_id,
     )
 
 
@@ -2855,6 +2859,7 @@ def review_projections_all(
     verbose: bool = False,
     progress_callback=None,
     project_ids: list[str] | None = None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run projection review on projects in a space.
 
@@ -2874,6 +2879,7 @@ def review_projections_all(
         verbose=verbose,
         progress_callback=progress_callback,
         project_ids=pids,
+        reviewer_id=reviewer_id,
     )
 
 
@@ -2883,6 +2889,7 @@ def review_projections_session(
     model: str | None = None,
     verbose: bool = False,
     progress_callback=None,
+    reviewer_id: str | None = None,
 ) -> dict:
     """Run a SINGLE reviewer session over multiple selected projects.
 
@@ -2902,6 +2909,37 @@ def review_projections_session(
         model=model,
         verbose=verbose,
         progress_callback=progress_callback,
+        reviewer_id=reviewer_id,
+    )
+
+
+def review_projection_followup(
+    space_id: str | uuid.UUID,
+    project_id: str | uuid.UUID,
+    message: str,
+    previous_job: dict | None = None,
+    model: str | None = None,
+    verbose: bool = False,
+    progress_callback=None,
+    reviewer_id: str | None = None,
+) -> dict:
+    """Run a follow-up turn for a completed projection review job."""
+    from mkb.agents.projection_reviewer import run_projection_review_followup
+
+    init_db()
+    sid = uuid.UUID(str(space_id))
+    pid = uuid.UUID(str(project_id))
+    if progress_callback:
+        progress_callback({"message": "Starting review follow-up"})
+    return run_projection_review_followup(
+        sid,
+        pid,
+        message,
+        previous_job=previous_job,
+        model=model,
+        verbose=verbose,
+        progress_callback=progress_callback,
+        reviewer_id=reviewer_id,
     )
 
 

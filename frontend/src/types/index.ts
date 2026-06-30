@@ -119,9 +119,19 @@ export interface Space {
   review_trackable?: boolean
   review_allow_search?: boolean
   review_search_tools?: string[]
+  post_processors?: PostProcessorProfile[]
   version?: number
   created_at?: string | null
   updated_at?: string | null
+}
+
+export interface PostProcessorProfile {
+  id: string
+  name: string
+  description?: string
+  prompt?: string | null
+  tool_groups: string[]
+  enabled?: boolean
 }
 
 export interface SpaceCreatePayload {
@@ -136,6 +146,7 @@ export interface SpaceCreatePayload {
   review_trackable?: boolean
   review_allow_search?: boolean
   review_search_tools?: string[]
+  post_processors?: PostProcessorProfile[]
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & { name?: string }

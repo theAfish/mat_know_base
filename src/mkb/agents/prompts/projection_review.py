@@ -22,11 +22,11 @@ You are reviewing projection results — structured data extracted from research
 - **No fabricated data**: Every value must be traceable to the source material
 - **No missing data**: If the source contains data that fits the schema, it must be extracted
 - **No duplicates**: Merge identical or near-identical entries across projection runs
-- **Correct core-study labeling**: Verify `is_core_study_data` distinguishes the true study target from controls, complementary, validation, or testing-only data
 - **Correct evidence levels**: Verify evidence_level assignments match the rubric
 - **Numerical precision**: Values must match the source exactly — no rounding
 - **Units**: All numerical values must include appropriate units
 - **Completeness**: Every required schema field must be populated if data exists in the source
+- **Schema fidelity**: Follow the space's current extraction schema. Do not add, remove, or emphasize fields that are not present in that schema unless the user prompt for this space explicitly asks you to discuss a migration.
 
 ---
 
@@ -40,11 +40,14 @@ You are reviewing projection results — structured data extracted from research
    c. If the knowledge frame is insufficient, use reading tools to check source files directly
    d. For complex verification needs, call `request_re_extraction` to delegate to the fixer agent
 4. **Pick the winner**: Choose the most complete and accurate projection as the starting point. Note its `projection_id`.
-5. **Build corrected data**: Starting from the winner's data:
+5. **Build corrected data or updates**: Starting from the winner's data:
    a. Merge any unique, correct entries from other projection runs
    b. Remove duplicates
    c. Correct any verified errors
-6. Call `save_reviewed_projection(winning_projection_id, corrected_data, review_notes)` — this updates the winner in-place and soft-deletes all other projections
+6. Save the review:
+   a. If only a few existing fields need updates, call `save_reviewed_projection_patch(winning_projection_id, updates, review_notes)` with path/value updates.
+   b. If the structure needs major merging, duplicate removal, inserted/removed array items, or broad reshaping, call `save_reviewed_projection(winning_projection_id, corrected_data, review_notes)`.
+7. Read the save result. If `change_summary.data_changed` is false or `change_summary.changed_count` is 0, no projection data changed. Do not claim fields were added, removed, migrated, or enriched unless the change summary lists those paths.
 
 ---
 
@@ -74,6 +77,7 @@ Your final corrected projection data must:
 - Have correct evidence_level for every item
 - Include no duplicate entries
 - Match the space's extraction schema
+- If you used external tools to verify or fill an empty field, the saved result must show the corresponding changed path. For example, filling a sequence-like field should produce a nonzero sequence-filled/change count. If it does not, say that no sequence data was saved.
 
 ---
 
@@ -186,9 +190,9 @@ wording differences.
 5. Use `request_re_extraction` only when an item is salvageable but you
    genuinely need the fixer to re-read the source (e.g. to recover a
    missing data file or a precise numeric reference).
-6. `save_reviewed_projection(winning_projection_id, {"questions": [...]},
-   review_notes)` — the winner is updated in-place with the consolidated
-   set, all other projection runs are soft-deleted.
+6. Use `save_reviewed_projection_patch(...)` for small field edits, or
+   `save_reviewed_projection(winning_projection_id, {"questions": [...]},
+   review_notes)` when the consolidated item list needs broad changes.
 
 ---
 
@@ -269,8 +273,9 @@ You are reviewing one or more projection runs whose payload looks like:
    d. Drop ungrounded cards.
 5. Use `request_re_extraction` only when a card is salvageable but you
    need the fixer to re-read the source for a missing parameter or step.
-6. `save_reviewed_projection(winning_projection_id, {"skills": [...]},
-   review_notes)`.
+6. Use `save_reviewed_projection_patch(...)` for small field edits, or
+   `save_reviewed_projection(winning_projection_id, {"skills": [...]},
+   review_notes)` when the consolidated skill list needs broad changes.
 
 ---
 

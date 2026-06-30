@@ -32,6 +32,7 @@ class SpaceCreateRequest(BaseModel):
     review_trackable: bool = True
     review_allow_search: bool = False
     review_search_tools: list[str] | None = None
+    post_processors: list[dict[str, Any]] | None = None
 
 
 class SpaceUpdateRequest(BaseModel):
@@ -46,6 +47,7 @@ class SpaceUpdateRequest(BaseModel):
     review_trackable: bool | None = None
     review_allow_search: bool | None = None
     review_search_tools: list[str] | None = None
+    post_processors: list[dict[str, Any]] | None = None
 
 
 class ProjectionReviewRequest(BaseModel):
@@ -58,6 +60,7 @@ class ProjectionReviewRequest(BaseModel):
     #   "per_project" — default. One reviewer session per project (legacy).
     #   "session"     — one reviewer session sees ALL selected projects.
     mode: str = "per_project"
+    reviewer_id: str | None = None
 
 
 class FeedbackResolveRequest(BaseModel):
@@ -75,6 +78,10 @@ class GraphReviewRequest(BaseModel):
 
 
 class AssistantChatRequest(BaseModel):
+    message: str
+
+
+class ReviewJobChatRequest(BaseModel):
     message: str
 
 

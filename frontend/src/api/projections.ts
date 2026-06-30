@@ -20,6 +20,7 @@ export const reviewProjections = (params: {
   project_id?: string
   project_ids?: string[]
   mode?: ReviewMode
+  reviewer_id?: string
 }) =>
   client.post<{ job_id: string }>('/projections/review', params).then(r => r.data)
 

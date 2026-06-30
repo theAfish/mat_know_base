@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
@@ -66,12 +67,180 @@ def _summarize_data_changes(before, after, path: str = "") -> dict:
     walk(before, after, path)
     return {
         "changed_count": len(changed_paths),
+        "data_changed": bool(changed_paths),
         "changed_paths": changed_paths[:40],
         "truncated": len(changed_paths) > 40,
         "sequence_changed_count": len(sequence_changed_paths),
+        "sequence_filled": bool(sequence_filled_paths),
         "sequence_filled_count": len(sequence_filled_paths),
         "sequence_changed_paths": sequence_changed_paths[:20],
         "sequence_filled_paths": sequence_filled_paths[:20],
+    }
+
+
+def _parse_patch_path(path: str) -> list[str | int]:
+    parts: list[str | int] = []
+    token = ""
+    i = 0
+    while i < len(path):
+        char = path[i]
+        if char == ".":
+            if token:
+                parts.append(token)
+                token = ""
+            i += 1
+            continue
+        if char == "[":
+            if token:
+                parts.append(token)
+                token = ""
+            close = path.find("]", i)
+            if close < 0:
+                raise ValueError(f"Invalid path {path!r}: missing closing bracket")
+            index_text = path[i + 1:close].strip()
+            if not index_text.isdigit():
+                raise ValueError(f"Invalid path {path!r}: list index must be a non-negative integer")
+            parts.append(int(index_text))
+            i = close + 1
+            continue
+        token += char
+        i += 1
+    if token:
+        parts.append(token)
+    if not parts:
+        raise ValueError("Patch path cannot be empty")
+    return parts
+
+
+def _set_patch_value(data, path: str, value) -> None:
+    parts = _parse_patch_path(path)
+    current = data
+    for part in parts[:-1]:
+        if isinstance(part, int):
+            if not isinstance(current, list):
+                raise ValueError(f"Path {path!r} expected a list before index {part}")
+            if part >= len(current):
+                raise ValueError(f"Path {path!r} index {part} is out of range")
+            current = current[part]
+            continue
+        if not isinstance(current, dict):
+            raise ValueError(f"Path {path!r} expected an object before key {part!r}")
+        if part not in current or current[part] is None:
+            current[part] = {}
+        current = current[part]
+
+    last = parts[-1]
+    if isinstance(last, int):
+        if not isinstance(current, list):
+            raise ValueError(f"Path {path!r} expected a list before index {last}")
+        if last >= len(current):
+            raise ValueError(f"Path {path!r} index {last} is out of range")
+        current[last] = value
+        return
+    if not isinstance(current, dict):
+        raise ValueError(f"Path {path!r} expected an object before key {last!r}")
+    current[last] = value
+
+
+def _apply_projection_review_save(
+    session,
+    winner: Projection,
+    data: dict,
+    review_notes: str,
+    now: datetime,
+) -> dict:
+    space = session.query(Space).filter_by(space_id=winner.space_id).first()
+    if not space:
+        return {"error": f"Space {winner.space_id} not found."}
+
+    # Normalize the data against the space schema
+    before_data = winner.data or {}
+    normalized_data, validation_result = normalize_projection_data(
+        data,
+        space.extraction_schema,
+    )
+
+    # Inject source_project_id references
+    frame = session.query(KnowledgeFrame).filter_by(frame_id=winner.frame_id).first()
+    if frame:
+        from mkb.agents.tools.projection import _inject_source_project_references
+        normalized_data = _inject_source_project_references(
+            normalized_data, str(frame.project_id)
+        )
+
+    change_summary = _summarize_data_changes(before_data, normalized_data)
+
+    trackable = bool(getattr(space, "review_trackable", True))
+
+    # All other live, non-superseded projections for the same space+frame
+    siblings = (
+        session.query(Projection)
+        .filter_by(space_id=winner.space_id, frame_id=winner.frame_id)
+        .filter(Projection.projection_id != winner.projection_id)
+        .filter(Projection.deleted_at.is_(None))
+        .filter(Projection.superseded_by_id.is_(None))
+        .all()
+    )
+
+    if not trackable:
+        # ── Legacy: in-place update + soft-delete losers ──
+        winner.data = normalized_data
+        winner.validation_result = validation_result or None
+        winner.review_notes = review_notes
+        winner.status = ProjectionStatus.REVIEWED
+        winner.times_reviewed = winner.times_reviewed + 1
+        winner.reviewed_at = now
+
+        for other in siblings:
+            other.deleted_at = now
+
+        session.commit()
+        return {
+            "projection_id": str(winner.projection_id),
+            "status": "reviewed",
+            "trackable": False,
+            "times_reviewed": winner.times_reviewed,
+            "soft_deleted_count": len(siblings),
+            "change_summary": change_summary,
+        }
+
+    # ── Trackable: create a new REVIEWED projection that supersedes
+    #    the winner + every other live sibling. Older rows stay
+    #    visible via ``include_history``.
+    supersedes = [str(winner.projection_id)] + [str(s.projection_id) for s in siblings]
+    reviewed = Projection(
+        projection_id=uuid.uuid4(),
+        space_id=winner.space_id,
+        frame_id=winner.frame_id,
+        source_type=winner.source_type,
+        status=ProjectionStatus.REVIEWED,
+        data=normalized_data,
+        validation_result=validation_result or None,
+        agent_notes=None,
+        extracted_at=winner.extracted_at,
+        space_version=winner.space_version,
+        times_reviewed=(winner.times_reviewed or 0) + 1,
+        review_notes=review_notes,
+        reviewed_at=now,
+        supersedes_ids=supersedes,
+    )
+    session.add(reviewed)
+    # ``session.flush()`` so reviewed.projection_id is available for
+    # the supersession pointers (Postgres assigns from python default).
+    session.flush()
+
+    winner.superseded_by_id = reviewed.projection_id
+    for s in siblings:
+        s.superseded_by_id = reviewed.projection_id
+
+    session.commit()
+    return {
+        "projection_id": str(reviewed.projection_id),
+        "status": "reviewed",
+        "trackable": True,
+        "times_reviewed": reviewed.times_reviewed,
+        "supersedes_count": len(supersedes),
+        "change_summary": change_summary,
     }
 
 
@@ -222,99 +391,77 @@ def save_reviewed_projection(
         if not winner:
             return {"error": f"Projection {winning_projection_id} not found."}
 
-        space = session.query(Space).filter_by(space_id=winner.space_id).first()
-        if not space:
-            return {"error": f"Space {winner.space_id} not found."}
+        return _apply_projection_review_save(session, winner, data, review_notes, now)
 
-        # Normalize the data against the space schema
-        before_data = winner.data or {}
-        normalized_data, validation_result = normalize_projection_data(
-            data,
-            space.extraction_schema,
+
+def save_reviewed_projection_patch(
+    winning_projection_id: str,
+    updates: list[dict],
+    review_notes: str = "",
+) -> dict:
+    """Save a reviewed projection by applying only the changed fields.
+
+    Use this instead of ``save_reviewed_projection`` when the winner is
+    mostly correct and only a few values need correction or filling. The
+    tool loads the winner's current data, applies each update, then performs
+    the same schema normalization, validation, review history handling, and
+    loser cleanup as the full-save tool.
+
+    If you verified an external value for an empty schema field (for example
+    by search or database lookup), use this tool to save that value. Merely
+    mentioning the verified value in review notes does not update the
+    projection data.
+
+    ``updates`` is a list of objects:
+
+    * ``path``: field path using dot/bracket notation, for example
+      ``templates[3].sequence`` or ``summary.references[0].doi``.
+    * ``value``: replacement value for that field.
+
+    Existing list indexes must already exist. This tool is for small field
+    edits, not inserting/removing/reordering array items. For major merges,
+    duplicate removal, or array reshaping, use ``save_reviewed_projection``.
+    """
+    wid = parse_uuidish(winning_projection_id)
+    if not wid:
+        return {"error": invalid_identifier_message("winning_projection_id", winning_projection_id)}
+    if not isinstance(updates, list) or not updates:
+        return {"error": "updates must be a non-empty list of {path, value} objects."}
+
+    now = datetime.now(timezone.utc)
+
+    with SyncSessionLocal() as session:
+        winner = session.query(Projection).filter_by(projection_id=wid).first()
+        if not winner:
+            return {"error": f"Projection {winning_projection_id} not found."}
+
+        patched_data = deepcopy(winner.data or {})
+        applied_paths: list[str] = []
+        for update in updates:
+            if not isinstance(update, dict):
+                return {"error": "Each update must be an object with path and value."}
+            path = update.get("path")
+            if not isinstance(path, str) or not path.strip():
+                return {"error": "Each update must include a non-empty string path."}
+            try:
+                _set_patch_value(patched_data, path.strip(), update.get("value"))
+            except ValueError as exc:
+                return {"error": str(exc), "path": path}
+            applied_paths.append(path.strip())
+
+        result = _apply_projection_review_save(
+            session,
+            winner,
+            patched_data,
+            review_notes,
+            now,
         )
-
-        # Inject source_project_id references
-        frame = session.query(KnowledgeFrame).filter_by(frame_id=winner.frame_id).first()
-        if frame:
-            from mkb.agents.tools.projection import _inject_source_project_references
-            normalized_data = _inject_source_project_references(
-                normalized_data, str(frame.project_id)
-            )
-
-        change_summary = _summarize_data_changes(before_data, normalized_data)
-
-        trackable = bool(getattr(space, "review_trackable", True))
-
-        # All other live, non-superseded projections for the same space+frame
-        siblings = (
-            session.query(Projection)
-            .filter_by(space_id=winner.space_id, frame_id=winner.frame_id)
-            .filter(Projection.projection_id != wid)
-            .filter(Projection.deleted_at.is_(None))
-            .filter(Projection.superseded_by_id.is_(None))
-            .all()
-        )
-
-        if not trackable:
-            # ── Legacy: in-place update + soft-delete losers ──
-            winner.data = normalized_data
-            winner.validation_result = validation_result or None
-            winner.review_notes = review_notes
-            winner.status = ProjectionStatus.REVIEWED
-            winner.times_reviewed = winner.times_reviewed + 1
-            winner.reviewed_at = now
-
-            for other in siblings:
-                other.deleted_at = now
-
-            session.commit()
-            return {
-                "projection_id": str(winner.projection_id),
-                "status": "reviewed",
-                "trackable": False,
-                "times_reviewed": winner.times_reviewed,
-                "soft_deleted_count": len(siblings),
-                "change_summary": change_summary,
-            }
-
-        # ── Trackable: create a new REVIEWED projection that supersedes
-        #    the winner + every other live sibling. Older rows stay
-        #    visible via ``include_history``.
-        supersedes = [str(winner.projection_id)] + [str(s.projection_id) for s in siblings]
-        reviewed = Projection(
-            projection_id=uuid.uuid4(),
-            space_id=winner.space_id,
-            frame_id=winner.frame_id,
-            source_type=winner.source_type,
-            status=ProjectionStatus.REVIEWED,
-            data=normalized_data,
-            validation_result=validation_result or None,
-            agent_notes=None,
-            extracted_at=winner.extracted_at,
-            space_version=winner.space_version,
-            times_reviewed=(winner.times_reviewed or 0) + 1,
-            review_notes=review_notes,
-            reviewed_at=now,
-            supersedes_ids=supersedes,
-        )
-        session.add(reviewed)
-        # ``session.flush()`` so reviewed.projection_id is available for
-        # the supersession pointers (Postgres assigns from python default).
-        session.flush()
-
-        winner.superseded_by_id = reviewed.projection_id
-        for s in siblings:
-            s.superseded_by_id = reviewed.projection_id
-
-        session.commit()
-        return {
-            "projection_id": str(reviewed.projection_id),
-            "status": "reviewed",
-            "trackable": True,
-            "times_reviewed": reviewed.times_reviewed,
-            "supersedes_count": len(supersedes),
-            "change_summary": change_summary,
-        }
+        if "error" not in result:
+            result["save_mode"] = "patch"
+            result["applied_update_count"] = len(applied_paths)
+            result["applied_update_paths"] = applied_paths[:40]
+            result["applied_update_paths_truncated"] = len(applied_paths) > 40
+        return result
 
 
 def request_re_extraction(
@@ -360,5 +507,6 @@ PROJECTION_REVIEW_TOOLS = [
     get_all_projections_for_review,
     get_frame_for_review,
     save_reviewed_projection,
+    save_reviewed_projection_patch,
     request_re_extraction,
 ]

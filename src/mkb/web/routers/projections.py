@@ -204,7 +204,7 @@ def review_projections(body: ProjectionReviewRequest):
             kind="projection_review",
             label="Projection Review (session)",
             target=api.review_projections_session,
-            kwargs={"space_id": body.space_id, "project_ids": project_ids},
+            kwargs={"space_id": body.space_id, "project_ids": project_ids, "reviewer_id": body.reviewer_id},
         )
         return {"job_id": job_id}
 
@@ -214,7 +214,7 @@ def review_projections(body: ProjectionReviewRequest):
             label="Projection Review",
             project_id=project_ids[0],
             target=api.review_projections,
-            kwargs={"space_id": body.space_id, "project_id": project_ids[0]},
+            kwargs={"space_id": body.space_id, "project_id": project_ids[0], "reviewer_id": body.reviewer_id},
         )
     else:
         job_id = jobs.start_job(
@@ -224,6 +224,7 @@ def review_projections(body: ProjectionReviewRequest):
             kwargs={
                 "space_id": body.space_id,
                 "project_ids": project_ids or None,
+                "reviewer_id": body.reviewer_id,
             },
         )
     return {"job_id": job_id}
