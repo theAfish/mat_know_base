@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react'
+import dagre from '@dagrejs/dagre'
 import ReactFlow, {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MarkerType,
   MiniMap,
   Position,
   applyNodeChanges,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -42,21 +46,20 @@ interface WorkflowNodeData {
   details?: Record<string, unknown>
 }
 
+interface WorkflowEdgeData {
+  title?: string
+  points?: Array<{ x: number; y: number }>
+  sourceSide?: AnchorSide
+  targetSide?: AnchorSide
+}
+
 const XML_NS = 'http://www.w3.org/2000/svg'
 const OP_WIDTH = 190
 const OBJ_WIDTH = 190
 const CONTEXT_WIDTH = 210
 const NODE_HEIGHT = 74
-const X_GAP = 300
-const Y_GAP = 240
-const OBJECT_OFFSET = 145
-const MIN_ROW_SPACING = 235
-const COMPONENT_GAP_X = 360
-const COMPONENT_GAP_Y = 150
-const BRANCH_GAP = 320
 
 type AnchorSide = 'top' | 'right' | 'bottom' | 'left'
-type PositionedNode = WorkflowCanvasNode & { x: number; y: number }
 
 function NodeHandles() {
   const handles: AnchorSide[] = ['top', 'right', 'bottom', 'left']
@@ -170,10 +173,6 @@ function UnknownNode({ data }: NodeProps<WorkflowNodeData>) {
       <LabelText label={data.label} />
     </div>
   )
-}
-
-function average(values: number[]) {
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
 }
 
 function sideToPosition(side: AnchorSide) {
@@ -311,7 +310,17 @@ function chooseAnchorSides(source: Node<WorkflowNodeData>, target: Node<Workflow
       if (mostlyVertical && sourceSide === 'top' && targetSide === 'bottom' && dy < 0) score -= 130
       if (mostlyHorizontal && sourceSide === 'right' && targetSide === 'left' && dx > 0) score -= 130
       if (mostlyHorizontal && sourceSide === 'left' && targetSide === 'right' && dx < 0) score -= 130
-      if (sourceSide === targetSide) score += 80
+      if (sourceSide === targetSide) score += 1000
+
+      if (sourceSide === 'bottom') score -= 90
+      if (sourceSide === 'right') score -= 35
+      if (sourceSide === 'top') score += 220
+      if (sourceSide === 'left') score += 70
+
+      if (targetSide === 'top') score -= 90
+      if (targetSide === 'left') score -= 35
+      if (targetSide === 'bottom') score += 220
+      if (targetSide === 'right') score += 70
 
       if (score < best.score) {
         best = { sourceSide, targetSide, score }
@@ -346,380 +355,125 @@ function downloadFile(filename: string, mimeType: string, content: string) {
   URL.revokeObjectURL(url)
 }
 
-function spreadRow<T extends { x: number }>(items: T[], minSpacing: number) {
-  if (items.length <= 1) return
-  items.sort((a, b) => a.x - b.x)
-  for (let index = 1; index < items.length; index += 1) {
-    if (items[index].x - items[index - 1].x < minSpacing) {
-      items[index].x = items[index - 1].x + minSpacing
-    }
-  }
-
-  const midpoint = (items[0].x + items[items.length - 1].x) / 2
-  const targetCenter = average(items.map(item => item.x))
-  const shift = midpoint - targetCenter
-  items.forEach(item => {
-    item.x -= shift
+function dedupePoints(points: Array<{ x: number; y: number }>) {
+  return points.filter((point, index) => {
+    const previous = points[index - 1]
+    return !previous || Math.abs(previous.x - point.x) > 1 || Math.abs(previous.y - point.y) > 1
   })
 }
 
-function connectedComponents(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]) {
-  const nodeIds = new Set(nodes.map(node => node.id))
-  const adjacency = new Map<string, Set<string>>()
-  nodes.forEach(node => adjacency.set(node.id, new Set()))
-  edges.forEach(edge => {
-    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return
-    adjacency.get(edge.source)?.add(edge.target)
-    adjacency.get(edge.target)?.add(edge.source)
-  })
-
-  const seen = new Set<string>()
-  const components: string[][] = []
-  nodes.forEach(node => {
-    if (seen.has(node.id)) return
-    const queue = [node.id]
-    const component: string[] = []
-    seen.add(node.id)
-    while (queue.length) {
-      const current = queue.shift()!
-      component.push(current)
-      adjacency.get(current)?.forEach(next => {
-        if (seen.has(next)) return
-        seen.add(next)
-        queue.push(next)
-      })
-    }
-    components.push(component)
-  })
-  return components
+function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return Math.hypot(b.x - a.x, b.y - a.y)
 }
 
-function rowItemsFromAnchors(ids: string[], anchors: Map<string, number>, fallbackGap: number) {
-  const rowWidth = (ids.length - 1) * fallbackGap
-  return ids.map((id, index) => ({
-    id,
-    x: anchors.has(id) ? anchors.get(id)! : index * fallbackGap - rowWidth / 2,
-  }))
-}
+function midpointOnPolyline(points: Array<{ x: number; y: number }>) {
+  if (points.length === 0) return { x: 0, y: 0 }
+  if (points.length === 1) return points[0]
 
-function centeredOffsets(count: number, gap: number) {
-  const center = (count - 1) / 2
-  return Array.from({ length: count }, (_, index) => (index - center) * gap)
-}
+  const total = points.slice(1).reduce((sum, point, index) => sum + distance(points[index], point), 0)
+  const target = total / 2
+  let traversed = 0
 
-function workflowLayoutGroups(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]) {
-  return connectedComponents(nodes, edges)
-}
-
-function layoutComponent(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]) {
-  const nodeMap = new Map(nodes.map(node => [node.id, node]))
-  const operationIds = nodes.filter(node => node.kind === 'operation').map(node => node.id)
-  const objectIds = nodes.filter(node => node.kind === 'object').map(node => node.id)
-  const contextIds = nodes.filter(node => !['object', 'operation'].includes(node.kind)).map(node => node.id)
-
-  const producerMap = new Map<string, string[]>()
-  const consumerMap = new Map<string, string[]>()
-  objectIds.forEach(id => {
-    producerMap.set(id, [])
-    consumerMap.set(id, [])
-  })
-
-  edges.forEach(edge => {
-    const sourceKind = nodeMap.get(edge.source)?.kind
-    const targetKind = nodeMap.get(edge.target)?.kind
-    if (sourceKind === 'operation' && targetKind === 'object') {
-      producerMap.get(edge.target)?.push(edge.source)
-    }
-    if (sourceKind === 'object' && targetKind === 'operation') {
-      consumerMap.get(edge.source)?.push(edge.target)
-    }
-  })
-
-  const opChildren = new Map<string, Set<string>>()
-  const opParents = new Map<string, Set<string>>()
-  const indegree = new Map<string, number>()
-  operationIds.forEach(id => {
-    opChildren.set(id, new Set())
-    opParents.set(id, new Set())
-    indegree.set(id, 0)
-  })
-
-  objectIds.forEach(objectId => {
-    const producers = producerMap.get(objectId) ?? []
-    const consumers = consumerMap.get(objectId) ?? []
-    producers.forEach(producerId => {
-      consumers.forEach(consumerId => {
-        if (producerId === consumerId || opChildren.get(producerId)?.has(consumerId)) return
-        opChildren.get(producerId)?.add(consumerId)
-        opParents.get(consumerId)?.add(producerId)
-        indegree.set(consumerId, (indegree.get(consumerId) ?? 0) + 1)
-      })
-    })
-  })
-
-  const queue = operationIds
-    .filter(id => (indegree.get(id) ?? 0) === 0)
-    .sort((a, b) => (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? ''))
-
-  const opLevel = new Map<string, number>()
-  operationIds.forEach(id => opLevel.set(id, 0))
-
-  while (queue.length > 0) {
-    const currentId = queue.shift()!
-    const currentLevel = opLevel.get(currentId) ?? 0
-    Array.from(opChildren.get(currentId) ?? []).forEach(childId => {
-      opLevel.set(childId, Math.max(opLevel.get(childId) ?? 0, currentLevel + 1))
-      indegree.set(childId, (indegree.get(childId) ?? 1) - 1)
-      if ((indegree.get(childId) ?? 0) === 0) {
-        queue.push(childId)
-      }
-    })
-    queue.sort((a, b) => (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? ''))
-  }
-
-  const levels = new Map<number, string[]>()
-  operationIds.forEach(id => {
-    const level = opLevel.get(id) ?? 0
-    if (!levels.has(level)) levels.set(level, [])
-    levels.get(level)!.push(id)
-  })
-
-  const sortedLevels = Array.from(levels.keys()).sort((a, b) => a - b)
-  const levelOrder = new Map<number, string[]>()
-  sortedLevels.forEach(level => {
-    levelOrder.set(level, [...(levels.get(level) ?? [])].sort((a, b) => (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? '')))
-  })
-
-  const opX = new Map<string, number>()
-  for (let pass = 0; pass < 6; pass += 1) {
-    sortedLevels.forEach(level => {
-      const ids = levelOrder.get(level) ?? []
-      const anchors = new Map<string, number>()
-      ids.forEach(id => {
-        const parents = Array.from(opParents.get(id) ?? []).filter(parent => opX.has(parent))
-        if (parents.length) anchors.set(id, average(parents.map(parent => opX.get(parent)!)))
-      })
-      const items = rowItemsFromAnchors(ids, anchors, X_GAP)
-      spreadRow(items, MIN_ROW_SPACING)
-      items.forEach(item => opX.set(item.id, item.x))
-      levelOrder.set(level, items.sort((a, b) => a.x - b.x).map(item => item.id))
-    })
-
-    sortedLevels.slice().reverse().forEach(level => {
-      const ids = levelOrder.get(level) ?? []
-      const anchors = new Map<string, number>()
-      ids.forEach(id => {
-        const children = Array.from(opChildren.get(id) ?? []).filter(child => opX.has(child))
-        if (children.length) anchors.set(id, average(children.map(child => opX.get(child)!)))
-      })
-      const items = rowItemsFromAnchors(ids, anchors, X_GAP)
-      spreadRow(items, MIN_ROW_SPACING)
-      items.forEach(item => opX.set(item.id, item.x))
-      levelOrder.set(level, items.sort((a, b) => a.x - b.x).map(item => item.id))
-    })
-  }
-
-  if (operationIds.length === 0) {
-    objectIds.forEach((id, index) => opX.set(id, index * MIN_ROW_SPACING))
-  }
-
-  const branchOffsets = new Map<string, number[]>()
-  const addBranchOffset = (operationId: string, offset: number) => {
-    const values = branchOffsets.get(operationId) ?? []
-    values.push(offset)
-    branchOffsets.set(operationId, values)
-  }
-
-  objectIds.forEach(objectId => {
-    const consumers = [...(consumerMap.get(objectId) ?? [])].sort((a, b) => {
-      const levelDelta = (opLevel.get(a) ?? 0) - (opLevel.get(b) ?? 0)
-      if (levelDelta !== 0) return levelDelta
-      return (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? '')
-    })
-    if (consumers.length > 1) {
-      centeredOffsets(consumers.length, BRANCH_GAP).forEach((offset, index) => {
-        addBranchOffset(consumers[index], offset)
-      })
-    }
-
-    const producers = [...(producerMap.get(objectId) ?? [])].sort((a, b) => {
-      const levelDelta = (opLevel.get(a) ?? 0) - (opLevel.get(b) ?? 0)
-      if (levelDelta !== 0) return levelDelta
-      return (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? '')
-    })
-    if (producers.length > 1) {
-      centeredOffsets(producers.length, BRANCH_GAP).forEach((offset, index) => {
-        addBranchOffset(producers[index], offset)
-      })
-    }
-  })
-
-  branchOffsets.forEach((offsets, operationId) => {
-    opX.set(operationId, (opX.get(operationId) ?? 0) + average(offsets))
-  })
-
-  const levelRows = new Map<number, Array<{ id: string; x: number }>>()
-  operationIds.forEach(id => {
-    const level = opLevel.get(id) ?? 0
-    if (!levelRows.has(level)) levelRows.set(level, [])
-    levelRows.get(level)!.push({ id, x: opX.get(id) ?? 0 })
-  })
-  levelRows.forEach(items => {
-    spreadRow(items, MIN_ROW_SPACING)
-    items.forEach(item => opX.set(item.id, item.x))
-  })
-
-  const objectLayout = objectIds.map(id => {
-    const producers = producerMap.get(id) ?? []
-    const consumers = consumerMap.get(id) ?? []
-
-    if (producers.length > 0 && consumers.length > 0) {
-      const latestLevel = Math.max(...producers.map(producerId => opLevel.get(producerId) ?? 0))
-      const earliestLevel = Math.min(...consumers.map(consumerId => opLevel.get(consumerId) ?? 0))
-      const nearbyProducers = producers.filter(producerId => (opLevel.get(producerId) ?? 0) === latestLevel)
-      const nearbyConsumers = consumers.filter(consumerId => (opLevel.get(consumerId) ?? 0) === earliestLevel)
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]
+    const end = points[index]
+    const segment = distance(start, end)
+    if (traversed + segment >= target) {
+      const ratio = segment === 0 ? 0 : (target - traversed) / segment
       return {
-        id,
-        x: average([...nearbyProducers, ...nearbyConsumers].map(opId => opX.get(opId) ?? 0)),
-        y: ((latestLevel + earliestLevel) / 2) * Y_GAP,
+        x: start.x + (end.x - start.x) * ratio,
+        y: start.y + (end.y - start.y) * ratio,
       }
     }
+    traversed += segment
+  }
 
-    if (consumers.length > 0) {
-      const earliestLevel = Math.min(...consumers.map(consumerId => opLevel.get(consumerId) ?? 0))
-      const earliestConsumers = consumers.filter(consumerId => (opLevel.get(consumerId) ?? 0) === earliestLevel)
-      return {
-        id,
-        x: average(earliestConsumers.map(consumerId => opX.get(consumerId) ?? 0)),
-        y: earliestLevel * Y_GAP - OBJECT_OFFSET,
-      }
-    }
-
-    if (producers.length > 0) {
-      const latestLevel = Math.max(...producers.map(producerId => opLevel.get(producerId) ?? 0))
-      const latestProducers = producers.filter(producerId => (opLevel.get(producerId) ?? 0) === latestLevel)
-      return {
-        id,
-        x: average(latestProducers.map(producerId => opX.get(producerId) ?? 0)),
-        y: latestLevel * Y_GAP + OBJECT_OFFSET,
-      }
-    }
-
-    const isolatedIndex = objectIds.indexOf(id)
-    return { id, x: isolatedIndex * MIN_ROW_SPACING, y: -OBJECT_OFFSET }
-  })
-
-  const objectRows = new Map<number, Array<{ id: string; x: number; y: number }>>()
-  objectLayout.forEach(item => {
-    const rowKey = Math.round(item.y)
-    if (!objectRows.has(rowKey)) objectRows.set(rowKey, [])
-    objectRows.get(rowKey)!.push(item)
-  })
-  objectRows.forEach(items => spreadRow(items, MIN_ROW_SPACING))
-
-  const basePositions = new Map<string, PositionedNode>()
-  nodes.forEach(node => {
-    if (node.kind === 'operation') {
-      basePositions.set(node.id, { ...node, x: opX.get(node.id) ?? 0, y: (opLevel.get(node.id) ?? 0) * Y_GAP })
-      return
-    }
-    if (node.kind === 'object') {
-      const objectPosition = objectLayout.find(item => item.id === node.id) ?? { x: 0, y: -OBJECT_OFFSET }
-      basePositions.set(node.id, { ...node, x: objectPosition.x, y: objectPosition.y })
-    }
-  })
-
-  const incoming = new Map<string, string[]>()
-  const outgoing = new Map<string, string[]>()
-  contextIds.forEach(id => {
-    incoming.set(id, [])
-    outgoing.set(id, [])
-  })
-  edges.forEach(edge => {
-    if (contextIds.includes(edge.source)) outgoing.get(edge.source)?.push(edge.target)
-    if (contextIds.includes(edge.target)) incoming.get(edge.target)?.push(edge.source)
-  })
-
-  const contextLayout = contextIds.map((id, index) => {
-    const downstream = (outgoing.get(id) ?? []).map(targetId => basePositions.get(targetId)).filter(Boolean) as PositionedNode[]
-    const upstream = (incoming.get(id) ?? []).map(sourceId => basePositions.get(sourceId)).filter(Boolean) as PositionedNode[]
-    const anchors = downstream.length ? downstream : upstream
-    if (anchors.length) {
-      return {
-        id,
-        x: average(anchors.map(node => node.x)),
-        y: average(anchors.map(node => node.y)) - OBJECT_OFFSET,
-      }
-    }
-    return { id, x: index * MIN_ROW_SPACING, y: -OBJECT_OFFSET * 2 }
-  })
-  const contextRows = new Map<number, Array<{ id: string; x: number; y: number }>>()
-  contextLayout.forEach(item => {
-    const rowKey = Math.round(item.y)
-    if (!contextRows.has(rowKey)) contextRows.set(rowKey, [])
-    contextRows.get(rowKey)!.push(item)
-  })
-  contextRows.forEach(items => spreadRow(items, MIN_ROW_SPACING))
-  contextLayout.forEach(item => {
-    const node = nodeMap.get(item.id)
-    if (node) basePositions.set(item.id, { ...node, x: item.x, y: item.y })
-  })
-
-  const positioned: PositionedNode[] = nodes.map(node => basePositions.get(node.id) ?? { ...node, x: 0, y: 0 })
-
-  return positioned
+  return points[points.length - 1]
 }
 
-function packComponents(components: PositionedNode[][]) {
-  const packed: PositionedNode[] = []
-  let cursorX = 0
-  let cursorY = 0
-  let rowHeight = 0
-  const maxRowWidth = Math.max(1200, Math.ceil(Math.sqrt(components.length || 1)) * 900)
+function controlDistance(start: { x: number; y: number }, end: { x: number; y: number }) {
+  return Math.max(44, Math.min(150, distance(start, end) / 2))
+}
 
-  const sorted = [...components].sort((a, b) => b.length - a.length)
-  sorted.forEach(component => {
-    const bounds = component.reduce(
-      (acc, node) => {
-        const width = nodeWidth(node.kind)
-        return {
-          minX: Math.min(acc.minX, node.x),
-          minY: Math.min(acc.minY, node.y),
-          maxX: Math.max(acc.maxX, node.x + width),
-          maxY: Math.max(acc.maxY, node.y + NODE_HEIGHT),
-        }
-      },
-      { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: Number.NEGATIVE_INFINITY, maxY: Number.NEGATIVE_INFINITY },
-    )
-    const width = bounds.maxX - bounds.minX
-    const height = bounds.maxY - bounds.minY
-    if (cursorX > 0 && cursorX + width > maxRowWidth) {
-      cursorX = 0
-      cursorY += rowHeight + COMPONENT_GAP_Y
-      rowHeight = 0
+function smoothBezierPath(points: Array<{ x: number; y: number }>, sourceSide?: AnchorSide, targetSide?: AnchorSide) {
+  if (points.length === 0) return ''
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`
+  if (points.length === 2) {
+    const [start, end] = points
+    const sourceVector = sideVector(sourceSide ?? 'bottom')
+    const targetVector = sideVector(targetSide ?? 'top')
+    const offset = controlDistance(start, end)
+    const c1 = { x: start.x + sourceVector.x * offset, y: start.y + sourceVector.y * offset }
+    const c2 = { x: end.x + targetVector.x * offset, y: end.y + targetVector.y * offset }
+    return `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`
+  }
+
+  const parts = [`M ${points[0].x} ${points[0].y}`]
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] ?? points[index]
+    const start = points[index]
+    const end = points[index + 1]
+    const next = points[index + 2] ?? end
+    const sourceVector = sourceSide ? sideVector(sourceSide) : null
+    const targetVector = targetSide ? sideVector(targetSide) : null
+    let c1 = {
+      x: start.x + (end.x - previous.x) / 6,
+      y: start.y + (end.y - previous.y) / 6,
     }
+    let c2 = {
+      x: end.x - (next.x - start.x) / 6,
+      y: end.y - (next.y - start.y) / 6,
+    }
+    if (index === 0 && sourceVector) {
+      const offset = controlDistance(start, end)
+      c1 = { x: start.x + sourceVector.x * offset, y: start.y + sourceVector.y * offset }
+    }
+    if (index === points.length - 2 && targetVector) {
+      const offset = controlDistance(start, end)
+      c2 = { x: end.x + targetVector.x * offset, y: end.y + targetVector.y * offset }
+    }
+    parts.push(`C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`)
+  }
+  return parts.join(' ')
+}
 
-    component.forEach(node => {
-      packed.push({
-        ...node,
-        x: node.x - bounds.minX + cursorX,
-        y: node.y - bounds.minY + cursorY,
-      })
-    })
+function WorkflowEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  markerEnd,
+  style,
+  data,
+  label,
+}: EdgeProps<WorkflowEdgeData>) {
+  const points = dedupePoints([
+    { x: sourceX, y: sourceY },
+    ...(data?.points ?? []),
+    { x: targetX, y: targetY },
+  ])
+  const path = smoothBezierPath(points, data?.sourceSide, data?.targetSide)
+  const labelPoint = midpointOnPolyline(points)
 
-    cursorX += width + COMPONENT_GAP_X
-    rowHeight = Math.max(rowHeight, height)
-  })
-
-  const bounds = packed.reduce(
-    (acc, node) => ({
-      minX: Math.min(acc.minX, node.x),
-      maxX: Math.max(acc.maxX, node.x + nodeWidth(node.kind)),
-    }),
-    { minX: Number.POSITIVE_INFINITY, maxX: Number.NEGATIVE_INFINITY },
+  return (
+    <>
+      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
+      {label ? (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan rounded-md bg-zinc-950/95 px-1.5 py-0.5 text-[11px] text-slate-400"
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelPoint.x}px, ${labelPoint.y}px)`,
+            }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
   )
-  const centerShift = (bounds.minX + bounds.maxX) / 2
-  return packed.map(node => ({ ...node, x: node.x - centerShift }))
 }
 
 function anchorEdges(edgeList: Edge[], nodeList: Node<WorkflowNodeData>[]) {
@@ -732,6 +486,7 @@ function anchorEdges(edgeList: Edge[], nodeList: Node<WorkflowNodeData>[]) {
       ...edge,
       sourceHandle: anchors ? `source-${anchors.sourceSide}` : edge.sourceHandle,
       targetHandle: anchors ? `target-${anchors.targetSide}` : edge.targetHandle,
+      data: anchors ? { ...(edge.data ?? {}), sourceSide: anchors.sourceSide, targetSide: anchors.targetSide } : edge.data,
     }
   })
 }
@@ -741,35 +496,73 @@ function buildLayout(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]): 
 
   const nodeMap = new Map(nodes.map(node => [node.id, node]))
   const validEdges = edges.filter(edge => nodeMap.has(edge.source) && nodeMap.has(edge.target))
-  const components = workflowLayoutGroups(nodes, validEdges).map(componentIds => {
-    const idSet = new Set(componentIds)
-    const componentNodes = nodes.filter(node => idSet.has(node.id))
-    const componentEdges = validEdges.filter(edge => idSet.has(edge.source) && idSet.has(edge.target))
-    return layoutComponent(componentNodes, componentEdges)
+  const dagreGraph = new dagre.graphlib.Graph({ multigraph: true })
+  dagreGraph.setDefaultEdgeLabel(() => ({}))
+  dagreGraph.setGraph({
+    rankdir: 'TB',
+    align: 'UL',
+    nodesep: 62,
+    edgesep: 34,
+    ranksep: 96,
+    marginx: 32,
+    marginy: 32,
+    acyclicer: 'greedy',
+    ranker: 'network-simplex',
   })
-  const packedNodes = packComponents(components)
-  const flowNodes: Node<WorkflowNodeData>[] = packedNodes.map(node => ({
-    id: node.id,
-    type: node.kind,
-    position: { x: node.x, y: node.y },
-    data: { id: node.id, kind: node.kind, label: node.label, title: node.title, details: node.details },
-  }))
+
+  ;[...nodes]
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .forEach(node => {
+      dagreGraph.setNode(node.id, {
+        width: nodeWidth(node.kind),
+        height: NODE_HEIGHT,
+      })
+    })
+
+  ;[...validEdges]
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .forEach(edge => {
+      dagreGraph.setEdge(
+        edge.source,
+        edge.target,
+        {
+          weight: 1,
+          minlen: 1,
+          width: edge.label ? Math.max(40, edge.label.length * 6) : 0,
+          height: edge.label ? 18 : 0,
+        },
+        edge.id,
+      )
+    })
+
+  dagre.layout(dagreGraph)
+
+  const flowNodes: Node<WorkflowNodeData>[] = nodes.map(node => {
+    const layoutNode = dagreGraph.node(node.id) as { x?: number; y?: number } | undefined
+    const width = nodeWidth(node.kind)
+    return {
+      id: node.id,
+      type: node.kind,
+      position: {
+        x: (layoutNode?.x ?? 0) - width / 2,
+        y: (layoutNode?.y ?? 0) - NODE_HEIGHT / 2,
+      },
+      data: { id: node.id, kind: node.kind, label: node.label, title: node.title, details: node.details },
+    }
+  })
 
   const flowEdges: Edge[] = validEdges.map(edge => {
+    const layoutEdge = dagreGraph.edge({ v: edge.source, w: edge.target, name: edge.id }) as { points?: Array<{ x: number; y: number }> } | undefined
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      type: 'smoothstep',
+      type: 'workflow',
       label: edge.label,
-      data: edge.title ? { title: edge.title } : undefined,
+      data: { title: edge.title, points: layoutEdge?.points ?? [] },
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' },
       style: { stroke: '#64748b', strokeWidth: 1.5 },
-      labelStyle: { fill: '#94a3b8', fontSize: 11 },
-      labelBgStyle: { fill: 'rgba(9, 9, 11, 0.92)', fillOpacity: 1 },
-      labelBgPadding: [6, 2],
-      labelBgBorderRadius: 6,
     }
   })
 
@@ -782,6 +575,10 @@ const nodeTypes = {
   planning: PlanningNode,
   reasoning: ReasoningNode,
   unknown: UnknownNode,
+}
+
+const edgeTypes = {
+  workflow: WorkflowEdge,
 }
 
 function nodeColor(kind: WorkflowNodeKind) {
@@ -824,7 +621,10 @@ export default function WorkflowCanvas({
   const handleNodesChange = (changes: NodeChange[]) => {
     setFlowNodes(currentNodes => {
       const nextNodes = applyNodeChanges(changes, currentNodes)
-      setFlowEdges(currentEdges => anchorEdges(currentEdges, nextNodes))
+      setFlowEdges(currentEdges => anchorEdges(currentEdges.map(edge => ({
+        ...edge,
+        data: { ...(edge.data ?? {}), points: [] },
+      })), nextNodes))
       return nextNodes
     })
   }
@@ -963,6 +763,7 @@ export default function WorkflowCanvas({
             nodes={flowNodes}
             edges={flowEdges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={(_, node) => setSelectedNodeId(node.id)}
