@@ -138,7 +138,7 @@ def save_knowledge_frame(
             return {"error": f"Project {project_id} not found."}
 
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [str(l.asset_id) for l in links]
+        asset_ids = [str(link.asset_id) for link in links]
         source_meta = {
             "project_label": project.label,
             "source_path": project.source_path,

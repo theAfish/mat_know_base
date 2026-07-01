@@ -110,6 +110,26 @@ def _projection_timestamp(projection: dict) -> str:
     return projection.get("extracted_at") or projection.get("created_at") or ""
 
 
+def _filter_latest_projections(projections: list[dict]) -> list[dict]:
+    """Return only the newest projection for each project/space pair."""
+    latest: dict[tuple[str, str], dict] = {}
+    order: list[tuple[str, str]] = []
+
+    for projection in projections:
+        project_id = str(projection.get("project_id") or "")
+        space_id = str(projection.get("space_id") or projection.get("frame_id") or "")
+        key = (project_id, space_id)
+        if key not in latest:
+            order.append(key)
+            latest[key] = projection
+            continue
+
+        if _projection_timestamp(projection) >= _projection_timestamp(latest[key]):
+            latest[key] = projection
+
+    return [latest[key] for key in order]
+
+
 def _projection_to_section_rows(
     projection: dict,
     project_paper_lookup: dict[str, str] | None = None,

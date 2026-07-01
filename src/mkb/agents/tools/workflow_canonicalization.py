@@ -14,7 +14,7 @@ from mkb.db.models import CanonicalWorkflow, RawWorkflowExtraction, WorkflowInde
 from mkb.workflows.canonical_contract import CanonicalWorkflowGraph
 from mkb.workflows.schema_library import get_schema_library_payload
 from mkb.workflows.indexing import build_index_entries
-from mkb.workflows.validation import json_safe_validation_errors
+from mkb.workflows.validation import compact_validation_errors
 
 
 def _uuid(value: str) -> uuid.UUID | None:
@@ -37,6 +37,83 @@ def _draft_template(row: CanonicalWorkflow, raw: RawWorkflowExtraction) -> dict[
         "granularity_mappings": [],
         "proposed_schema_updates": [],
     }
+
+
+def _compact_value(value: Any, *, string_limit: int = 1000, list_limit: int = 30, dict_limit: int = 30) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= string_limit else f"{value[:string_limit]}... [truncated]"
+    if isinstance(value, list):
+        items = [_compact_value(item, string_limit=string_limit, list_limit=list_limit, dict_limit=dict_limit) for item in value[:list_limit]]
+        if len(value) > list_limit:
+            items.append({"omitted_items": len(value) - list_limit})
+        return items
+    if isinstance(value, dict):
+        result = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= dict_limit:
+                result["omitted_keys"] = len(value) - dict_limit
+                break
+            result[key] = _compact_value(item, string_limit=string_limit, list_limit=list_limit, dict_limit=dict_limit)
+        return result
+    return value
+
+
+def _raw_graph_context(raw_graph: dict) -> dict:
+    nodes = raw_graph.get("nodes") if isinstance(raw_graph.get("nodes"), list) else []
+    edges = raw_graph.get("edges") if isinstance(raw_graph.get("edges"), list) else []
+    return {
+        "schema_version": raw_graph.get("schema_version"),
+        "paper_id": raw_graph.get("paper_id"),
+        "extraction_id": raw_graph.get("extraction_id"),
+        "nodes": [
+            {
+                "node_id": node.get("node_id"),
+                "raw_name": node.get("raw_name"),
+                "canonical_name": node.get("canonical_name"),
+                "node_kind": node.get("node_kind") or node.get("node_kind_guess"),
+                "semantic_type": node.get("semantic_type"),
+                "parameters": _compact_value(node.get("parameters", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "identity": _compact_value(node.get("identity", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "state": _compact_value(node.get("state", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "role": _compact_value(node.get("role", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "context": _compact_value(node.get("context", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "evidence_text": _compact_value(node.get("evidence_text", ""), string_limit=800),
+                "confidence": node.get("confidence"),
+            }
+            for node in nodes
+            if isinstance(node, dict)
+        ],
+        "edges": [
+            {
+                "edge_id": edge.get("edge_id"),
+                "source_node": edge.get("source_node"),
+                "target_node": edge.get("target_node"),
+                "relation_type": edge.get("relation_type"),
+                "evidence_text": _compact_value(edge.get("evidence_text", ""), string_limit=600),
+                "confidence": edge.get("confidence"),
+            }
+            for edge in edges
+            if isinstance(edge, dict)
+        ],
+        "reproducibility": _compact_value(raw_graph.get("reproducibility", {}), string_limit=600, list_limit=20, dict_limit=20),
+        "unresolved_information": _compact_value(raw_graph.get("unresolved_information", []), string_limit=600, list_limit=30, dict_limit=20),
+        "note": "This is a compact raw workflow context; final validation still uses the full server-side raw graph.",
+    }
+
+
+def _normalize_canonical_payload(payload: dict, row: CanonicalWorkflow, raw: RawWorkflowExtraction) -> dict:
+    normalized = deepcopy(payload if isinstance(payload, dict) else {})
+    normalized["schema_version"] = row.schema_version
+    normalized["canonicalization_id"] = str(row.canonicalization_id)
+    normalized["paper_id"] = str(row.project_id)
+    normalized["raw_extraction_id"] = str(raw.extraction_id)
+    for key in (
+        "nodes", "edges", "raw_to_canonical_mappings", "unmatched_raw_information",
+        "granularity_mappings", "proposed_schema_updates",
+    ):
+        if not isinstance(normalized.get(key), list):
+            normalized[key] = []
+    return normalized
 
 
 def _load_row_and_raw(session, canonicalization_id: str):
@@ -162,7 +239,7 @@ def get_canonicalization_context(canonicalization_id: str) -> dict:
             "canonicalization_id": str(row.canonicalization_id),
             "paper_id": str(row.project_id),
             "raw_extraction_id": str(raw.extraction_id),
-            "raw_graph": raw.graph,
+            "raw_graph": _raw_graph_context(raw.graph or {}),
             "schema_library": get_schema_library_payload(row.schema_version),
         }
 
@@ -425,13 +502,14 @@ def save_canonical_workflow(canonicalization_id: str, graph: dict | None = None)
         payload = graph if isinstance(graph, dict) else _ensure_draft(row, raw)
         if not isinstance(payload, dict):
             return {"error": "graph must be a JSON object"}
+        payload = _normalize_canonical_payload(payload, row, raw)
 
         try:
             validated = CanonicalWorkflowGraph.model_validate(payload)
         except ValidationError as exc:
             return {
                 "error": "Canonical workflow validation failed",
-                "details": json_safe_validation_errors(exc),
+                "details": compact_validation_errors(exc),
             }
 
         cid = row.canonicalization_id

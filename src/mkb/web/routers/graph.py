@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from mkb import api
+from mkb.web._helpers import start_web_job_action
 from mkb.web._models import GraphReviewRequest
 from mkb.web._state import jobs
 
@@ -19,12 +20,7 @@ def get_graph_review_counts():
 
 @router.post("/api/graph/review")
 def review_graph(body: GraphReviewRequest):
-    job_id = jobs.start_job(
-        kind="graph_review",
-        label="Graph Review",
-        target=api.review_knowledge_graph,
-        kwargs={"mode": body.mode, "seed_count": body.seed_count},
-    )
+    job_id = start_web_job_action(jobs, "review_graph", mode=body.mode, seed_count=body.seed_count)
     return {"job_id": job_id}
 
 

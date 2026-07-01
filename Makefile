@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate ingest list batches info purge install test
+.PHONY: up down logs migrate ingest list batches info purge install test lint test-python test-frontend check ci
 
 # ── Infrastructure ──────────────────────────────────────────────
 up:
@@ -55,3 +55,19 @@ server:
 # ── Tests ───────────────────────────────────────────────────────
 test:
 	pytest tests/ -v
+
+lint:
+	.venv/bin/python -m ruff check src tests
+	cd frontend && npm run lint
+
+test-python:
+	.venv/bin/python -m pytest
+
+test-frontend:
+	cd frontend && npm run build
+
+check: lint test-python test-frontend
+
+ci:
+	.venv/bin/python -m ruff check src tests
+	.venv/bin/python -m pytest --collect-only -q

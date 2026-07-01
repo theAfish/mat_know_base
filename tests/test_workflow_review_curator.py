@@ -35,6 +35,31 @@ def test_audit_and_rebase_correction_graph():
     assert corrected["nodes"][0]["node_id"].startswith(f"raw:{new_id}:n")
 
 
+def test_audit_allows_planning_edge_to_downstream_operation():
+    graph = _raw_graph()
+    eid = graph["extraction_id"]
+    graph["nodes"].append({
+        "node_id": f"raw:{eid}:n0003",
+        "raw_name": "screen high temperature phase stability",
+        "node_kind_guess": "planning",
+        "evidence_text": "We screened high temperature phase stability before annealing.",
+        "paper_location": {},
+        "confidence": 0.9,
+    })
+    graph["edges"].append({
+        "edge_id": f"raw:{eid}:e0002",
+        "source_node": f"raw:{eid}:n0003",
+        "target_node": f"raw:{eid}:n0002",
+        "relation_type": "leads_to",
+        "evidence_text": "We screened high temperature phase stability before annealing.",
+        "confidence": 0.9,
+    })
+
+    flags = audit_raw_graph(graph)
+
+    assert not [flag for flag in flags if flag["type"] == "impossible_edge"]
+
+
 def test_validation_errors_are_safe_for_agent_request_serialization():
     graph = _raw_graph()
     graph["edges"][0]["relation_type"] = "produces"

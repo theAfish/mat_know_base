@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from mkb import api
+from mkb.web._helpers import start_web_job_action
 from mkb.web._models import ReviewJobChatRequest
 from mkb.web._state import jobs
 
@@ -57,17 +57,14 @@ def review_job_chat(job_id: str, body: ReviewJobChatRequest):
             detail="This review job does not identify a single space/project for follow-up chat",
         )
 
-    followup_job_id = jobs.start_job(
-        kind="projection_review",
-        label="Projection Review Follow-up",
+    followup_job_id = start_web_job_action(
+        jobs,
+        "review_projection_followup",
+        job_project_id=str(project_id),
+        space_id=str(space_id),
         project_id=str(project_id),
-        target=api.review_projection_followup,
-        kwargs={
-            "space_id": str(space_id),
-            "project_id": str(project_id),
-            "message": message,
-            "previous_job": row,
-            "reviewer_id": result.get("reviewer_id"),
-        },
+        message=message,
+        previous_job=row,
+        reviewer_id=result.get("reviewer_id"),
     )
     return {"job_id": followup_job_id}

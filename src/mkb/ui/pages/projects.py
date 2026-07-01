@@ -9,7 +9,12 @@ import streamlit.components.v1 as st_components
 from mkb import api
 from mkb.knowledge_graph import GLOBAL_KG_SPACE_NAME
 from mkb.ui.data_cache import clear_graph_cache, get_knowledge_graph_cached, search_library_cached
-from mkb.ui.background_jobs import get_project_jobs, get_running_job, render_project_job_status, start_job
+from mkb.ui.background_jobs import (
+    get_project_jobs,
+    get_running_job,
+    render_project_job_status,
+    start_job_action,
+)
 from mkb.ui.upload_server import ensure_upload_server, get_upload_url, session_dir
 
 # Custom drop-zone component: captures webkitRelativePath so folder structure
@@ -118,12 +123,11 @@ def _render_upload():
     if not payload:
         return
 
-    start_job(
-        kind="upload",
-        label="Upload Ingest",
-        project_id="__upload__",
-        target=_run_upload_ingest,
-        args=(payload,),
+    start_job_action(
+        "upload_ingest",
+        job_project_id="__upload__",
+        payload=payload,
+        ingest_func=_run_upload_ingest,
     )
     st.session_state["_upload_gen"] = st.session_state.get("_upload_gen", 0) + 1
     st.rerun()
@@ -388,13 +392,7 @@ def _render_project_detail(project_id: str):
             help="Convert raw files to LLM-readable formats",
             disabled=process_job is not None,
         ):
-            start_job(
-                kind="process",
-                label="Process Assets",
-                project_id=project_id,
-                target=api.process,
-                kwargs={"project_id": project_id},
-            )
+            start_job_action("process_project", job_project_id=project_id, project_id=project_id)
             st.rerun()
         if process_job:
             st.caption(process_job.get("current_message") or "Running")
@@ -406,13 +404,7 @@ def _render_project_detail(project_id: str):
             help="Run LLM knowledge extraction",
             disabled=extract_job is not None,
         ):
-            start_job(
-                kind="extract",
-                label="Extract Knowledge Frame",
-                project_id=project_id,
-                target=api.extract,
-                kwargs={"project_id": project_id},
-            )
+            start_job_action("extract_project", job_project_id=project_id, project_id=project_id)
             st.rerun()
         if extract_job:
             st.caption(extract_job.get("current_message") or "Running")
@@ -438,12 +430,12 @@ def _render_project_detail(project_id: str):
                 disabled=projection_job is not None,
             ):
                 sid = space_name_to_id[selected_space_name]
-                start_job(
-                    kind="project",
+                start_job_action(
+                    "project_to_space",
+                    job_project_id=project_id,
                     label="Run Projection",
+                    space_id=sid,
                     project_id=project_id,
-                    target=api.project,
-                    kwargs={"space_id": sid, "project_id": project_id},
                 )
                 st.rerun()
         if projection_job:
@@ -456,12 +448,12 @@ def _render_project_detail(project_id: str):
             help="Extract knowledge graph elements",
             disabled=kg_job is not None,
         ):
-            start_job(
-                kind="knowledge_graph",
+            start_job_action(
+                "extract_knowledge_graph",
+                job_project_id=project_id,
                 label="Extract Knowledge Graph",
                 project_id=project_id,
-                target=_run_knowledge_graph_job,
-                kwargs={"project_id": project_id},
+                on_complete=lambda _result: clear_graph_cache(),
             )
             st.rerun()
         if kg_job:
@@ -526,12 +518,6 @@ def _render_assets_tab(project_id: str):
             cols[0].caption(pa["filename"] or "—")
             cols[1].caption(pa["processing_type"])
             cols[2].caption(f".{pa['output_format']}")
-
-
-def _run_knowledge_graph_job(project_id: str, progress_callback=None) -> dict:
-    result = api.extract_knowledge_graph(project_id=project_id, progress_callback=progress_callback)
-    clear_graph_cache()
-    return result
 
 
 def _render_frame_tab(project_id: str):
@@ -668,13 +654,7 @@ def _render_workflow_tab(project_id: str):
             if not readiness.get("ready"):
                 st.error(readiness.get("message") or "Project is not ready for workflow extraction.")
                 return
-            start_job(
-                kind="raw_workflow",
-                label="Extract Workflow",
-                project_id=project_id,
-                target=api.extract_raw_workflow,
-                kwargs={"project_id": project_id},
-            )
+            start_job_action("extract_raw_workflow", job_project_id=project_id, project_id=project_id)
             st.rerun()
         if raw_job:
             st.caption(raw_job.get("current_message") or "Running")

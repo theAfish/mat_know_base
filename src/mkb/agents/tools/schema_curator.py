@@ -22,6 +22,7 @@ from mkb.workflows.schema_library import get_schema_library_payload
 _CURATOR_AUTHOR: ContextVar[str] = ContextVar(
     "schema_curator_author", default="schema-curator-agent/unknown-model"
 )
+SEARCHABLE_NODE_KINDS = {None, "", "object", "operation", "planning", "reasoning", "unknown"}
 
 
 def set_curator_author(author: str):
@@ -425,8 +426,8 @@ def search_workflow_cards(query: str, node_kind: str | None = None, limit: int =
     text = _normalize_text(query)
     if not text:
         return {"error": "query is required"}
-    if node_kind not in {None, "", "object", "operation"}:
-        return {"error": "node_kind must be 'object', 'operation', or omitted"}
+    if node_kind not in SEARCHABLE_NODE_KINDS:
+        return {"error": "node_kind must be one of object, operation, planning, reasoning, unknown, or omitted"}
     library = get_schema_library_payload()
     results = []
     for card_id, payload in (library.get("cards", {}) or {}).items():
@@ -452,7 +453,7 @@ def search_workflow_cards(query: str, node_kind: str | None = None, limit: int =
                 "status": payload.get("status", "active"),
             })
     for template_id, payload in (library.get("operation_templates", {}) or {}).items():
-        if node_kind == "object":
+        if node_kind and node_kind != "operation":
             continue
         haystacks = [
             template_id,
@@ -490,8 +491,8 @@ def search_similar_workflow_nodes(
     text = _normalize_text(query)
     if not text:
         return {"error": "query is required"}
-    if node_kind not in {None, "", "object", "operation"}:
-        return {"error": "node_kind must be 'object', 'operation', or omitted"}
+    if node_kind not in SEARCHABLE_NODE_KINDS:
+        return {"error": "node_kind must be one of object, operation, planning, reasoning, unknown, or omitted"}
     effective_limit = max(1, min(int(limit), 50))
     with SyncSessionLocal() as session:
         rows = _latest_reviewable_workflows(session)
@@ -749,7 +750,11 @@ def submit_workflow_review(
         try:
             corrected = rebase_graph(corrected, new_id)
         except Exception as exc:
-            return {"error": f"corrected graph validation failed: {exc}"}
+            message = " ".join(str(exc).split())
+            return {
+                "error": "corrected graph validation failed",
+                "details": message[:1000],
+            }
         version = int(
             session.query(func.coalesce(func.max(RawWorkflowExtraction.version), 0))
             .filter_by(project_id=source.project_id)

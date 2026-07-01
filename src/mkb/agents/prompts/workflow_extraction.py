@@ -6,7 +6,8 @@ workflow graph directly from a paper package. There is no downstream per-paper
 canonicalization agent, so preserve evidence and reproducibility detail while
 separating reusable concepts from instance-specific values.
 
-Represent every step as Object -> Operation -> Object:
+Represent concrete experimental, computational, and analytical work as
+Object -> Operation -> Object:
 
 * object -> operation uses `input_to`
 * operation -> object uses `produces`
@@ -15,12 +16,29 @@ Represent every step as Object -> Operation -> Object:
 * disconnected components and genuinely missing endpoints are allowed; never
   invent endpoints or routine steps
 
+Also capture explicit planning and reasoning logic when the paper explains why
+a step, object, comparison, design choice, hypothesis, or decision is needed:
+
+* use `planning` for intended strategy, design criteria, experimental plan,
+  screening strategy, or decision policy
+* use `reasoning` for hypothesis, rationale, interpretation, causal argument,
+  constraint, tradeoff, or conclusion that drives later work
+* connect planning/reasoning nodes to downstream nodes with `motivates` when
+  the text explains why that node is needed, or `leads_to` when the text states
+  that the plan/reasoning caused the next workflow item
+* planning/reasoning nodes may point to objects, operations, or other
+  planning/reasoning nodes, but do not use `input_to` or `produces` for them
+* keep unsupported background claims in `unresolved_information` rather than
+  adding a planning/reasoning node without direct evidence
+
 Each node is an instantiated card. Fill both the v2 card fields and evidence:
 
 * `canonical_name`: short reusable concept, such as `XRD Measurement`,
-  `Band Structure Calculation`, `Comparison`, `Material`, or `Band Structure`
+  `Band Structure Calculation`, `Comparison`, `Material`, `Band Structure`,
+  `Design Rationale`, or `Screening Plan`
 * `raw_name`: the paper's original phrase (preserves terminology)
-* `node_kind` and compatibility field `node_kind_guess`
+* `node_kind` and compatibility field `node_kind_guess`; allowed values are
+  `object`, `operation`, `planning`, `reasoning`, and `unknown`
 * `semantic_type`: an open, concise scientific type; do not choose from a
   hand-built closed ontology
 * `parameters`: run-specific settings, methods, quantities and values
@@ -62,19 +80,25 @@ Reproducibility rules:
 Execution:
 
 1. Call list_project_files and read all relevant assets with paged reads.
-2. Before you finalize any node naming or `card_id`, call either
+2. Before you finalize object/operation node naming or `card_id`, call either
    `search_workflow_cards` or `get_active_workflow_card_library` against the
    newest workflow card base. Reuse an existing card/template when it is a
    clear semantic match; otherwise keep `card_id` null and mark
    `ontology_status` as `candidate` or `unmapped`.
-3. Repeat card-base lookup whenever you introduce a newly named node family or
-   revise a node's reusable concept.
+3. Repeat card-base lookup whenever you introduce a newly named object or
+   operation family or revise its reusable concept. Planning/reasoning nodes
+   usually have no shared card yet; keep their `card_id` null unless the card
+   base clearly contains a matching planning/reasoning card.
 4. On resume, call get_raw_workflow_checkpoint first.
 5. Checkpoint after each source or major milestone, stating coverage and work
    remaining.
-6. Use exact request IDs. Node IDs are `raw:<extraction_id>:n0001`; edge IDs are
-   `raw:<extraction_id>:e0001`.
+6. Focus on scientific content and evidence. The save/checkpoint tools fill
+   application-owned envelope fields such as `schema_version`, `paper_id`,
+   `extraction_id`, sequential node/edge IDs, default empty dict/list fields,
+   and common edge aliases. Provide stable node/edge references when you have
+   them, but do not spend turns repairing mechanical schema boilerplate.
 7. Save exactly once with save_raw_workflow, including an empty graph when no
-   supported workflow exists. Use schema_version `workflow-cards/2.0`.
+   supported workflow exists. The tool will normalize mechanical fields and
+   return compact validation hints if semantic fixes are still needed.
 8. Tool arguments must be strict JSON.
 """

@@ -1,5 +1,4 @@
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Response
 
@@ -7,7 +6,13 @@ from mkb import api
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Asset, ProcessedAsset, ProjectAsset
 from mkb.storage.s3 import download_bytes
-from mkb.web._helpers import _parse_uuid
+from mkb.web._helpers import (
+    _parse_uuid,
+    require_service_result,
+    require_service_result_or_not_found,
+    start_web_job_action,
+)
+from mkb.web.content import asset_media_type, inline_headers
 from mkb.web._models import (
     ProjectGroupAssign,
     ProjectGroupCreate,
@@ -26,24 +31,8 @@ from mkb.web._state import jobs
 router = APIRouter()
 
 
-def _inline_headers(filename: str) -> dict[str, str]:
-    safe_name = filename.replace('"', "'").replace("\r", "").replace("\n", "")
-    ascii_name = safe_name.encode("ascii", "ignore").decode("ascii") or "document"
-    return {
-        "Content-Disposition": (
-            f'inline; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(safe_name)}'
-        ),
-        "X-Content-Type-Options": "nosniff",
-    }
-
-
-def _asset_media_type(filename: str, mime_type: str | None = None) -> str | None:
-    suffix = Path(filename).suffix.lower()
-    if suffix == ".pdf" or mime_type == "application/pdf":
-        return "application/pdf"
-    if suffix in {".md", ".markdown"} or mime_type in {"text/markdown", "text/x-markdown"}:
-        return "text/markdown"
-    return None
+_asset_media_type = asset_media_type
+_inline_headers = inline_headers
 
 
 @router.get("/api/projects")
@@ -64,18 +53,14 @@ def get_project(project_id: str):
 def update_project(project_id: str, body: ProjectUpdateRequest):
     _parse_uuid(project_id, "project_id")
     result = api.rename_project(project_id, body.label, user_initiated=True)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return require_service_result(result, default_status=404)
 
 
 @router.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, delete_s3: bool = True):
     _parse_uuid(project_id, "project_id")
     result = api.delete_project(project_id, delete_s3_objects=delete_s3)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return require_service_result(result, default_status=404)
 
 
 @router.get("/api/projects/{project_id}/assets")
@@ -147,12 +132,11 @@ def get_project_processed_asset_content(project_id: str, processed_asset_id: str
 @router.post("/api/projects/{project_id}/process")
 def process_project(project_id: str):
     _parse_uuid(project_id, "project_id")
-    job_id = jobs.start_job(
-        kind="process",
-        label="Process",
+    job_id = start_web_job_action(
+        jobs,
+        "process_project",
+        job_project_id=project_id,
         project_id=project_id,
-        target=api.process,
-        kwargs={"project_id": project_id},
     )
     return {"job_id": job_id}
 
@@ -160,12 +144,11 @@ def process_project(project_id: str):
 @router.post("/api/projects/{project_id}/extract")
 def extract_project(project_id: str):
     _parse_uuid(project_id, "project_id")
-    job_id = jobs.start_job(
-        kind="extract",
-        label="Extract",
+    job_id = start_web_job_action(
+        jobs,
+        "extract_project",
+        job_project_id=project_id,
         project_id=project_id,
-        target=api.extract,
-        kwargs={"project_id": project_id},
     )
     return {"job_id": job_id}
 
@@ -178,16 +161,14 @@ def project_project(project_id: str, body: ProjectionRunRequest):
     if source_type not in {"frame", "markdown"}:
         raise HTTPException(status_code=400, detail=f"Invalid source_type: {body.source_type}")
     label = "Project" if source_type == "frame" else "Project (markdown)"
-    job_id = jobs.start_job(
-        kind="project",
+    job_id = start_web_job_action(
+        jobs,
+        "project_to_space",
+        job_project_id=project_id,
         label=label,
+        space_id=body.space_id,
         project_id=project_id,
-        target=api.project,
-        kwargs={
-            "space_id": body.space_id,
-            "project_id": project_id,
-            "source_type": source_type,
-        },
+        source_type=source_type,
     )
     return {"job_id": job_id}
 
@@ -195,12 +176,11 @@ def project_project(project_id: str, body: ProjectionRunRequest):
 @router.post("/api/projects/{project_id}/kg-extract")
 def project_kg_extract(project_id: str):
     _parse_uuid(project_id, "project_id")
-    job_id = jobs.start_job(
-        kind="knowledge_graph",
-        label="Extract Graph",
+    job_id = start_web_job_action(
+        jobs,
+        "extract_knowledge_graph",
+        job_project_id=project_id,
         project_id=project_id,
-        target=api.extract_knowledge_graph,
-        kwargs={"project_id": project_id},
     )
     return {"job_id": job_id}
 
@@ -217,12 +197,11 @@ def project_workflow_extract(project_id: str):
     readiness = api.get_raw_workflow_extraction_readiness(project_id)
     if not readiness.get("ready"):
         raise HTTPException(status_code=400, detail=readiness.get("message") or "Project is not ready for workflow extraction")
-    job_id = jobs.start_job(
-        kind="raw_workflow",
-        label="Extract Workflow",
+    job_id = start_web_job_action(
+        jobs,
+        "extract_raw_workflow",
+        job_project_id=project_id,
         project_id=project_id,
-        target=api.extract_raw_workflow,
-        kwargs={"project_id": project_id},
     )
     return {"job_id": job_id}
 
@@ -247,10 +226,12 @@ def canonicalize_project_workflow(project_id: str, body: WorkflowCanonicalizeReq
     _parse_uuid(project_id, "project_id")
     if body.raw_extraction_id:
         _parse_uuid(body.raw_extraction_id, "raw_extraction_id")
-    job_id = jobs.start_job(
-        kind="canonical_workflow", label="Canonicalize Workflow", project_id=project_id,
-        target=api.canonicalize_workflow,
-        kwargs={"project_id": project_id, "raw_extraction_id": body.raw_extraction_id},
+    job_id = start_web_job_action(
+        jobs,
+        "canonicalize_workflow",
+        job_project_id=project_id,
+        project_id=project_id,
+        raw_extraction_id=body.raw_extraction_id,
     )
     return {"job_id": job_id}
 
@@ -274,11 +255,7 @@ def delete_project_workflow_version(project_id: str, version: int):
             detail="Workflow extraction is currently running for this project. Cancel or wait for it to finish before deleting a version.",
         )
     result = api.delete_raw_workflow_version(project_id, version)
-    if result.get("error"):
-        detail = result["error"]
-        status_code = 404 if "not found" in detail.lower() else 400
-        raise HTTPException(status_code=status_code, detail=detail)
-    return result
+    return require_service_result_or_not_found(result)
 
 
 @router.get("/api/projects/{project_id}/canonical-workflows")
@@ -315,11 +292,7 @@ def delete_project_canonical_workflow_version(project_id: str, version: int):
             detail="Workflow canonicalization is currently running for this project. Cancel or wait for it to finish before deleting a version.",
         )
     result = api.delete_canonical_workflow_version(project_id, version)
-    if result.get("error"):
-        detail = result["error"]
-        status_code = 404 if "not found" in detail.lower() else 400
-        raise HTTPException(status_code=status_code, detail=detail)
-    return result
+    return require_service_result_or_not_found(result)
 
 
 @router.get("/api/workflows/search")
@@ -342,9 +315,7 @@ def schedule_reextraction(project_id: str, body: WorkflowReextractionRequest):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return require_service_result(result)
 
 
 @router.post("/api/projects/{project_id}/workflow-recanonicalize")
@@ -357,18 +328,13 @@ def schedule_recanonicalization(project_id: str, body: WorkflowRecanonicalizatio
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return require_service_result(result)
 
 
 @router.post("/api/workflow-maintenance/{task_id}/run")
 def run_maintenance_task(task_id: str):
     _parse_uuid(task_id, "task_id")
-    job_id = jobs.start_job(
-        kind="workflow_maintenance", label="Workflow Maintenance",
-        target=api.run_workflow_maintenance_task, kwargs={"task_id": task_id},
-    )
+    job_id = start_web_job_action(jobs, "workflow_maintenance", task_id=task_id)
     return {"job_id": job_id, "task_id": task_id}
 
 
@@ -379,11 +345,7 @@ def workflow_maintenance_tasks(status: str | None = None, project_id: str | None
 
 @router.post("/api/workflow-maintenance-batch/recanonicalize")
 def run_recanonicalization_batch():
-    job_id = jobs.start_job(
-        kind="workflow_maintenance_batch",
-        label="Recanonicalize Global Workflow Batch",
-        target=api.run_pending_recanonicalizations,
-    )
+    job_id = start_web_job_action(jobs, "workflow_recanonicalization_batch")
     return {"job_id": job_id}
 
 
@@ -400,20 +362,15 @@ def curate_schema(body: SchemaCurateRequest):
         raise HTTPException(status_code=400, detail="sample_size must be at least 1")
     if body.mode not in {"global", "local", "auto"}:
         raise HTTPException(status_code=400, detail="mode must be global, local, or auto")
-    from mkb.agents.ontology_induction import run_ontology_induction
-
-    job_id = jobs.start_job(
-        kind="ontology_induction",
-        label="Workflow Review Agent",
-        target=run_ontology_induction,
-        kwargs={
-            "min_support": body.min_support,
-            "author": body.author.strip() or "workflow-review/ui",
-            "mode": body.mode,
-            "sample_size": body.sample_size,
-            "model": body.model,
-            "verbose": body.verbose,
-        },
+    job_id = start_web_job_action(
+        jobs,
+        "curate_workflow_schema",
+        min_support=body.min_support,
+        author=body.author.strip() or "workflow-review/ui",
+        mode=body.mode,
+        sample_size=body.sample_size,
+        model=body.model,
+        verbose=body.verbose,
     )
     return {"job_id": job_id}
 
@@ -432,9 +389,7 @@ def review_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalReview
         proposal_id, decision=body.decision, reviewer=body.reviewer.strip(),
         notes=body.notes,
     )
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result)
-    return result
+    return require_service_result(result)
 
 
 @router.patch("/api/workflow-schema/proposals/{proposal_id}")
@@ -446,9 +401,7 @@ def edit_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalEditRequ
         rationale=body.rationale, editor=body.editor,
         change_note=body.change_note,
     )
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result)
-    return result
+    return require_service_result(result)
 
 
 @router.get("/api/workflow-schema/proposals/{proposal_id}/revisions")
@@ -478,9 +431,7 @@ def create_project_group_endpoint(body: ProjectGroupCreate):
         color=body.color,
         display_order=body.display_order,
     )
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return require_service_result(result)
 
 
 @router.patch("/api/project-groups/{group_id}")
@@ -493,19 +444,14 @@ def update_project_group_endpoint(group_id: str, body: ProjectGroupUpdate):
         color=body.color,
         display_order=body.display_order,
     )
-    if "error" in result:
-        status = 404 if "not found" in result["error"] else 400
-        raise HTTPException(status_code=status, detail=result["error"])
-    return result
+    return require_service_result_or_not_found(result)
 
 
 @router.delete("/api/project-groups/{group_id}")
 def delete_project_group_endpoint(group_id: str):
     _parse_uuid(group_id, "group_id")
     result = api.delete_project_group(group_id)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return require_service_result(result, default_status=404)
 
 
 @router.post("/api/project-groups/assign")
@@ -515,6 +461,4 @@ def assign_project_group_endpoint(body: ProjectGroupAssign):
     if body.group_id:
         _parse_uuid(body.group_id, "group_id")
     result = api.assign_projects_to_group(body.project_ids, body.group_id)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return require_service_result(result, default_status=404)

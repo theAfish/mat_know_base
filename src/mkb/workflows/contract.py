@@ -17,10 +17,10 @@ RAW_WORKFLOW_SCHEMA_VERSION = "workflow-cards/2.0"
 LEGACY_RAW_WORKFLOW_SCHEMA_VERSION = "raw-workflow/1.0"
 EXTRACTOR_VERSION = "workflow-extractor/2.0"
 
-NodeKind = Literal["object", "operation", "unknown"]
+NodeKind = Literal["object", "operation", "planning", "reasoning", "unknown"]
 RelationType = Literal[
     "input_to", "produces", "same_as", "part_of", "has_part",
-    "expands_to", "summarized_by",
+    "expands_to", "summarized_by", "motivates", "leads_to",
 ]
 
 
@@ -175,6 +175,10 @@ class RawWorkflowGraph(BaseModel):
                 source.node_kind == "operation" and target.node_kind == "object"
             ):
                 raise ValueError("produces must connect operation -> object")
+            if edge.relation_type in {"motivates", "leads_to"} and source.node_kind not in {
+                "planning", "reasoning",
+            }:
+                raise ValueError(f"{edge.relation_type} must start from planning or reasoning")
         return self
 
 
@@ -190,5 +194,5 @@ ID_CONVENTIONS = {
     "extraction": "UUID",
     "node_instance": "raw:<extraction UUID>:n<zero-padded integer>",
     "edge_instance": "raw:<extraction UUID>:e<zero-padded integer>",
-    "ontology_card": "card:<ontology version>:<object|operation>:<slug>",
+    "ontology_card": "card:<ontology version>:<object|operation|planning|reasoning>:<slug>",
 }

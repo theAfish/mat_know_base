@@ -11,10 +11,8 @@ drains it on each Streamlit rerun and starts proper start_job background jobs.
 
 from __future__ import annotations
 
-import json
 import logging
 import queue as _queue
-import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +277,7 @@ def trigger_extraction(project_id: str, max_passes: int = 1) -> dict:
         max_passes: Number of extraction passes (1 = initial only, 2+ includes review).
     """
     _workflow_queue.put({
+        "action": "extract_project",
         "kind": "extraction",
         "project_id": project_id,
         "kwargs": {"project_id": project_id, "max_passes": max_passes},
@@ -300,6 +299,7 @@ def trigger_projection(project_id: str, space_id: str) -> dict:
         space_id: UUID string of the Space to project onto.
     """
     _workflow_queue.put({
+        "action": "project_to_space",
         "kind": "projection",
         "project_id": project_id,
         "kwargs": {"project_id": project_id, "space_id": space_id},
@@ -321,6 +321,7 @@ def trigger_knowledge_graph_extraction(project_id: str) -> dict:
         project_id: UUID string of the project.
     """
     _workflow_queue.put({
+        "action": "extract_knowledge_graph",
         "kind": "kg_extraction",
         "project_id": project_id,
         "kwargs": {"project_id": project_id},
@@ -342,6 +343,7 @@ def trigger_feedback_review(project_id: str) -> dict:
         project_id: UUID string of the project.
     """
     _workflow_queue.put({
+        "action": "review_feedback",
         "kind": "feedback_review",
         "project_id": project_id,
         "kwargs": {"project_id": project_id},
@@ -364,6 +366,7 @@ def trigger_projection_review(project_id: str, space_id: str) -> dict:
         space_id: UUID string of the Space.
     """
     _workflow_queue.put({
+        "action": "review_projection",
         "kind": "projection_review",
         "project_id": project_id,
         "kwargs": {"project_id": project_id, "space_id": space_id},

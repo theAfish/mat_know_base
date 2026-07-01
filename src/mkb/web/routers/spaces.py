@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from mkb import api
-from mkb.web._helpers import _parse_uuid
+from mkb.web._helpers import _parse_uuid, require_service_result
 from mkb.web._models import SpaceCreateRequest, SpaceUpdateRequest
 
 router = APIRouter()
@@ -48,9 +48,7 @@ def create_space(body: SpaceCreateRequest):
         review_search_tools=body.review_search_tools,
         post_processors=body.post_processors,
     )
-    if isinstance(result, dict) and result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return require_service_result(result)
 
 
 @router.put("/api/spaces/{space_id}")
@@ -60,15 +58,11 @@ def update_space(space_id: str, body: SpaceUpdateRequest):
     if not changes:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = api.update_space(space_id, **changes)
-    if isinstance(result, dict) and result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    return require_service_result(result)
 
 
 @router.delete("/api/spaces/{space_id}")
 def delete_space(space_id: str):
     _parse_uuid(space_id, "space_id")
     result = api.delete_space(space_id)
-    if isinstance(result, dict) and result.get("error"):
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return require_service_result(result, default_status=404)

@@ -4,13 +4,13 @@ import { startJobPolling } from '../../api/jobPolling'
 import { listFeedback } from '../../api/feedback'
 import {
   extractProject,
-  getProject,
   kgExtractProject,
   processProject,
   projectToSpace,
   workflowExtractProject,
 } from '../../api/projects'
 import { listSpaces } from '../../api/spaces'
+import { useProjectRefresh } from '../../hooks/useProjectRefresh'
 import type { Job, Project, Space } from '../../types'
 import StatusBadge from '../StatusBadge'
 import AssetsTab from './AssetsTab'
@@ -57,10 +57,7 @@ export default function ProjectDetail({
     refreshFeedbackCount()
   }, [project.project_id, refreshFeedbackCount, selectedSpaceId])
 
-  const refreshProject = useCallback(() => {
-    if (!onProjectUpdated) return
-    getProject(project.project_id).then(onProjectUpdated).catch(() => {})
-  }, [project.project_id, onProjectUpdated])
+  const refreshProject = useProjectRefresh(project.project_id, onProjectUpdated)
 
   const pollJob = useCallback((jobId: string, onDone?: () => void) => {
     setActiveJobId(jobId)

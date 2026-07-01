@@ -98,3 +98,37 @@ def test_raw_workflow_contract_rejects_wrong_object_operation_direction():
     )
     with pytest.raises(ValidationError, match="object -> operation"):
         RawWorkflowGraph.model_validate(payload)
+
+
+def test_raw_workflow_contract_accepts_reasoning_that_motivates_workflow_node():
+    payload = _graph()
+    eid = payload["extraction_id"]
+    payload["nodes"].append({
+        "node_id": f"raw:{eid}:n0003",
+        "raw_name": "need higher crystallinity before XRD",
+        "node_kind_guess": "reasoning",
+        "attributes_explicitly_mentioned": {},
+        "evidence_text": "To improve crystallinity, the powder was annealed before XRD.",
+        "paper_location": {"section": "Methods"},
+        "confidence": 0.91,
+    })
+    payload["edges"].append({
+        "edge_id": f"raw:{eid}:e0002",
+        "source_node": f"raw:{eid}:n0003",
+        "target_node": f"raw:{eid}:n0002",
+        "relation_type": "motivates",
+        "evidence_text": "To improve crystallinity, the powder was annealed before XRD.",
+        "confidence": 0.9,
+    })
+
+    graph = RawWorkflowGraph.model_validate(payload)
+
+    assert graph.nodes[-1].node_kind == "reasoning"
+    assert graph.edges[-1].relation_type == "motivates"
+
+
+def test_raw_workflow_contract_rejects_motivates_from_non_reasoning_node():
+    payload = _graph()
+    payload["edges"][0]["relation_type"] = "motivates"
+    with pytest.raises(ValidationError, match="must start from planning or reasoning"):
+        RawWorkflowGraph.model_validate(payload)

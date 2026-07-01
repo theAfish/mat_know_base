@@ -1,0 +1,52 @@
+# Architecture Map
+
+This map names the main ownership areas in the repository so refactors can move
+code toward clearer boundaries without changing behavior accidentally.
+
+## Runtime Surfaces
+
+- `src/mkb/api.py` is the Python compatibility facade used by scripts, tests,
+  routers, and legacy UI code.
+- `src/mkb/web/` owns the FastAPI app, REST routers, request/response models,
+  upload handling, and background job state.
+- `frontend/src/` owns the React application that replaced the primary
+  Streamlit workflow.
+- `src/mkb/ui/` is the legacy Streamlit surface. It remains compatibility-only
+  while tests and a few helper paths still import it.
+- `src/mkb/agents/` owns agent construction, prompts, tool adapters, and runner
+  integration.
+- `src/mkb/cli.py` owns command-line entry points and should call service/API
+  functions rather than duplicating behavior.
+
+## Domain Areas
+
+- Ingestion: `src/mkb/ingest/`, `src/mkb/api.py`, and upload entry points under
+  `src/mkb/web/`.
+- Processing: `src/mkb/processors/`, processed asset models, and S3 helpers.
+- Projects and assets: `ResearchProject`, `Asset`, and `ProjectAsset` models,
+  plus project routers and frontend project views.
+- Frames: `KnowledgeFrame` storage, frame agent code, frame routers, and React
+  frame/project detail tabs.
+- Spaces and projections: `src/mkb/spaces/`, projection agents/tools, projection
+  routers, and projection table components.
+- Workflows: `src/mkb/workflows/`, workflow extraction/canonicalization agents,
+  schema curator tools, and workflow tabs.
+- Knowledge graph: `src/mkb/knowledge_graph.py`, graph agent/tools, graph review
+  tools, graph router, and graph frontend page.
+- Feedback: `src/mkb/feedback/`, feedback agent/tools, feedback router, and
+  frontend feedback page.
+- Jobs: `src/mkb/web/_state.py`, job routers, job polling hooks/stores, and
+  legacy Streamlit background job helpers.
+
+## Boundary Direction
+
+Adapters should stay thin:
+
+- Web routers validate HTTP input and map service errors to HTTP responses.
+- CLI commands parse arguments and print results.
+- Agent tools parse tolerant user/agent inputs and call strict domain helpers.
+- React components call typed client functions and avoid backend policy logic.
+
+Shared behavior belongs in domain services or pure helpers before it is reused
+by routers, CLI commands, agent tools, and legacy compatibility surfaces.
+

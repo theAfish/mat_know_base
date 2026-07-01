@@ -12,6 +12,7 @@ import {
   projectToSpace,
   workflowExtractProject,
 } from '../../api/projects'
+import { useProjectRefresh } from '../../hooks/useProjectRefresh'
 import type { Job, Project, Space } from '../../types'
 import JobProgress from '../JobProgress'
 import StatusBadge from '../StatusBadge'
@@ -64,10 +65,7 @@ export default function ProjectDetail({
     return () => { pollHandleRef.current?.cancel() }
   }, [loadJobs])
 
-  const refreshProject = useCallback(() => {
-    if (!onProjectUpdated) return
-    getProject(project.project_id).then(onProjectUpdated).catch(() => { /* ignore */ })
-  }, [project.project_id, onProjectUpdated])
+  const refreshProject = useProjectRefresh(project.project_id, onProjectUpdated)
 
   const pollJob = useCallback((jobId: string) => {
     setActiveJobId(jobId)

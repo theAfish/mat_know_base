@@ -7,7 +7,7 @@ from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Literal
+from typing import Callable
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.agents.tools.knowledge_graph import (
@@ -18,7 +18,6 @@ from mkb.agents.tools.knowledge_graph import (
 )
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import GraphElementReview, Projection, ProjectionStatus
-from mkb.knowledge_graph import ensure_global_kg_space_id
 
 
 MAX_DETAIL_RELATIONS = 120
@@ -303,7 +302,7 @@ def merge_concepts(
 
     canonical_label = str(canonical_label).strip()
     canonical_norm = _normalize_label(canonical_label)
-    norm_to_merge = {_normalize_label(l) for l in labels_to_merge if str(l).strip()}
+    norm_to_merge = {_normalize_label(label) for label in labels_to_merge if str(label).strip()}
     extra_aliases: list[str] = list(aliases or [])
 
     _fire_progress({"tool": "merge_concepts", "element_type": "concept", "label": canonical_label, "action": "merge", "merging": labels_to_merge})

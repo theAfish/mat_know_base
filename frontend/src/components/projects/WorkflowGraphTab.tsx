@@ -4,6 +4,12 @@ import { deleteProjectWorkflowVersion, getProjectWorkflow, listProjectWorkflows 
 import type { RawWorkflowVersion } from '../../types'
 import WorkflowCanvas, { type WorkflowCanvasEdge, type WorkflowCanvasNode } from './WorkflowCanvas'
 
+function workflowNodeKind(node: { node_kind?: string; node_kind_guess: string }): WorkflowCanvasNode['kind'] {
+  const kind = node.node_kind ?? node.node_kind_guess
+  if (kind === 'operation' || kind === 'planning' || kind === 'reasoning' || kind === 'unknown') return kind
+  return 'object'
+}
+
 function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
   const graph = workflow.graph
 
@@ -12,7 +18,7 @@ function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
   const nodes: WorkflowCanvasNode[] = graph.nodes.map(node => ({
     id: node.node_id,
     label: node.canonical_name ?? node.raw_name,
-    kind: (node.node_kind ?? node.node_kind_guess) === 'operation' ? 'operation' : 'object',
+    kind: workflowNodeKind(node),
     title: `${node.canonical_name ?? node.raw_name}\nsource term: ${node.raw_name}\n${node.semantic_type ?? node.node_kind_guess} · confidence ${node.confidence.toFixed(2)}\n\n${node.evidence_text}`,
     details: {
       card_id: node.card_id,
@@ -133,7 +139,7 @@ export default function WorkflowGraphTab({
         </div>
       )}
       {selected?.graph ? <RawWorkflowCanvas workflow={selected} /> : null}
-      <p className="text-xs text-slate-500">Purple rectangles are operations; teal parallelograms are objects. Drag nodes freely to tidy the canvas and hover nodes for evidence.</p>
+      <p className="text-xs text-slate-500">Purple rectangles are operations; teal parallelograms are objects; amber and blue rectangles are planning and reasoning. Drag nodes freely to tidy the canvas and hover nodes for evidence.</p>
     </div>
   )
 }

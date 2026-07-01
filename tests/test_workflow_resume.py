@@ -245,10 +245,6 @@ def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
     assert captured["kwargs"]["mode"] == "local"
     assert captured["kwargs"]["sample_size"] == 12
     assert captured["kwargs"]["min_support"] == 3
-    assert fake_row.checkpoint["summary"].startswith("Read methods section")
-    assert fake_row.checkpoint["graph"] == {"nodes": [{"node_id": "draft-1"}], "edges": []}
-    assert fake_row.provenance["checkpoint_count"] == 1
-    fake_session.commit.assert_called_once()
 
 
 def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):

@@ -17,11 +17,7 @@ from typing import Any
 from google.adk.agents import Agent
 
 from mkb.agents._utils import create_llm, sync_agent_run
-from mkb.agents.prompts.projection_review import (
-    PROJECTION_REVIEW_PROMPT,
-    PROJECTION_REVIEW_QA_PROMPT,
-    default_review_prompt_for,
-)
+from mkb.agents.prompts.projection_review import default_review_prompt_for
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
 from mkb.agents.tools.projection_review import PROJECTION_REVIEW_TOOLS

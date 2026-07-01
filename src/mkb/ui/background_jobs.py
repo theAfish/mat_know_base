@@ -11,6 +11,8 @@ from typing import Any
 
 import streamlit as st
 
+from mkb.web.job_actions import job_action_start_params
+
 
 _EVENT_LIMIT = 25
 _HISTORY_LIMIT = 12
@@ -83,6 +85,7 @@ def start_job(
     metadata: dict[str, Any] | None = None,
     args: tuple[Any, ...] | None = None,
     kwargs: dict[str, Any] | None = None,
+    on_complete: Callable[[Any], None] | None = None,
 ) -> str:
     """Start a daemon-thread background job and register progress state."""
     _init_job_state()
@@ -118,12 +121,33 @@ def start_job(
             if "progress_callback" not in worker_kwargs:
                 worker_kwargs["progress_callback"] = _emit_progress
             result = target(*worker_args, **worker_kwargs)
+            if on_complete is not None:
+                on_complete(result)
             progress_queue.put({"type": "done", "result": result})
         except Exception as exc:  # noqa: BLE001
             progress_queue.put({"type": "error", "error": str(exc)})
 
     threading.Thread(target=_run, daemon=True).start()
     return job_id
+
+
+def start_job_action(
+    action: str,
+    *,
+    job_project_id: str | None = None,
+    label: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    args: tuple[Any, ...] | None = None,
+    on_complete: Callable[[Any], None] | None = None,
+    **kwargs: Any,
+) -> str:
+    params = job_action_start_params(
+        action,
+        job_project_id=job_project_id,
+        label=label,
+        **kwargs,
+    )
+    return start_job(metadata=metadata, args=args, on_complete=on_complete, **params)
 
 
 def poll_jobs() -> bool:

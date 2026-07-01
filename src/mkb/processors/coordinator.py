@@ -3,10 +3,11 @@ Central processing coordinator.
 Manages routing to appropriate processors, deduplication, and metadata tracking.
 """
 
-import hashlib
 import logging
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Asset, ProjectAsset, ProcessedAsset, ProcessingLog, ProcessingType
@@ -18,15 +19,27 @@ from mkb.storage.s3 import download_bytes, object_exists, upload_bytes
 
 logger = logging.getLogger(__name__)
 
-# Registry of all available processors
-PROCESSORS = [
-    PDFProcessor(),
-    ExcelProcessor(),
-    CSVProcessor(),
-    JSONProcessor(),
-    BasicImageProcessor(),
-    TextProcessor(),
+
+@dataclass(frozen=True)
+class ProcessorRegistration:
+    name: str
+    factory: Callable[[], object]
+    priority: int = 100
+
+
+PROCESSOR_REGISTRY = [
+    ProcessorRegistration("pdf", PDFProcessor, priority=10),
+    ProcessorRegistration("excel", ExcelProcessor, priority=20),
+    ProcessorRegistration("csv", CSVProcessor, priority=30),
+    ProcessorRegistration("json", JSONProcessor, priority=40),
+    ProcessorRegistration("image", BasicImageProcessor, priority=50),
+    ProcessorRegistration("text", TextProcessor, priority=90),
 ]
+
+
+def _iter_processors():
+    for registration in sorted(PROCESSOR_REGISTRY, key=lambda item: item.priority):
+        yield registration.factory()
 
 
 def _mark_asset_metadata(asset: Asset, update: dict) -> None:
@@ -65,7 +78,7 @@ def _select_processor(asset: Asset, raw_data: bytes):
             return CSVProcessor()
         return TextProcessor()
 
-    for proc in PROCESSORS:
+    for proc in _iter_processors():
         if proc.can_process(asset.mime_type, asset.filename):
             return proc
     return None
@@ -590,5 +603,3 @@ def process_all_pending(limit: int | None = None, progress_callback=None) -> dic
                 stats["failed"] += 1
         
         return stats
-
-

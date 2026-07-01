@@ -248,10 +248,10 @@ export interface GraphPayload {
 export interface RawWorkflowNode {
   node_id: string
   raw_name: string
-  node_kind_guess: 'object' | 'operation' | 'unknown'
+  node_kind_guess: 'object' | 'operation' | 'planning' | 'reasoning' | 'unknown'
   canonical_name?: string
   card_id?: string | null
-  node_kind?: 'object' | 'operation' | 'unknown'
+  node_kind?: 'object' | 'operation' | 'planning' | 'reasoning' | 'unknown'
   semantic_type?: string | null
   parameters?: Record<string, unknown>
   identity?: Record<string, unknown>

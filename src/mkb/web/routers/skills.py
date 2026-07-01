@@ -1,7 +1,7 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from mkb.skills import registry
-from mkb.web._helpers import _parse_uuid
+from mkb.web._helpers import _parse_uuid, require_service_result
 
 router = APIRouter()
 
@@ -43,6 +43,4 @@ async def upload_skill(files: list[UploadFile] = File(...)):
 def delete_skill(skill_id: str):
     _parse_uuid(skill_id, "skill_id")
     result = registry.delete_skill(skill_id)
-    if isinstance(result, dict) and result.get("error"):
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
+    return require_service_result(result, default_status=404)

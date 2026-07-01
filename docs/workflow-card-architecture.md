@@ -11,6 +11,9 @@ The workflow subsystem has two agents:
 The former extraction → canonicalization sequence is retired. Legacy raw and
 canonical records remain readable during migration.
 
+See `workflow-lifecycle-policy.md` for the current active, deprecated, and
+compatibility-only public surfaces.
+
 ## Cards and instances
 
 An ontology card describes a reusable concept:

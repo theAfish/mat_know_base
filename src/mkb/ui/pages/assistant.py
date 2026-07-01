@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from mkb import api
-from mkb.ui.background_jobs import get_running_job, start_job
+from mkb.ui.background_jobs import start_job_action
+from mkb.web.job_actions import action_for_workflow_kind
 
 # Session state keys
 _KEY_RUNNER = "_orch_runner"
@@ -35,50 +35,11 @@ def _dispatch_pending_workflows() -> None:
     pending = get_pending_workflows()
     for req in pending:
         kind = req["kind"]
+        action = req.get("action") or action_for_workflow_kind(kind)
         project_id = req.get("project_id")
         kwargs = req.get("kwargs", {})
         label = req.get("label", kind)
-
-        if kind == "extraction":
-            start_job(
-                kind="extraction",
-                label=label,
-                project_id=project_id,
-                target=api.extract,
-                kwargs=kwargs,
-            )
-        elif kind == "projection":
-            start_job(
-                kind="projection",
-                label=label,
-                project_id=project_id,
-                target=api.project,
-                kwargs={"space_id": kwargs["space_id"], "project_id": kwargs["project_id"]},
-            )
-        elif kind == "kg_extraction":
-            start_job(
-                kind="kg_extraction",
-                label=label,
-                project_id=project_id,
-                target=api.extract_knowledge_graph,
-                kwargs={"project_id": kwargs["project_id"]},
-            )
-        elif kind == "feedback_review":
-            start_job(
-                kind="feedback_review",
-                label=label,
-                project_id=project_id,
-                target=api.review_feedback,
-                kwargs={"project_id": kwargs["project_id"]},
-            )
-        elif kind == "projection_review":
-            start_job(
-                kind="projection_review",
-                label=label,
-                project_id=project_id,
-                target=api.review_projections,
-                kwargs={"space_id": kwargs["space_id"], "project_id": kwargs["project_id"]},
-            )
+        start_job_action(action, job_project_id=project_id, label=label, **kwargs)
 
 
 def _collect_reply() -> None:
@@ -215,17 +176,11 @@ def render() -> None:
         runner = st.session_state[_KEY_RUNNER]
         session_id = st.session_state[_KEY_SESSION]
 
-        from mkb.agents.orchestrator import send_message
-
-        job_id = start_job(
-            kind="orchestrator_chat",
-            label="Assistant",
-            target=send_message,
-            kwargs={
-                "runner": runner,
-                "session_id": session_id,
-                "message": prompt,
-            },
+        job_id = start_job_action(
+            "assistant_chat",
+            runner=runner,
+            session_id=session_id,
+            message=prompt,
         )
         st.session_state[_KEY_JOB_ID] = job_id
         st.session_state[_KEY_WAITING_FINISH] = True

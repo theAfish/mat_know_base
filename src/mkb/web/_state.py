@@ -6,7 +6,6 @@ import any router from here (would create cycles).
 """
 from __future__ import annotations
 
-import ctypes
 import queue
 import threading
 import uuid
@@ -14,11 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from mkb import api
 from mkb.agents._utils import JobCancelled
 from mkb.agents.orchestrator import create_orchestrator_runner
 from mkb.agents.tools.orchestrator_tools import get_pending_workflows
 from mkb.config import settings
+from mkb.web.job_actions import action_for_workflow_kind, start_job_action
 
 _EVENT_LIMIT = 60
 
@@ -58,7 +57,6 @@ class JobManager:
         self._queues: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
         self._cancelled: set[str] = set()
-        self._threads: dict[str, int] = {}  # job_id -> thread ident
         limit = max_concurrent if max_concurrent is not None else settings.max_concurrent_jobs
         self._semaphore = threading.Semaphore(max(1, limit))
 
@@ -115,8 +113,6 @@ class JobManager:
                 if job_id in self._cancelled:
                     q.put({"type": "cancelled"})
                     return
-                with self._lock:
-                    self._threads[job_id] = threading.current_thread().ident  # type: ignore[assignment]
                 q.put({"type": "running"})
                 q.put({"type": "progress", "message": f"Started {label.lower()}"})
                 result = target(*worker_args, **worker_kwargs)
@@ -127,8 +123,6 @@ class JobManager:
                 q.put({"type": "error", "error": str(exc)})
             finally:
                 self._semaphore.release()
-                with self._lock:
-                    self._threads.pop(job_id, None)
 
         threading.Thread(target=runner, daemon=True).start()
         return job_id
@@ -232,8 +226,8 @@ class JobManager:
         """Request cancellation of a QUEUED or RUNNING job.
 
         Returns True if the job was found and a cancellation was initiated.
-        QUEUED jobs are marked CANCELLED immediately; RUNNING jobs receive an
-        async exception via ctypes so the worker thread can clean up.
+        QUEUED jobs are marked CANCELLED immediately; RUNNING jobs observe the
+        request at cooperative progress/cancellation checkpoints.
         """
         self._drain()
         with self._lock:
@@ -255,14 +249,6 @@ class JobManager:
                 # Thread is blocked on semaphore — the runner will see the
                 # cancellation flag when it wakes up and exit cleanly.
                 self._queues.pop(job_id, None)
-            thread_id = self._threads.get(job_id)
-
-        if thread_id is not None:
-            # Best-effort: raise JobCancelled in the worker thread.
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                ctypes.c_ulong(thread_id),
-                ctypes.py_object(JobCancelled),
-            )
         return True
 
     def cancel_all_active(self, *, project_id: str | None = None) -> list[str]:
@@ -341,47 +327,9 @@ def _dispatch_pending_workflows() -> None:
     pending = get_pending_workflows()
     for req in pending:
         kind = req.get("kind", "workflow")
+        action = req.get("action") or action_for_workflow_kind(kind)
         pid = req.get("project_id")
         kwargs = req.get("kwargs", {})
         label = req.get("label", kind)
 
-        if kind == "extraction":
-            jobs.start_job(kind="extract", label=label, project_id=pid, target=api.extract, kwargs=kwargs)
-        elif kind == "projection":
-            proj_kwargs = {
-                "space_id": kwargs["space_id"],
-                "project_id": kwargs["project_id"],
-            }
-            if "source_type" in kwargs:
-                proj_kwargs["source_type"] = kwargs["source_type"]
-            jobs.start_job(
-                kind="project",
-                label=label,
-                project_id=pid,
-                target=api.project,
-                kwargs=proj_kwargs,
-            )
-        elif kind == "kg_extraction":
-            jobs.start_job(
-                kind="knowledge_graph",
-                label=label,
-                project_id=pid,
-                target=api.extract_knowledge_graph,
-                kwargs={"project_id": kwargs["project_id"]},
-            )
-        elif kind == "feedback_review":
-            jobs.start_job(
-                kind="feedback_review",
-                label=label,
-                project_id=pid,
-                target=api.review_feedback,
-                kwargs={"project_id": kwargs["project_id"]},
-            )
-        elif kind == "projection_review":
-            jobs.start_job(
-                kind="projection_review",
-                label=label,
-                project_id=pid,
-                target=api.review_projections,
-                kwargs={"space_id": kwargs["space_id"], "project_id": kwargs["project_id"]},
-            )
+        start_job_action(jobs, action, job_project_id=pid, label=label, **kwargs)

@@ -1,4 +1,5 @@
 import importlib
+import mkb
 import sys
 from types import SimpleNamespace
 
@@ -24,6 +25,7 @@ def projections_router(monkeypatch):
     module_name = "mkb.web.routers.projections"
     sys.modules.pop(module_name, None)
     monkeypatch.setitem(sys.modules, "mkb.api", fake_api)
+    monkeypatch.setattr(mkb, "api", fake_api, raising=False)
     monkeypatch.setitem(sys.modules, "mkb.web._state", SimpleNamespace(jobs=fake_jobs))
 
     module = importlib.import_module(module_name)

@@ -14,7 +14,8 @@ sys.modules.setdefault(
     "mkb.agents.runner",
     SimpleNamespace(AgentRunner=object, RunResult=object),
 )
-from mkb.agents.tools.projection_review import _set_patch_value, _summarize_data_changes
+
+from mkb.agents.tools.projection_review import _set_patch_value, _summarize_data_changes  # noqa: E402
 
 
 def test_set_patch_value_updates_nested_list_field():

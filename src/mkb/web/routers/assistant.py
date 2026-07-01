@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from mkb.agents.orchestrator import send_message
+from mkb.web._helpers import start_web_job_action
 from mkb.web._models import AssistantChatRequest
 from mkb.web._state import _dispatch_pending_workflows, _get_assistant_session, jobs
 
@@ -15,19 +15,12 @@ def assistant_chat(body: AssistantChatRequest):
 
     session = _get_assistant_session()
 
-    def _run_chat(progress_callback=None):
-        result = send_message(
-            runner=session.runner,
-            session_id=session.session_id,
-            message=message,
-            progress_callback=progress_callback,
-        )
-        _dispatch_pending_workflows()
-        return result
-
-    job_id = jobs.start_job(
-        kind="orchestrator_chat",
-        label="Assistant",
-        target=_run_chat,
+    job_id = start_web_job_action(
+        jobs,
+        "assistant_chat",
+        runner=session.runner,
+        session_id=session.session_id,
+        message=message,
+        dispatch_pending_workflows=_dispatch_pending_workflows,
     )
     return {"job_id": job_id}

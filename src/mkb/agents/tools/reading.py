@@ -35,7 +35,8 @@ def _resolve_asset_id(session, asset_ref: str) -> tuple[uuid.UUID | None, str | 
         return asset_id, None
 
     candidate = str(asset_ref).strip().strip("\"'")
-    if candidate:
+    filename_like = bool(candidate and (Path(candidate).suffix or "/" in candidate or "\\" in candidate))
+    if filename_like:
         asset = (
             session.query(Asset)
             .filter(Asset.filename == candidate)
@@ -94,7 +95,7 @@ def list_project_files(project_id: str) -> list[dict]:
 
     with SyncSessionLocal() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
         assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all()
@@ -354,7 +355,7 @@ def search_in_project(project_id: str, query: str) -> list[dict]:
 
     with SyncSessionLocal() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
 

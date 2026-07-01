@@ -8,7 +8,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from mkb import api
-from mkb.web._helpers import _parse_uuid
+from mkb.web._helpers import _parse_uuid, require_service_result, start_web_job_action
 from mkb.web._models import ProjectionReviewRequest
 from mkb.web._state import jobs
 
@@ -69,8 +69,7 @@ def export_projection_endpoint(projection_id: str, format: str = "yaml"):
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / "export"
         result = api.export_projection(projection_id, out_dir, format=fmt, overwrite=True)
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+        require_service_result(result)
         files = [Path(p) for p in result.get("files", [])]
         if not files:
             raise HTTPException(status_code=404, detail="Nothing to export")
@@ -155,8 +154,7 @@ def export_space_endpoint(space_id_or_name: str, format: str = "yaml"):
         result = api.export_space_projections(
             space_id_or_name, out_dir, format=fmt, overwrite=True
         )
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+        require_service_result(result)
         files = list(out_dir.rglob("*"))
         if not any(p.is_file() for p in files):
             raise HTTPException(status_code=404, detail="Nothing to export")
@@ -200,48 +198,44 @@ def review_projections(body: ProjectionReviewRequest):
                 status_code=400,
                 detail="Session-mode review requires explicit project_ids (or project_id).",
             )
-        job_id = jobs.start_job(
-            kind="projection_review",
-            label="Projection Review (session)",
-            target=api.review_projections_session,
-            kwargs={"space_id": body.space_id, "project_ids": project_ids, "reviewer_id": body.reviewer_id},
+        job_id = start_web_job_action(
+            jobs,
+            "review_projection_session",
+            space_id=body.space_id,
+            project_ids=project_ids,
+            reviewer_id=body.reviewer_id,
         )
         return {"job_id": job_id}
 
     if len(project_ids) == 1:
-        job_id = jobs.start_job(
-            kind="projection_review",
-            label="Projection Review",
+        job_id = start_web_job_action(
+            jobs,
+            "review_projection",
+            job_project_id=project_ids[0],
+            space_id=body.space_id,
             project_id=project_ids[0],
-            target=api.review_projections,
-            kwargs={"space_id": body.space_id, "project_id": project_ids[0], "reviewer_id": body.reviewer_id},
+            reviewer_id=body.reviewer_id,
         )
     elif project_ids:
         job_ids = []
         for project_id in project_ids:
             job_ids.append(
-                jobs.start_job(
-                    kind="projection_review",
-                    label="Projection Review",
+                start_web_job_action(
+                    jobs,
+                    "review_projection",
+                    job_project_id=project_id,
+                    space_id=body.space_id,
                     project_id=project_id,
-                    target=api.review_projections,
-                    kwargs={
-                        "space_id": body.space_id,
-                        "project_id": project_id,
-                        "reviewer_id": body.reviewer_id,
-                    },
+                    reviewer_id=body.reviewer_id,
                 )
             )
         return {"job_id": job_ids[0], "job_ids": job_ids}
     else:
-        job_id = jobs.start_job(
-            kind="projection_review",
-            label="Projection Review",
-            target=api.review_projections_all,
-            kwargs={
-                "space_id": body.space_id,
-                "project_ids": project_ids or None,
-                "reviewer_id": body.reviewer_id,
-            },
+        job_id = start_web_job_action(
+            jobs,
+            "review_projection_all",
+            space_id=body.space_id,
+            project_ids=project_ids or None,
+            reviewer_id=body.reviewer_id,
         )
     return {"job_id": job_id}
