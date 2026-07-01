@@ -22,7 +22,6 @@ from mkb.web._models import (
     SchemaCurateRequest,
     SchemaProposalEditRequest,
     SchemaProposalReviewRequest,
-    WorkflowCanonicalizeRequest,
     WorkflowRecanonicalizationRequest,
     WorkflowReextractionRequest,
 )
@@ -219,21 +218,6 @@ def latest_project_workflow(project_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="No completed raw workflow found")
     return result
-
-
-@router.post("/api/projects/{project_id}/workflows/canonicalize")
-def canonicalize_project_workflow(project_id: str, body: WorkflowCanonicalizeRequest):
-    _parse_uuid(project_id, "project_id")
-    if body.raw_extraction_id:
-        _parse_uuid(body.raw_extraction_id, "raw_extraction_id")
-    job_id = start_web_job_action(
-        jobs,
-        "canonicalize_workflow",
-        job_project_id=project_id,
-        project_id=project_id,
-        raw_extraction_id=body.raw_extraction_id,
-    )
-    return {"job_id": job_id}
 
 
 @router.get("/api/projects/{project_id}/workflows/{version}")

@@ -89,10 +89,6 @@ class ProjectUpdateRequest(BaseModel):
     label: str
 
 
-class WorkflowCanonicalizeRequest(BaseModel):
-    raw_extraction_id: str | None = None
-
-
 class WorkflowReextractionRequest(BaseModel):
     reason: str
     requested_by: str = "api"

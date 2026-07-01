@@ -19,6 +19,12 @@ def audit_raw_graph(graph: dict, *, low_confidence_threshold: float = 0.5, later
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     by_id = {node.get("node_id"): node for node in nodes}
+    if len(nodes) > 1 and not edges:
+        flags.append({
+            "type": "missing_workflow_edges",
+            "item_type": "graph",
+            "item_id": graph.get("extraction_id"),
+        })
     for item_type, items, id_key in (("node", nodes, "node_id"), ("edge", edges, "edge_id")):
         for item in items:
             if float(item.get("confidence", 0)) < low_confidence_threshold:

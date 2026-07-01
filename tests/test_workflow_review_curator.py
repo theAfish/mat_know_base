@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from mkb.workflows.curator import (
     apply_proposal, validate_proposal,
 )
+from mkb.workflows import editing as workflow_editing
 from mkb.workflows.review import audit_raw_graph, rebase_graph
 from mkb.workflows.contract import RawWorkflowGraph
 from mkb.workflows.validation import json_safe_validation_errors
@@ -153,7 +154,7 @@ def test_object_and_operation_cards_evolve_symmetrically():
 
 def test_extractor_card_search_uses_newest_library(monkeypatch):
     monkeypatch.setattr(
-        workflow_tools,
+        workflow_editing,
         "get_schema_library_payload",
         lambda: {
             "schema_version": "workflow-schema/9.9",

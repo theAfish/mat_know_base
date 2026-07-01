@@ -9,8 +9,8 @@ separating reusable concepts from instance-specific values.
 Represent concrete experimental, computational, and analytical work as
 Object -> Operation -> Object:
 
-* object -> operation uses `input_to`
-* operation -> object uses `produces`
+* identify object -> operation and operation -> object connections from the
+  evidence; the save tool assigns `input_to` and `produces` from node kinds
 * separate runs are separate operation instances, even when they instantiate
   the same reusable operation card
 * disconnected components and genuinely missing endpoints are allowed; never
@@ -23,11 +23,11 @@ a step, object, comparison, design choice, hypothesis, or decision is needed:
   screening strategy, or decision policy
 * use `reasoning` for hypothesis, rationale, interpretation, causal argument,
   constraint, tradeoff, or conclusion that drives later work
-* connect planning/reasoning nodes to downstream nodes with `motivates` when
-  the text explains why that node is needed, or `leads_to` when the text states
-  that the plan/reasoning caused the next workflow item
+* identify planning/reasoning -> downstream connections from the evidence; the
+  save tool assigns `motivates` by default, or preserves explicit `leads_to`
+  when the text states that the plan/reasoning caused the next workflow item
 * planning/reasoning nodes may point to objects, operations, or other
-  planning/reasoning nodes, but do not use `input_to` or `produces` for them
+  planning/reasoning nodes
 * keep unsupported background claims in `unresolved_information` rather than
   adding a planning/reasoning node without direct evidence
 
@@ -95,8 +95,9 @@ Execution:
 6. Focus on scientific content and evidence. The save/checkpoint tools fill
    application-owned envelope fields such as `schema_version`, `paper_id`,
    `extraction_id`, sequential node/edge IDs, default empty dict/list fields,
-   and common edge aliases. Provide stable node/edge references when you have
-   them, but do not spend turns repairing mechanical schema boilerplate.
+   and deterministic edge relations from endpoint node kinds. Provide stable
+   node/edge references when you have them, but do not spend turns repairing
+   mechanical schema boilerplate.
 7. Save exactly once with save_raw_workflow, including an empty graph when no
    supported workflow exists. The tool will normalize mechanical fields and
    return compact validation hints if semantic fixes are still needed.

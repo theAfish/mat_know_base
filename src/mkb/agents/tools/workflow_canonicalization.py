@@ -15,6 +15,11 @@ from mkb.workflows.canonical_contract import CanonicalWorkflowGraph
 from mkb.workflows.schema_library import get_schema_library_payload
 from mkb.workflows.indexing import build_index_entries
 from mkb.workflows.validation import compact_validation_errors
+from mkb.workflows.editing import (
+    compact_value as _compact_value,
+    replace_by_id as _replace_by_id,
+    replace_by_raw_ids as _replace_by_raw_ids,
+)
 
 
 def _uuid(value: str) -> uuid.UUID | None:
@@ -37,25 +42,6 @@ def _draft_template(row: CanonicalWorkflow, raw: RawWorkflowExtraction) -> dict[
         "granularity_mappings": [],
         "proposed_schema_updates": [],
     }
-
-
-def _compact_value(value: Any, *, string_limit: int = 1000, list_limit: int = 30, dict_limit: int = 30) -> Any:
-    if isinstance(value, str):
-        return value if len(value) <= string_limit else f"{value[:string_limit]}... [truncated]"
-    if isinstance(value, list):
-        items = [_compact_value(item, string_limit=string_limit, list_limit=list_limit, dict_limit=dict_limit) for item in value[:list_limit]]
-        if len(value) > list_limit:
-            items.append({"omitted_items": len(value) - list_limit})
-        return items
-    if isinstance(value, dict):
-        result = {}
-        for index, (key, item) in enumerate(value.items()):
-            if index >= dict_limit:
-                result["omitted_keys"] = len(value) - dict_limit
-                break
-            result[key] = _compact_value(item, string_limit=string_limit, list_limit=list_limit, dict_limit=dict_limit)
-        return result
-    return value
 
 
 def _raw_graph_context(raw_graph: dict) -> dict:
@@ -202,30 +188,6 @@ def _save_draft(row: CanonicalWorkflow, draft: dict[str, Any], *, summary: str |
         "version": row.version,
         "checkpoint_count": checkpoint_count,
     }
-
-
-def _replace_by_id(items: list[dict[str, Any]], id_key: str, item: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    item_id = item.get(id_key)
-    if not isinstance(item_id, str) or not item_id.strip():
-        raise ValueError(f"{id_key} is required")
-    for index, existing in enumerate(items):
-        if existing.get(id_key) == item_id:
-            items[index] = item
-            return items, "updated"
-    items.append(item)
-    return items, "added"
-
-
-def _replace_by_raw_ids(items: list[dict[str, Any]], item: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    raw_ids = tuple(item.get("raw_node_ids") or [])
-    if not raw_ids:
-        raise ValueError("raw_node_ids is required")
-    for index, existing in enumerate(items):
-        if tuple(existing.get("raw_node_ids") or []) == raw_ids:
-            items[index] = item
-            return items, "updated"
-    items.append(item)
-    return items, "added"
 
 
 def get_canonicalization_context(canonicalization_id: str) -> dict:

@@ -304,6 +304,7 @@ export interface RawWorkflowVersion {
   model: string | null
   provenance: Record<string, unknown>
   error: string | null
+  review_flags?: Array<{ type: string; item_type?: string; item_id?: string }>
   created_at: string | null
   extracted_at: string | null
   has_checkpoint?: boolean

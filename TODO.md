@@ -119,7 +119,7 @@ operate and develop.
     deprecated, or internal compatibility.
   - Documented in `docs/workflow-lifecycle-policy.md`.
 
-- [ ] Group workflow code by lifecycle.
+- [x] Group workflow code by lifecycle.
   - Current workflow behavior spans:
     - `src/mkb/workflows/*`
     - `src/mkb/agents/workflow_extraction.py`
@@ -131,16 +131,21 @@ operate and develop.
     - many sections of `src/mkb/api.py`
   - Create a workflow service package with explicit submodules for extraction,
     validation, schema review, indexing, and legacy canonicalization.
-  - Started: workflow serialization now lives under `mkb.services.workflows`;
-    full lifecycle package split remains.
+  - Done: `mkb.services.workflows` is now a lifecycle package with
+    `extraction`, `serialization`, `schema_review`, `maintenance`, `indexing`,
+    and `legacy_canonicalization` modules. Active routes/jobs use raw
+    workflow extraction and review; canonicalization launch is no longer part
+    of the active REST/job flow.
 
-- [ ] Remove duplicated schema/card operations between
+- [x] Remove duplicated schema/card operations between
   `src/mkb/agents/tools/workflows.py` and
   `src/mkb/agents/tools/workflow_canonicalization.py`.
   - Both modules normalize payloads, expose card/template operations, and
     manipulate draft graphs or schema libraries.
-  - Keep one low-level workflow editing library and make agent tools thin
-    adapters.
+  - Done: shared card search, schema-library views, raw graph normalization,
+    checkpoint manifests, compacting, and draft replacement helpers live in
+    `mkb.workflows.editing`. Agent tools now call that library instead of
+    owning duplicate low-level operations.
 
 ## P1 - Reduce Frontend Duplication
 

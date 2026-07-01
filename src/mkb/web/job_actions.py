@@ -215,14 +215,6 @@ JOB_ACTIONS: dict[str, JobAction] = {
         conflict_policy="project_kind",
         validate=_require_keys("project_id"),
     ),
-    "canonicalize_workflow": JobAction(
-        "canonicalize_workflow",
-        "canonical_workflow",
-        "Canonicalize Workflow",
-        "canonicalize_workflow",
-        conflict_policy="project_kind",
-        validate=_require_keys("project_id"),
-    ),
     "review_feedback": JobAction(
         "review_feedback",
         "feedback_review",

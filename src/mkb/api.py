@@ -18,6 +18,14 @@ from mkb.services import (
     spaces as _spaces,
     workflows as _workflows,
 )
+from mkb.services.workflows import (
+    extraction as _workflow_extraction,
+    indexing as _workflow_indexing,
+    legacy_canonicalization as _workflow_legacy_canonicalization,
+    maintenance as _workflow_maintenance,
+    schema_review as _workflow_schema_review,
+    serialization as _workflow_serialization,
+)
 
 from mkb.services.runtime import (
     setup,
@@ -239,6 +247,12 @@ _MIRRORED_MODULES = (
     _runtime,
     _spaces,
     _workflows,
+    _workflow_extraction,
+    _workflow_indexing,
+    _workflow_legacy_canonicalization,
+    _workflow_maintenance,
+    _workflow_schema_review,
+    _workflow_serialization,
 )
 
 class _ApiFacadeModule(types.ModuleType):
