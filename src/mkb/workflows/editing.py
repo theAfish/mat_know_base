@@ -63,19 +63,19 @@ def normalize_node_kind(value: Any) -> str:
     return kind if kind in NODE_KINDS else "unknown"
 
 
-def infer_relation_type(source_kind: str | None, target_kind: str | None, requested: str | None = None) -> str:
+def infer_relation_type(source_kind: str | None, target_kind: str | None, requested: str | None = None) -> str | None:
     """Infer deterministic workflow relations from endpoint node kinds."""
     requested_key = str(requested or "").strip().casefold().replace("-", "_")
     requested = RELATION_ALIASES.get(requested_key, requested_key)
-    if requested in STRUCTURAL_RELATIONS:
-        return requested
     if source_kind == "object" and target_kind == "operation":
         return "input_to"
     if source_kind == "operation" and target_kind == "object":
         return "produces"
     if source_kind in {"planning", "reasoning"}:
         return "leads_to" if requested == "leads_to" else "motivates"
-    return requested
+    if requested in STRUCTURAL_RELATIONS:
+        return requested
+    return None
 
 
 def _edge_endpoint(edge: dict[str, Any], side: str) -> Any:
@@ -228,8 +228,9 @@ def normalize_raw_graph_payload(graph: dict, row, extraction_id) -> tuple[dict, 
         kind = normalize_node_kind(node.get("node_kind") or node.get("node_kind_guess") or node.get("kind"))
         node["node_kind"] = kind
         node["node_kind_guess"] = kind
-        node["raw_name"] = str(node.get("raw_name") or node.get("canonical_name") or node.get("label") or node["node_id"])
-        node.setdefault("canonical_name", node.get("raw_name"))
+        name = str(node.get("canonical_name") or node.get("raw_name") or node.get("label") or node["node_id"])
+        node["canonical_name"] = name
+        node["raw_name"] = name
         node.setdefault("semantic_type", kind)
         for key in ("parameters", "identity", "state", "role", "context", "attributes_explicitly_mentioned", "paper_location"):
             node[key] = dict_or_empty(node.get(key))
@@ -274,12 +275,15 @@ def normalize_raw_graph_payload(graph: dict, row, extraction_id) -> tuple[dict, 
             node_kinds.get(edge["target_node"]),
             normalized_relation,
         )
-        edge["relation_type"] = inferred_relation if inferred_relation in RELATION_ALIASES.values() else "input_to"
-        if inferred_relation and inferred_relation != normalized_relation:
-            if normalized_relation:
-                changes["overrode_edge_relations"] += 1
-            else:
-                changes["inferred_edge_relations"] += 1
+        if inferred_relation in RELATION_ALIASES.values():
+            edge["relation_type"] = inferred_relation
+            if inferred_relation != normalized_relation:
+                if normalized_relation:
+                    changes["overrode_edge_relations"] += 1
+                else:
+                    changes["inferred_edge_relations"] += 1
+        else:
+            edge["relation_type"] = normalized_relation or "input_to"
         edge["attributes"] = dict_or_empty(edge.get("attributes"))
         edge["evidence_text"] = str(
             edge.get("evidence_text")

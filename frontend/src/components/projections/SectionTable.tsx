@@ -150,13 +150,21 @@ export default function SectionTable({
 
   useEffect(() => {
     setPrefs(p => {
-      const merged = Array.from(new Set([...p.known, ...allCols]))
-      if (merged.length === p.known.length) return p
-      const next = { ...p, known: merged }
+      const added = allCols.filter(column => !p.known.includes(column))
+      if (added.length === 0) return p
+      const known = [...p.known, ...added]
+      // New fields can be introduced by a post-processor after the user has
+      // saved column preferences. Reveal them once without re-enabling any
+      // columns the user previously hid.
+      const visible = Array.from(new Set([
+        ...p.visible,
+        ...defaultColumns(added, schemaOrder).filter(column => !p.visible.includes(column)),
+      ]))
+      const next = { ...p, known, visible }
       saveColPrefs(name, next)
       return next
     })
-  }, [allCols, name])
+  }, [allCols, name, schemaOrder])
 
   const visibleCols = prefs.visible.filter(c => prefs.known.includes(c))
 

@@ -52,7 +52,7 @@ def review_projections(
     sid = uuid.UUID(str(space_id))
     pid = uuid.UUID(str(project_id))
     if progress_callback:
-        progress_callback({"message": f"Reviewing projections for project {str(pid)[:8]}"})
+        progress_callback({"message": f"Starting post-processor for project {str(pid)[:8]}"})
     return run_projection_review(
         sid,
         pid,

@@ -8,7 +8,8 @@ import {
   getDefaultReviewPrompt,
 } from '../api/spaces'
 import { listSkills } from '../api/skills'
-import type { CustomSkill, PostProcessorProfile, Space, SpaceCreatePayload } from '../types'
+import { listPostProcessorScripts, uploadPostProcessorScript } from '../api/postProcessorScripts'
+import type { CustomSkill, PostProcessorProfile, PostProcessorScript, Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
 const REVIEW_SEARCH_TOOL_OPTIONS = ['web', 'uniprot', 'ncbi', 'crossref'] as const
@@ -50,7 +51,6 @@ type SpaceDraft = {
   description: string
   extraction_schema: Record<string, SchemaSection>
   system_prompt: string
-  field_descriptions: Record<string, string>
   review_prompt: string
   review_trackable: boolean
   review_allow_search: boolean
@@ -65,7 +65,6 @@ const EMPTY_DRAFT: SpaceDraft = {
   description: '',
   extraction_schema: {},
   system_prompt: '',
-  field_descriptions: {},
   review_prompt: '',
   review_trackable: true,
   review_allow_search: false,
@@ -78,6 +77,8 @@ const EMPTY_DRAFT: SpaceDraft = {
       prompt: null,
       tool_groups: ['reading'],
       skill_ids: [],
+      script: null,
+      output_columns: [],
       enabled: true,
     },
   ],
@@ -93,6 +94,13 @@ const toRecord = (value: unknown): Record<string, unknown> =>
 const stringifyFieldDescription = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
 
+const mergedSectionDescription = (sectionDescription: unknown, legacyDescription: unknown) => {
+  const existing = typeof sectionDescription === 'string' ? sectionDescription.trim() : ''
+  const legacy = stringifyFieldDescription(legacyDescription).trim()
+  if (!legacy || existing.includes(legacy)) return existing
+  return existing ? `${existing}\n\nExtraction guidance: ${legacy}` : legacy
+}
+
 const normalizeField = (value: unknown): SchemaField => {
   const obj = toRecord(value)
   return {
@@ -104,8 +112,12 @@ const normalizeField = (value: unknown): SchemaField => {
   }
 }
 
-const normalizeSchema = (value: unknown): Record<string, SchemaSection> => {
+const normalizeSchema = (
+  value: unknown,
+  legacyFieldDescriptions?: unknown,
+): Record<string, SchemaSection> => {
   const schema = toRecord(value)
+  const legacyDescriptions = toRecord(legacyFieldDescriptions)
   return Object.fromEntries(
     Object.entries(schema).map(([sectionKey, rawSection]) => {
       const section = toRecord(rawSection)
@@ -115,7 +127,7 @@ const normalizeSchema = (value: unknown): Record<string, SchemaSection> => {
         {
           ...section,
           type: typeof section.type === 'string' ? section.type : 'list',
-          description: typeof section.description === 'string' ? section.description : '',
+          description: mergedSectionDescription(section.description, legacyDescriptions[sectionKey]),
           filter: toRecord(section.filter),
           item_schema: Object.fromEntries(
             Object.entries(itemSchema).map(([fieldKey, rawField]) => [
@@ -133,6 +145,35 @@ const slugifyProcessorId = (value: string) => {
   const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
   return slug || 'reviewer'
 }
+
+const parseOutputColumns = (value: string): Array<{ name: string; description?: string }> => (
+  Array.from(new Set(value.split(',').map(item => item.trim()).filter(Boolean)))
+    .map(name => ({ name }))
+)
+
+const normalizeOutputColumns = (value: unknown): Array<{ name: string; description?: string }> => {
+  if (typeof value === 'string') return parseOutputColumns(value)
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const columns: Array<{ name: string; description?: string }> = []
+  value.forEach(item => {
+    const obj = item && typeof item === 'object' && !Array.isArray(item)
+      ? item as Record<string, unknown>
+      : null
+    const name = obj
+      ? String(obj.name ?? obj.id ?? '').trim()
+      : String(item ?? '').trim()
+    if (!name || seen.has(name.toLowerCase())) return
+    seen.add(name.toLowerCase())
+    const description = obj && typeof obj.description === 'string' ? obj.description : undefined
+    columns.push(description ? { name, description } : { name })
+  })
+  return columns
+}
+
+const outputColumnNames = (columns: PostProcessorProfile['output_columns']): string => (
+  (columns ?? []).map(column => column.name).filter(Boolean).join(', ')
+)
 
 const normalizePostProcessors = (value: unknown): PostProcessorProfile[] => {
   if (!Array.isArray(value) || value.length === 0) return EMPTY_DRAFT.post_processors
@@ -159,6 +200,19 @@ const normalizePostProcessors = (value: unknown): PostProcessorProfile[] => {
         skill_ids: Array.isArray(obj.skill_ids)
           ? Array.from(new Set(obj.skill_ids.map(String).filter(Boolean)))
           : [],
+        script: (() => {
+          const script = toRecord(obj.script)
+          const scriptId = typeof script.script_id === 'string' ? script.script_id.trim() : ''
+          if (!scriptId) return null
+          const timeout = Number(script.timeout_seconds)
+          return {
+            script_id: scriptId,
+            timeout_seconds: Number.isInteger(timeout) && timeout >= 1 && timeout <= 300 ? timeout : 30,
+          }
+        })(),
+        output_columns: normalizeOutputColumns(
+          obj.output_columns ?? obj.allowed_output_columns ?? obj.new_columns,
+        ),
         enabled: typeof obj.enabled === 'boolean' ? obj.enabled : true,
       }
     })
@@ -169,14 +223,8 @@ const draftFromObject = (obj: Record<string, unknown>): SpaceDraft => ({
   domain: typeof obj.domain === 'string' ? obj.domain : '',
   purpose: typeof obj.purpose === 'string' ? obj.purpose : 'tabular_database',
   description: typeof obj.description === 'string' ? obj.description : '',
-  extraction_schema: normalizeSchema(obj.extraction_schema),
+  extraction_schema: normalizeSchema(obj.extraction_schema, obj.field_descriptions),
   system_prompt: typeof obj.system_prompt === 'string' ? obj.system_prompt : '',
-  field_descriptions: Object.fromEntries(
-    Object.entries(toRecord(obj.field_descriptions)).map(([key, value]) => [
-      key,
-      stringifyFieldDescription(value),
-    ]),
-  ),
   review_prompt: typeof obj.review_prompt === 'string' ? obj.review_prompt : '',
   review_trackable: typeof obj.review_trackable === 'boolean' ? obj.review_trackable : true,
   review_allow_search:
@@ -210,7 +258,7 @@ const draftToPayload = (draft: SpaceDraft): SpaceCreatePayload => ({
   description: draft.description,
   extraction_schema: draft.extraction_schema,
   system_prompt: draft.system_prompt,
-  field_descriptions: draft.field_descriptions,
+  field_descriptions: {},
   review_prompt: draft.review_prompt.trim().length > 0 ? draft.review_prompt : null,
   review_trackable: draft.review_trackable,
   review_allow_search: draft.review_allow_search,
@@ -224,15 +272,17 @@ export default function SpacesPage() {
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [busy, setBusy] = useState(false)
   const [skills, setSkills] = useState<CustomSkill[]>([])
+  const [scripts, setScripts] = useState<PostProcessorScript[]>([])
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
   const importFileRef = useRef<HTMLInputElement>(null)
 
   const refresh = async () => {
     try {
-      const [list, skillList] = await Promise.all([listSpaces(), listSkills()])
+      const [list, skillList, scriptList] = await Promise.all([listSpaces(), listSkills(), listPostProcessorScripts()])
       setSpaces(list)
       setSkills(skillList)
+      setScripts(scriptList)
       if (selected) {
         const fresh = list.find(s => s.space_id === selected.space_id) ?? null
         if (fresh) {
@@ -450,6 +500,12 @@ export default function SpacesPage() {
               <SpaceForm
                 draft={editor.draft}
                 skills={skills}
+                scripts={scripts}
+                onUploadScript={async file => {
+                  const script = await uploadPostProcessorScript(file)
+                  setScripts(current => [...current, script].sort((a, b) => a.name.localeCompare(b.name)))
+                  return script
+                }}
                 onChange={draft => setEditor({ ...editor, draft })}
               />
             </div>
@@ -487,10 +543,14 @@ export default function SpacesPage() {
 function SpaceForm({
   draft,
   skills,
+  scripts,
+  onUploadScript,
   onChange,
 }: {
   draft: SpaceDraft
   skills: CustomSkill[]
+  scripts: PostProcessorScript[]
+  onUploadScript: (file: File) => Promise<PostProcessorScript>
   onChange: (draft: SpaceDraft) => void
 }) {
   const setDraft = (patch: Partial<SpaceDraft>) => onChange({ ...draft, ...patch })
@@ -513,14 +573,7 @@ function SpaceForm({
         key === oldKey ? [clean, value] : [key, value],
       ),
     )
-    const { [oldKey]: oldDescription, ...remainingDescriptions } = draft.field_descriptions
-    setDraft({
-      extraction_schema: next,
-      field_descriptions: {
-        ...remainingDescriptions,
-        [clean]: draft.field_descriptions[clean] ?? oldDescription ?? '',
-      },
-    })
+    setDraft({ extraction_schema: next })
   }
 
   const addSection = () => {
@@ -536,14 +589,12 @@ function SpaceForm({
         ...draft.extraction_schema,
         [key]: { type: 'list', description: '', filter: {}, item_schema: {} },
       },
-      field_descriptions: { ...draft.field_descriptions, [key]: '' },
     })
   }
 
   const removeSection = (sectionKey: string) => {
     const { [sectionKey]: _removed, ...nextSchema } = draft.extraction_schema
-    const { [sectionKey]: _removedDescription, ...nextDescriptions } = draft.field_descriptions
-    setDraft({ extraction_schema: nextSchema, field_descriptions: nextDescriptions })
+    setDraft({ extraction_schema: nextSchema })
   }
 
   const updateField = (sectionKey: string, fieldKey: string, patch: Partial<SchemaField>) => {
@@ -656,15 +707,6 @@ function SpaceForm({
                 value={section.description ?? ''}
                 rows={2}
                 onChange={description => updateSection(sectionKey, { description })}
-              />
-              <TextInput
-                label="Field description shown to agents"
-                value={draft.field_descriptions[sectionKey] ?? ''}
-                onChange={value =>
-                  setDraft({
-                    field_descriptions: { ...draft.field_descriptions, [sectionKey]: value },
-                  })
-                }
               />
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -804,6 +846,8 @@ function SpaceForm({
         <PostProcessorEditor
           processors={draft.post_processors}
           skills={skills}
+          scripts={scripts}
+          onUploadScript={onUploadScript}
           onChange={post_processors => setDraft({ post_processors })}
         />
       </Section>
@@ -814,16 +858,26 @@ function SpaceForm({
 function PostProcessorEditor({
   processors,
   skills,
+  scripts,
+  onUploadScript,
   onChange,
 }: {
   processors: PostProcessorProfile[]
   skills: CustomSkill[]
+  scripts: PostProcessorScript[]
+  onUploadScript: (file: File) => Promise<PostProcessorScript>
   onChange: (processors: PostProcessorProfile[]) => void
 }) {
+  const scriptUploadRef = useRef<HTMLInputElement>(null)
   const update = (index: number, patch: Partial<PostProcessorProfile>) => {
     onChange(processors.map((processor, i) => (
       i === index ? { ...processor, ...patch } : processor
     )))
+  }
+  const uploadScript = async (index: number, file: File | undefined) => {
+    if (!file) return
+    const script = await onUploadScript(file)
+    update(index, { script: { script_id: script.script_id, timeout_seconds: 30 } })
   }
   const remove = (index: number) => {
     if (processors.length <= 1) return
@@ -848,6 +902,8 @@ function PostProcessorEditor({
         prompt: null,
         tool_groups: ['reading'],
         skill_ids: [],
+        script: null,
+        output_columns: [],
         enabled: true,
       },
     ])
@@ -856,7 +912,7 @@ function PostProcessorEditor({
   return (
     <div className="space-y-3 text-xs text-slate-300">
       {processors.map((processor, index) => (
-        <div key={`${processor.id}-${index}`} className="rounded border border-slate-700 bg-slate-900/40 p-3 space-y-3">
+        <div key={index} className="rounded border border-slate-700 bg-slate-900/40 p-3 space-y-3">
           <div className="grid grid-cols-2 gap-2">
             <TextInput
               label="ID"
@@ -873,6 +929,11 @@ function PostProcessorEditor({
             label="Description"
             value={processor.description ?? ''}
             onChange={description => update(index, { description })}
+          />
+          <TextInput
+            label="Allowed output columns"
+            value={outputColumnNames(processor.output_columns)}
+            onChange={value => update(index, { output_columns: parseOutputColumns(value) })}
           />
           <TextArea
             label="Prompt override"
@@ -939,6 +1000,37 @@ function PostProcessorEditor({
               </div>
             )}
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs text-slate-300">
+              <span className="block mb-1">Deterministic script (optional)</span>
+              <select
+                value={processor.script?.script_id ?? ''}
+                onChange={e => update(index, {
+                  script: e.target.value
+                    ? { script_id: e.target.value, timeout_seconds: processor.script?.timeout_seconds ?? 30 }
+                    : null,
+                })}
+                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-2 text-sm text-slate-100 focus:outline-none focus:border-teal-500"
+              >
+                <option value="">No script</option>
+                {scripts.map(script => <option key={script.script_id} value={script.script_id}>{script.name} ({script.filename})</option>)}
+              </select>
+            </label>
+            <div className="flex items-end">
+              <button type="button" onClick={() => scriptUploadRef.current?.click()} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs">
+                Upload .py script
+              </button>
+              <input ref={scriptUploadRef} type="file" accept=".py,text/x-python" className="hidden" onChange={e => {
+                void uploadScript(index, e.target.files?.[0])
+                e.target.value = ''
+              }} />
+            </div>
+          </div>
+          {processor.script && (
+            <div className="text-xs text-slate-500">
+              This runs before the agent. It may save a winner patch, then invokes the agent only when it returns run_agent=true. Agent skills above are never executed as scripts.
+            </div>
+          )}
           <div className="flex justify-end">
             <button
               type="button"
@@ -1130,12 +1222,6 @@ function SpaceDetail({
         <SchemaOverview schema={schema} />
       </Section>
 
-      {space.field_descriptions && Object.keys(space.field_descriptions).length > 0 && (
-        <Section title="Field descriptions">
-          <FieldDescriptionsView descriptions={space.field_descriptions} />
-        </Section>
-      )}
-
       {space.system_prompt && (
         <Section title="System prompt">
           <PromptBlock text={space.system_prompt} />
@@ -1203,6 +1289,15 @@ function SpaceDetail({
                   {(processor.skill_ids ?? []).map(skillId => (
                     <span key={skillId} className="px-1.5 py-0.5 rounded bg-teal-950/70 text-teal-200 text-[11px]">
                       {skillNames.get(skillId) ?? skillId}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(processor.output_columns ?? []).length > 0 && (
+                <div className="mt-2 flex gap-1.5 flex-wrap">
+                  {(processor.output_columns ?? []).map(column => (
+                    <span key={column.name} className="px-1.5 py-0.5 rounded bg-indigo-950/70 text-indigo-200 text-[11px]">
+                      {column.name}
                     </span>
                   ))}
                 </div>
@@ -1281,25 +1376,6 @@ function SchemaOverview({ schema }: { schema: Record<string, SchemaSection> }) {
           </div>
         )
       })}
-    </div>
-  )
-}
-
-function FieldDescriptionsView({
-  descriptions,
-}: {
-  descriptions: Record<string, unknown>
-}) {
-  return (
-    <div className="space-y-2">
-      {Object.entries(descriptions).map(([key, value]) => (
-        <div key={key} className="border border-slate-800 bg-slate-950/50 rounded p-3">
-          <div className="font-mono text-xs text-slate-200">{key}</div>
-          <p className="mt-1 text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">
-            {stringifyFieldDescription(value) || '—'}
-          </p>
-        </div>
-      ))}
     </div>
   )
 }

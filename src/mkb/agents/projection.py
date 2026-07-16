@@ -27,6 +27,7 @@ from mkb.db.models import (
     ProjectionStatus,
     Space,
 )
+from mkb.spaces.schema_utils import merge_field_descriptions_into_schema
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,15 @@ def build_projection_agent(
     project_id: str | None = None,
 ) -> Agent:
     """Create a projection agent configured for a specific space."""
+    extraction_schema = merge_field_descriptions_into_schema(
+        space.extraction_schema,
+        space.field_descriptions,
+    )
     prompt = build_projection_prompt(
         domain=space.domain,
         system_prompt=space.system_prompt,
-        extraction_schema=space.extraction_schema,
-        field_descriptions=space.field_descriptions,
+        extraction_schema=extraction_schema,
+        field_descriptions={},
         purpose=getattr(space, "purpose", None),
         source_type=source_type,
         source_id=source_id,

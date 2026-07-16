@@ -11,6 +11,7 @@ the rest.
 from __future__ import annotations
 
 import logging
+import json
 import uuid
 from typing import Any
 
@@ -21,6 +22,7 @@ from mkb.agents.prompts.projection_review import default_review_prompt_for
 from mkb.agents.runner import AgentRunner
 from mkb.agents.tools.reading import READING_TOOLS
 from mkb.agents.tools.projection_review import PROJECTION_REVIEW_TOOLS
+from mkb.agents.tools.projection_review import save_reviewed_projection_patch
 from mkb.agents.tools.review_search import (
     get_projection_review_search_tools,
 )
@@ -32,6 +34,7 @@ from mkb.db.models import (
     Space,
 )
 from mkb.spaces.registry import resolve_post_processor
+from mkb.post_processors.registry import run_script as run_post_processor_script
 from mkb.skills.registry import skill_instruction_block
 
 logger = logging.getLogger(__name__)
@@ -42,7 +45,7 @@ BASE_REVIEWER_TOOLS = PROJECTION_REVIEW_TOOLS
 
 
 def _compact_followup_context(value: Any, *, max_chars: int = 8000) -> str:
-    text = str(value or "")
+    text = json.dumps(value, ensure_ascii=True, default=str) if not isinstance(value, str) else value
     return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
 
 
@@ -52,6 +55,7 @@ def build_projection_reviewer_agent(
     custom_prompt: str | None = None,
     tool_groups: list[str] | None = None,
     skill_ids: list[str] | None = None,
+    output_columns: list[dict] | None = None,
 ) -> Agent:
     """Create a projection reviewer agent.
 
@@ -77,6 +81,9 @@ def build_projection_reviewer_agent(
     skill_block = skill_instruction_block(skill_ids)
     if skill_block:
         instruction = f"{instruction.rstrip()}\n\n{skill_block}"
+    output_column_block = _post_processor_output_column_block(output_columns)
+    if output_column_block:
+        instruction = f"{instruction.rstrip()}\n\n{output_column_block}"
     groups = [str(group).strip().lower() for group in (tool_groups or ["reading"]) if str(group).strip()]
     optional_tools = []
     if "reading" in groups:
@@ -92,6 +99,50 @@ def build_projection_reviewer_agent(
     )
 
 
+def _post_processor_output_column_block(output_columns: list[dict] | None) -> str:
+    columns = []
+    for raw_column in output_columns or []:
+        if not isinstance(raw_column, dict):
+            continue
+        name = str(raw_column.get("name") or "").strip()
+        if not name:
+            continue
+        description = str(raw_column.get("description") or "").strip()
+        columns.append((name, description))
+    if not columns:
+        return (
+            "# Post-Processor Output Columns\n\n"
+            "This post-processor has no user-declared output columns. Do not "
+            "add new columns or keys outside the current extraction schema; "
+            "only correct, normalize, merge, or remove existing projection data."
+        )
+
+    column_lines = "\n".join(
+        f"- `{name}`: {description}" if description else f"- `{name}`"
+        for name, description in columns
+    )
+    return (
+        "# Post-Processor Output Columns\n\n"
+        "The user has explicitly allowed this post-processor to add ONLY these "
+        "new output columns/keys when they are needed by the post-processing "
+        "task:\n"
+        f"{column_lines}\n\n"
+        "Do not invent alternate names, duplicate variants, or similar "
+        "columns. Reuse these exact names across review runs. Leave an allowed "
+        "column empty/null when the value cannot be verified from the source "
+        "or enabled lookup tools."
+    )
+
+
+def _format_output_column_names(processor: dict) -> str:
+    names = [
+        str(column.get("name")).strip()
+        for column in (processor.get("output_columns") or [])
+        if isinstance(column, dict) and str(column.get("name") or "").strip()
+    ]
+    return ", ".join(names) if names else "none"
+
+
 def _processor_runtime(space: Space, reviewer_id: str | None = None) -> tuple[str | None, str | None, list[str], list[str], dict]:
     processor = resolve_post_processor(space, reviewer_id)
     prompt = processor.get("prompt") or getattr(space, "review_prompt", None)
@@ -104,6 +155,50 @@ def _processor_runtime(space: Space, reviewer_id: str | None = None) -> tuple[st
         skill_ids,
         processor,
     )
+
+
+def _post_processor_script_payload(
+    space: Space,
+    project_id: uuid.UUID,
+    frame_id: uuid.UUID,
+    projections: list[Projection],
+) -> dict:
+    return {
+        "space": {
+            "space_id": str(space.space_id),
+            "name": space.name,
+            "purpose": getattr(space, "purpose", None),
+            "extraction_schema": space.extraction_schema,
+        },
+        "project": {
+            "project_id": str(project_id),
+            "frame_id": str(frame_id),
+            "projection_count": len(projections),
+        },
+        "projections": [
+            {
+                "projection_id": str(projection.projection_id),
+                "data": projection.data,
+                "space_version": projection.space_version,
+                "status": projection.status.value,
+            }
+            for projection in projections
+        ],
+    }
+
+
+def _apply_script_patch(script_decision: dict) -> dict | None:
+    patch = script_decision.get("patch")
+    if not patch:
+        return None
+    result = save_reviewed_projection_patch(
+        str(patch["winning_projection_id"]),
+        patch["updates"],
+        str(patch.get("review_notes") or "Post-processor script applied."),
+    )
+    if result.get("error"):
+        raise ValueError(f"Post-processor script patch was not saved: {result['error']}")
+    return result
 
 
 async def _run_review_async(
@@ -136,6 +231,7 @@ async def _run_review_async(
             )
             .filter(Projection.deleted_at.is_(None))
             .filter(Projection.superseded_by_id.is_(None))
+            .order_by(Projection.created_at.desc())
             .all()
         )
         projection_count = len(projections_for_count)
@@ -155,12 +251,67 @@ async def _run_review_async(
         space_purpose = getattr(space, "purpose", None)
         selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
+        if progress_callback:
+            progress_callback({
+                "message": f"Running post-processor script for project {str(project_id)[:8]}",
+                "stage": "post_processor_script",
+            })
+        try:
+            script_decision = run_post_processor_script(
+                processor.get("script"),
+                _post_processor_script_payload(space, project_id, frame.frame_id, projections_for_count),
+            )
+        except ValueError as exc:
+            return {
+                "status": "error",
+                "space_id": str(space_id),
+                "project_id": str(project_id),
+                "reviewer_id": selected_reviewer_id,
+                "message": f"Post-processor script failed: {exc}",
+            }
+
+    try:
+        script_save = _apply_script_patch(script_decision)
+    except ValueError as exc:
+        return {
+            "status": "error",
+            "space_id": str(space_id),
+            "project_id": str(project_id),
+            "reviewer_id": selected_reviewer_id,
+            "message": str(exc),
+        }
+
+    if not script_decision["run_agent"]:
+        if progress_callback:
+            progress_callback({
+                "message": "Post-processor completed; agent review was not needed.",
+                "stage": "post_processor_complete",
+            })
+        return {
+            "status": "completed" if script_save else "skipped",
+            "space_id": str(space_id),
+            "space_name": space_name,
+            "project_id": str(project_id),
+            "reviewer_id": selected_reviewer_id,
+            "reviewer_name": processor.get("name"),
+            "message": "Post-processor script determined that agent review is not needed.",
+            "script": script_decision["script"],
+            "script_context": script_decision["context"],
+            "script_save": script_save,
+        }
+
+    if progress_callback:
+        progress_callback({
+            "message": "Post-processor found unresolved records; starting agent review.",
+            "stage": "agent_fallback",
+        })
     agent = build_projection_reviewer_agent(
         model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
         skill_ids=skill_ids,
+        output_columns=processor.get("output_columns"),
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -199,6 +350,15 @@ async def _run_review_async(
         )
     if skill_ids:
         message += f" Apply attached skill IDs: {', '.join(skill_ids)}."
+    if processor.get("output_columns"):
+        names = ", ".join(
+            str(column.get("name"))
+            for column in processor.get("output_columns", [])
+            if isinstance(column, dict) and column.get("name")
+        )
+        message += f" Allowed post-processor output columns: {names}."
+    if script_decision["context"] is not None:
+        message += f" Script pre-check context: {_compact_followup_context(script_decision['context'])}."
 
     result = await runner.run(
         session_id=session_id,
@@ -240,6 +400,9 @@ async def _run_review_async(
         "project_id": str(project_id),
         "projections_reviewed": projection_count,
         "agent_summary": result.final_text,
+        "script": script_decision["script"],
+        "script_context": script_decision["context"],
+        "script_save": script_save,
     }
 
 
@@ -319,6 +482,7 @@ async def run_projection_review_followup(
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
         skill_ids=skill_ids,
+        output_columns=processor.get("output_columns"),
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
     session_id = f"review_followup_{space_id}_{project_id}_{uuid.uuid4().hex[:8]}"
@@ -341,7 +505,8 @@ async def run_projection_review_followup(
         f"('{space_name}') and project {project_id}.\n\n"
         f"Selected post-processor: {processor.get('name')} "
         f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}; "
-        f"skill IDs: {', '.join(skill_ids) if skill_ids else 'none'}.\n\n"
+        f"skill IDs: {', '.join(skill_ids) if skill_ids else 'none'}; "
+        f"allowed output columns: {_format_output_column_names(processor)}.\n\n"
         f"User follow-up request:\n{cleaned_message}\n\n"
         f"Previous review job result, if available:\n"
         f"{_compact_followup_context(prior_result)}\n\n"
@@ -482,6 +647,7 @@ async def run_projection_review_all(
     return {
         "total_projects": len(results),
         "completed": sum(1 for r in results if r["status"] == "completed"),
+        "skipped": sum(1 for r in results if r["status"] == "skipped"),
         "failed": sum(1 for r in results if r["status"] == "error"),
         "results": results,
     }
@@ -510,6 +676,7 @@ async def run_projection_review_session(
         space = db.query(Space).filter_by(space_id=sid).first()
         if not space:
             return {"status": "error", "message": f"Space {sid} not found"}
+        selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
         # Filter to projects that actually have live completed projections
         frames = (
@@ -522,11 +689,13 @@ async def run_projection_review_session(
             return {"status": "error", "message": "No knowledge frames found for selected projects"}
 
         per_project_counts: dict[uuid.UUID, int] = {}
+        script_skips: dict[uuid.UUID, dict] = {}
+        script_contexts: dict[uuid.UUID, Any] = {}
         for pid in project_ids:
             fid = frame_by_pid.get(pid)
             if not fid:
                 continue
-            n = (
+            projections_for_project = (
                 db.query(Projection)
                 .filter_by(space_id=sid, frame_id=fid)
                 .filter(
@@ -536,12 +705,63 @@ async def run_projection_review_session(
                 )
                 .filter(Projection.deleted_at.is_(None))
                 .filter(Projection.superseded_by_id.is_(None))
-                .count()
+                .order_by(Projection.created_at.desc())
+                .all()
             )
-            if n > 0:
-                per_project_counts[pid] = n
+            if not projections_for_project:
+                continue
+            try:
+                script_decision = run_post_processor_script(
+                    processor.get("script"),
+                    _post_processor_script_payload(space, pid, fid, projections_for_project),
+                )
+            except ValueError as exc:
+                return {
+                    "status": "error",
+                    "space_id": str(sid),
+                    "project_id": str(pid),
+                    "reviewer_id": selected_reviewer_id,
+                    "message": f"Post-processor script failed: {exc}",
+                }
+            try:
+                script_save = _apply_script_patch(script_decision)
+            except ValueError as exc:
+                return {
+                    "status": "error",
+                    "space_id": str(sid),
+                    "project_id": str(pid),
+                    "reviewer_id": selected_reviewer_id,
+                    "message": str(exc),
+                }
+            if script_decision["run_agent"]:
+                per_project_counts[pid] = len(projections_for_project)
+                script_contexts[pid] = script_decision["context"]
+            else:
+                script_skips[pid] = {**script_decision, "script_save": script_save}
 
         if not per_project_counts:
+            if script_skips:
+                return {
+                    "mode": "session",
+                    "space_id": str(sid),
+                    "space_name": space.name,
+                    "reviewer_id": selected_reviewer_id,
+                    "reviewer_name": processor.get("name"),
+                    "total_projects": len(script_skips),
+                    "completed": sum(1 for decision in script_skips.values() if decision["script_save"]),
+                    "skipped": sum(1 for decision in script_skips.values() if not decision["script_save"]),
+                    "results": [
+                        {
+                            "project_id": str(pid),
+                            "status": "completed" if decision["script_save"] else "skipped",
+                            "message": "Post-processor script completed without agent review.",
+                            "script": decision["script"],
+                            "script_context": decision["context"],
+                            "script_save": decision["script_save"],
+                        }
+                        for pid, decision in script_skips.items()
+                    ],
+                }
             return {
                 "status": "error",
                 "message": "None of the selected projects have completed projections in this space",
@@ -549,7 +769,6 @@ async def run_projection_review_session(
 
         space_name = space.name
         space_purpose = getattr(space, "purpose", None)
-        selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
         model,
@@ -557,6 +776,7 @@ async def run_projection_review_session(
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
         skill_ids=skill_ids,
+        output_columns=processor.get("output_columns"),
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
@@ -565,6 +785,7 @@ async def run_projection_review_session(
 
     project_lines = "\n".join(
         f"  {i+1}. project_id={pid} ({n} completed projection run(s))"
+        + (f"; script context: {_compact_followup_context(script_contexts[pid])}" if script_contexts.get(pid) is not None else "")
         for i, (pid, n) in enumerate(per_project_counts.items())
     )
     message = (
@@ -572,7 +793,8 @@ async def run_projection_review_session(
         f"{len(per_project_counts)} project(s) in space {sid} ('{space_name}').\n\n"
         f"Selected post-processor: {processor.get('name')} "
         f"(id={selected_reviewer_id}); tool groups: {', '.join(tool_groups)}; "
-        f"skill IDs: {', '.join(skill_ids) if skill_ids else 'none'}.\n\n"
+        f"skill IDs: {', '.join(skill_ids) if skill_ids else 'none'}; "
+        f"allowed output columns: {_format_output_column_names(processor)}.\n\n"
         f"Projects to review (one at a time, in order):\n{project_lines}\n\n"
         f"For EACH project, in order:\n"
         f"  1. Call get_all_projections_for_review(space_id, project_id) to "
@@ -624,6 +846,18 @@ async def run_projection_review_session(
                 "status": "completed" if reviewed else "unknown",
                 "projection_id": str(reviewed.projection_id) if reviewed else None,
             })
+    summary.extend(
+        {
+            "project_id": str(pid),
+            "status": "completed" if decision["script_save"] else "skipped",
+            "projection_id": None,
+            "message": "Post-processor script completed without agent review.",
+            "script": decision["script"],
+            "script_context": decision["context"],
+            "script_save": decision["script_save"],
+        }
+        for pid, decision in script_skips.items()
+    )
 
     return {
         "mode": "session",
@@ -631,8 +865,9 @@ async def run_projection_review_session(
         "space_name": space_name,
         "reviewer_id": selected_reviewer_id,
         "reviewer_name": processor.get("name"),
-        "total_projects": len(per_project_counts),
+        "total_projects": len(summary),
         "completed": sum(1 for s in summary if s["status"] == "completed"),
+        "skipped": sum(1 for decision in script_skips.values() if not decision["script_save"]),
         "results": summary,
         "agent_summary": result.final_text,
     }

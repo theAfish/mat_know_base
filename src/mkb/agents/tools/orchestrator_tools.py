@@ -409,7 +409,7 @@ def save_space(
     purpose: str,
     extraction_schema: dict,
     system_prompt: str,
-    field_descriptions: dict,
+    field_descriptions: dict | None = None,
     description: str = "",
 ) -> dict:
     """Persist a NEW projection space (schema) co-designed with the user.
@@ -422,9 +422,11 @@ def save_space(
         name: Unique short identifier (snake_case), e.g. "catalysis_qa".
         domain: Research domain string, e.g. "heterogeneous catalysis".
         purpose: One of "tabular_database", "qa_benchmark", "skill_cards", "freeform".
-        extraction_schema: The JSON schema (shape depends on purpose).
+        extraction_schema: The JSON schema (shape depends on purpose). Put
+            field and section guidance in schema ``description`` values.
         system_prompt: Domain-specific instructions for the projection agent.
-        field_descriptions: Per-top-level-field extraction guidance.
+        field_descriptions: Legacy guidance field; merged into top-level schema
+            descriptions if provided.
         description: Optional human-readable description.
     """
     from mkb import api

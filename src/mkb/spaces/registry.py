@@ -15,7 +15,10 @@ from pathlib import Path
 
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Space
-from mkb.spaces.schema_utils import normalize_extraction_schema
+from mkb.spaces.schema_utils import (
+    merge_field_descriptions_into_schema,
+    normalize_extraction_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +97,56 @@ def _default_post_processor_from_legacy(
         "prompt": review_prompt or None,
         "tool_groups": tool_groups,
         "skill_ids": [],
+        "output_columns": [],
         "enabled": True,
+    }
+
+
+def _normalize_output_columns(value) -> list[dict]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = []
+
+    columns: list[dict] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("id") or "").strip()
+            description = str(item.get("description") or "").strip()
+        else:
+            name = str(item).strip()
+            description = ""
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        columns.append({
+            "name": name,
+            "description": description,
+        })
+    return columns
+
+
+def _normalize_post_processor_script(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    script_id = str(value.get("script_id") or "").strip()
+    if not script_id:
+        return None
+    try:
+        timeout_seconds = int(value.get("timeout_seconds", 30))
+    except (TypeError, ValueError):
+        timeout_seconds = 30
+    return {
+        "script_id": script_id,
+        "timeout_seconds": min(300, max(1, timeout_seconds)),
     }
 
 
@@ -113,6 +165,12 @@ def _normalize_post_processors(value, *, legacy_defaults: dict | None = None) ->
                 "prompt": raw.get("prompt") if isinstance(raw.get("prompt"), str) and raw.get("prompt").strip() else None,
                 "tool_groups": _normalize_tool_groups(raw.get("tool_groups") or raw.get("tools")),
                 "skill_ids": _normalize_skill_ids(raw.get("skill_ids") or raw.get("skills")),
+                "script": _normalize_post_processor_script(raw.get("script")),
+                "output_columns": _normalize_output_columns(
+                    raw.get("output_columns")
+                    or raw.get("allowed_output_columns")
+                    or raw.get("new_columns")
+                ),
                 "enabled": bool(raw.get("enabled", True)),
             })
 
@@ -181,7 +239,7 @@ def create_space(
     domain: str,
     extraction_schema: dict,
     system_prompt: str,
-    field_descriptions: dict,
+    field_descriptions: dict | None = None,
     description: str | None = None,
     purpose: str = "tabular_database",
     review_prompt: str | None = None,
@@ -197,7 +255,8 @@ def create_space(
         domain: Research domain (e.g., "heterogeneous catalysis").
         extraction_schema: JSON schema defining what fields to extract.
         system_prompt: Domain-specific instructions for the projection agent.
-        field_descriptions: Per-field extraction guidance.
+        field_descriptions: Legacy per-field extraction guidance. Merged into
+            top-level schema descriptions on save.
         description: Optional human-readable description.
         purpose: Kind of projection (tabular_database | qa_benchmark | skill_cards | freeform).
         review_prompt: Optional override for the projection reviewer prompt.
@@ -214,7 +273,8 @@ def create_space(
         if existing:
             return {"error": f"Space '{name}' already exists.", "space_id": str(existing.space_id)}
 
-        normalized_schema = _maybe_normalize_schema(extraction_schema, purpose)
+        merged_schema = merge_field_descriptions_into_schema(extraction_schema, field_descriptions)
+        normalized_schema = _maybe_normalize_schema(merged_schema, purpose)
         normalized_search_tools = _normalize_review_search_tools(review_search_tools)
         normalized_processors = _normalize_post_processors(
             post_processors,
@@ -233,7 +293,7 @@ def create_space(
             purpose=purpose,
             extraction_schema=normalized_schema,
             system_prompt=system_prompt,
-            field_descriptions=field_descriptions,
+            field_descriptions={},
             review_prompt=(review_prompt or None),
             review_trackable=bool(review_trackable),
             review_allow_search=bool(review_allow_search),
@@ -302,6 +362,15 @@ def update_space(
         if "purpose" in changes and new_purpose not in VALID_PURPOSES:
             return {"error": f"Invalid purpose '{new_purpose}'."}
 
+        if "extraction_schema" in changes or "field_descriptions" in changes:
+            schema_value = changes.get("extraction_schema", space.extraction_schema)
+            guidance_value = changes.get("field_descriptions", space.field_descriptions)
+            changes["extraction_schema"] = merge_field_descriptions_into_schema(
+                schema_value,
+                guidance_value,
+            )
+            changes["field_descriptions"] = {}
+
         for key, value in changes.items():
             if key not in allowed_fields:
                 logger.warning("Ignoring unknown field: %s", key)
@@ -357,7 +426,7 @@ def load_space_from_file(filepath: str | Path) -> dict:
         "description": "...",
         "extraction_schema": {...},
         "system_prompt": "...",
-        "field_descriptions": {...}
+        "field_descriptions": {...}  # legacy; merged into schema descriptions
     }
     """
     path = Path(filepath)
@@ -367,7 +436,7 @@ def load_space_from_file(filepath: str | Path) -> dict:
         domain=data["domain"],
         extraction_schema=data["extraction_schema"],
         system_prompt=data["system_prompt"],
-        field_descriptions=data["field_descriptions"],
+        field_descriptions=data.get("field_descriptions", {}),
         description=data.get("description"),
         purpose=data.get("purpose", "tabular_database"),
         review_prompt=data.get("review_prompt"),
@@ -380,7 +449,10 @@ def load_space_from_file(filepath: str | Path) -> dict:
 
 def _space_to_dict(space: Space) -> dict:
     purpose = getattr(space, "purpose", "tabular_database") or "tabular_database"
-    schema = space.extraction_schema or {}
+    schema = merge_field_descriptions_into_schema(
+        space.extraction_schema or {},
+        space.field_descriptions or {},
+    )
     if purpose == "tabular_database":
         schema = normalize_extraction_schema(schema)
     return {
@@ -391,7 +463,7 @@ def _space_to_dict(space: Space) -> dict:
         "purpose": purpose,
         "extraction_schema": schema,
         "system_prompt": space.system_prompt,
-        "field_descriptions": space.field_descriptions,
+        "field_descriptions": {},
         "review_prompt": getattr(space, "review_prompt", None),
         "review_trackable": bool(getattr(space, "review_trackable", True)),
         "review_allow_search": bool(getattr(space, "review_allow_search", False)),

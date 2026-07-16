@@ -27,6 +27,39 @@ def normalize_extraction_schema(extraction_schema: dict | None) -> dict:
     return {str(key): _normalize_schema_node(value) for key, value in extraction_schema.items()}
 
 
+def merge_field_descriptions_into_schema(
+    extraction_schema: dict | None,
+    field_descriptions: dict | None,
+) -> dict:
+    """Fold legacy top-level field guidance into schema node descriptions."""
+    schema = deepcopy(extraction_schema) if isinstance(extraction_schema, dict) else {}
+    if not isinstance(field_descriptions, dict):
+        return schema
+
+    for key, raw_description in field_descriptions.items():
+        description = raw_description if isinstance(raw_description, str) else str(raw_description)
+        description = description.strip()
+        if not description:
+            continue
+
+        section_key = str(key)
+        node = schema.get(section_key)
+        if not isinstance(node, dict):
+            continue
+
+        existing = node.get("description") if isinstance(node.get("description"), str) else ""
+        existing = existing.strip()
+        if existing and description in existing:
+            continue
+        node["description"] = (
+            f"{existing}\n\nExtraction guidance: {description}"
+            if existing
+            else description
+        )
+
+    return schema
+
+
 def _normalize_schema_node(node: Any) -> Any:
     if isinstance(node, dict):
         normalized = {key: _normalize_schema_node(value) for key, value in node.items()}

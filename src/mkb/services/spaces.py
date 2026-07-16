@@ -12,7 +12,7 @@ def create_space(
     domain: str,
     extraction_schema: dict,
     system_prompt: str,
-    field_descriptions: dict,
+    field_descriptions: dict | None = None,
     description: str | None = None,
     purpose: str = "tabular_database",
     review_prompt: str | None = None,
@@ -69,4 +69,3 @@ def get_space(space_id_or_name: str) -> dict | None:
 
 
 # ── Projections ──────────────────────────────────────────────────
-

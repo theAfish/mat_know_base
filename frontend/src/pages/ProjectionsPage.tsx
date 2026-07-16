@@ -311,7 +311,7 @@ export default function ProjectionsPage() {
           <p className="text-sm text-slate-400">Aggregated extraction results per space.</p>
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-xs text-slate-400">Reviewer:</label>
+          <label className="text-xs text-slate-400">Post processor:</label>
           <select
             value={selectedReviewerId}
             onChange={e => setSelectedReviewerId(e.target.value)}
@@ -354,7 +354,7 @@ export default function ProjectionsPage() {
             }
             className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white rounded text-sm font-medium"
           >
-            {isReviewing ? 'Reviewing…' : '▶ Run Review'}
+            {isReviewing ? 'Processing…' : '▶ Run Post Processor'}
           </button>
         </div>
       </div>

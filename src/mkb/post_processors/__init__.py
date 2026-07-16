@@ -1,0 +1,1 @@
+"""Deterministic post-processor script registry."""

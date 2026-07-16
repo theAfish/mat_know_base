@@ -109,6 +109,7 @@ space_result = api.create_space(
     extraction_schema={
         "catalysts": {
             "type": "list",
+            "description": "All catalyst materials studied, including composition and performance metrics.",
             "item_schema": {
                 "name": {"type": "string", "required": True},
                 "composition": {"type": "string", "required": True},
@@ -120,6 +121,7 @@ space_result = api.create_space(
         },
         "reactions": {
             "type": "list",
+            "description": "All chemical reactions described, with reactants, products, and conditions.",
             "item_schema": {
                 "name": {"type": "string", "required": True},
                 "reactants": {"type": "list", "required": True},
@@ -130,10 +132,6 @@ space_result = api.create_space(
         },
     },
     system_prompt="Extract catalyst materials and reactions from this paper.",
-    field_descriptions={
-        "catalysts": "All catalyst materials studied, including composition and performance metrics.",
-        "reactions": "All chemical reactions described, with reactants, products, and conditions.",
-    },
     description="Heterogeneous catalysis data extraction",
 )
 print(f"Space created: {space_result}")

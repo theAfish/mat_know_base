@@ -132,7 +132,19 @@ export interface PostProcessorProfile {
   prompt?: string | null
   tool_groups: string[]
   skill_ids?: string[]
+  script?: {
+    script_id: string
+    timeout_seconds?: number
+  } | null
+  output_columns?: Array<{ name: string; description?: string }>
   enabled?: boolean
+}
+
+export interface PostProcessorScript {
+  script_id: string
+  name: string
+  filename: string
+  created_at?: string | null
 }
 
 export interface CustomSkill {
@@ -157,7 +169,7 @@ export interface SpaceCreatePayload {
   domain: string
   extraction_schema: Record<string, unknown>
   system_prompt: string
-  field_descriptions: Record<string, unknown>
+  field_descriptions?: Record<string, unknown>
   description?: string
   purpose?: string
   review_prompt?: string | null

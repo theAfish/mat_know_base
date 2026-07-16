@@ -628,7 +628,7 @@ def main():
     p.add_argument("--description", default=None)
     p.add_argument("--system-prompt", default=None)
     p.add_argument("--schema-file", type=argparse.FileType("r"), default=None, help="JSON file with extraction schema")
-    p.add_argument("--field-descriptions", type=argparse.FileType("r"), default=None, help="JSON file with field descriptions")
+    p.add_argument("--field-descriptions", type=argparse.FileType("r"), default=None, help="Legacy JSON guidance file; merged into schema descriptions")
 
     p = space_sub.add_parser("load", help="Create a space from a JSON file")
     p.add_argument("file", help="Path to JSON space definition file")

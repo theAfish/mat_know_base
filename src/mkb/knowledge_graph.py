@@ -26,6 +26,7 @@ LEGACY_KG_SPACE_NAMES = {
 GLOBAL_KG_SPACE_SCHEMA = {
     "concepts": {
         "type": "list",
+        "description": "Concept nodes with optional aliases and references to frame/database context.",
         "item_schema": {
             "label": {"type": "string", "required": True},
             "aliases": {"type": "list", "item_type": "string"},
@@ -44,6 +45,7 @@ GLOBAL_KG_SPACE_SCHEMA = {
     },
     "relations": {
         "type": "list",
+        "description": "Directed concept-to-concept relations with evidence level and source references.",
         "item_schema": {
             "source": {"type": "string", "required": True},
             "relation": {"type": "string", "required": True},
@@ -70,11 +72,6 @@ GLOBAL_KG_SYSTEM_PROMPT = (
     "references, not as extra nodes."
 )
 
-GLOBAL_KG_FIELD_DESCRIPTIONS = {
-    "concepts": "Concept nodes with optional aliases and references to frame/database context.",
-    "relations": "Directed concept-to-concept relations with evidence level and source references.",
-}
-
 LEGACY_FRAME_GRAPH_KEYS = {
     "knowledge_graph",
     "knowledge_graphs",
@@ -97,7 +94,7 @@ def ensure_global_kg_space() -> Space:
             domain=GLOBAL_KG_SPACE_DOMAIN,
             extraction_schema=GLOBAL_KG_SPACE_SCHEMA,
             system_prompt=GLOBAL_KG_SYSTEM_PROMPT,
-            field_descriptions=GLOBAL_KG_FIELD_DESCRIPTIONS,
+            field_descriptions={},
             version=1,
         )
         session.add(space)
