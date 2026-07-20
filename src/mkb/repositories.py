@@ -6,6 +6,7 @@ import json
 import hashlib
 import uuid
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any, BinaryIO, Protocol
 
 from mkb.exceptions import ConflictError, NotFoundError, ValidationError
@@ -154,10 +155,12 @@ class Sources:
         object_store: ObjectStore,
         *,
         default_bucket: str = "raw",
+        on_rollback: Callable[[Callable[[], None]], None] | None = None,
     ):
         self._repository = repository
         self._object_store = object_store
         self._default_bucket = default_bucket
+        self._on_rollback = on_rollback
 
     def get(self, source_id: str | uuid.UUID) -> Source | None:
         return self._repository.get(_identifier(source_id, "source_id"))
@@ -204,13 +207,18 @@ class Sources:
         )
         self._object_store.put_bytes(self._default_bucket, key, data)
         try:
-            return creator(source, collection_id=collection_identifier)
+            created = creator(source, collection_id=collection_identifier)
         except Exception:
             try:
                 self._object_store.delete(self._default_bucket, key)
             except Exception:
                 pass
             raise
+        if self._on_rollback is not None:
+            self._on_rollback(
+                lambda: self._object_store.delete(self._default_bucket, key)
+            )
+        return created
 
     def add_text(
         self,
@@ -277,11 +285,13 @@ class Artifacts:
         *,
         default_bucket: str = "processed",
         sources: Sources | None = None,
+        on_rollback: Callable[[Callable[[], None]], None] | None = None,
     ):
         self._repository = repository
         self._object_store = object_store
         self._default_bucket = default_bucket
         self._sources = sources
+        self._on_rollback = on_rollback
 
     def get(self, artifact_id: str | uuid.UUID) -> Artifact | None:
         return self._repository.get(_identifier(artifact_id, "artifact_id"))
@@ -335,13 +345,18 @@ class Artifacts:
         )
         self._object_store.put_bytes(self._default_bucket, key, data)
         try:
-            return creator(artifact)
+            created = creator(artifact)
         except Exception:
             try:
                 self._object_store.delete(self._default_bucket, key)
             except Exception:
                 pass
             raise
+        if self._on_rollback is not None:
+            self._on_rollback(
+                lambda: self._object_store.delete(self._default_bucket, key)
+            )
+        return created
 
     def require(self, artifact_id: str | uuid.UUID) -> Artifact:
         artifact = self.get(artifact_id)

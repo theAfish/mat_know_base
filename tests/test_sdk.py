@@ -2,7 +2,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from mkb import KnowledgeBase, MKBConfig, MKBError, Pipeline, Step, ValidationError
+from mkb import (
+    KnowledgeBase,
+    MKBConfig,
+    MKBError,
+    Pipeline,
+    Pipelines,
+    Step,
+    Steps,
+    ValidationError,
+)
+from mkb.adapters import InMemoryGraphStore
+from mkb.registries import Parsers
 
 
 def _services(calls, identity):
@@ -135,3 +146,64 @@ def test_from_url_rejects_invalid_configuration(tmp_path):
             database_url=f"sqlite:///{tmp_path / 'invalid.db'}",
             object_store_url="ftp://example.test/data",
         )
+
+
+def test_from_url_injects_owned_resources_registries_and_capabilities(tmp_path):
+    class Resource:
+        def __init__(self, capabilities):
+            self.capabilities = frozenset(capabilities)
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class GraphResource(InMemoryGraphStore):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            super().close()
+
+    graph_store = GraphResource()
+    model_provider = Resource({"model_generation"})
+    model_provider.identity = "test/provider"
+    job_backend = Resource({"durable_submission"})
+    injected_steps = Steps()
+    bindings = {}
+
+    def parser_factory(kb):
+        bindings["parser_kb"] = kb
+        return Parsers(kb)
+
+    def pipeline_factory(kb, capabilities):
+        bindings["pipeline_kb"] = kb
+        bindings["capabilities"] = capabilities
+        return Pipelines(kb, capabilities=capabilities)
+
+    kb = KnowledgeBase.from_url(
+        database_url=f"sqlite:///{tmp_path / 'injected.db'}",
+        graph_store=graph_store,
+        model_provider=model_provider,
+        job_backend=job_backend,
+        parser_registry_factory=parser_factory,
+        pipeline_registry_factory=pipeline_factory,
+        steps=injected_steps,
+    )
+
+    assert kb.graph_store is graph_store
+    assert kb.model_provider is model_provider
+    assert kb.job_backend is job_backend
+    assert kb.steps is injected_steps
+    assert bindings["parser_kb"] is kb
+    assert bindings["pipeline_kb"] is kb
+    assert {"transactions", "graph_traversal", "model_generation", "durable_submission"} <= (
+        bindings["capabilities"]
+    )
+
+    kb.close()
+
+    assert graph_store.closed is True
+    assert model_provider.closed is True
+    assert job_backend.closed is True

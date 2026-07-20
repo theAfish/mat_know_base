@@ -6,13 +6,13 @@ objects to a staging key, then commits the final database reference. On failure,
 the staging object is removed; if cleanup itself fails it is intentionally visible
 to `mkb reconcile` as an orphan.
 
-For new portable databases, `KnowledgeBase.transaction()` supplies collection, record,
-and extraction-schema repositories bound to one SQLAlchemy transaction. Successful
-exit commits all relational writes; an exception rolls them all back. Do not perform
-irreversible network or object-store work inside that scope and assume it will roll
-back. Portable source ingestion currently compensates an immediate metadata failure by
-deleting the newly written object, but it is intentionally excluded from the relational
-transaction object until durable staging and reconciliation are implemented.
+For new portable databases, `KnowledgeBase.transaction()` supplies collection, source,
+artifact, record, schema, and projection repositories bound to one SQLAlchemy
+transaction. Successful exit commits all relational writes. An exception rolls them
+back and performs best-effort deletion of source/artifact objects written in that
+scope, in reverse order. Object storage still does not participate in the database
+transaction: failed compensation remains detectable as an orphan through
+reconciliation, and callers must use stable IDs so retries are safe.
 
 | Workflow | Durable start | Completion boundary | Retry identity / compensation |
 |---|---|---|---|

@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from mkb.exceptions import ConflictError, MKBError, ValidationError
 from mkb.graph import Graph
 from mkb.pipelines import Pipelines
-from mkb.ports import Database, GraphStore, ObjectStore
+from mkb.ports import Database, GraphStore, JobBackend, ModelProvider, ObjectStore
 from mkb.repositories import (
     Artifacts,
     Collections,
@@ -119,6 +119,8 @@ class KnowledgeBase:
         database: Database | None = None,
         object_store: ObjectStore | None = None,
         graph_store: GraphStore | None = None,
+        model_provider: ModelProvider | None = None,
+        job_backend: JobBackend | None = None,
         collections: Collections | None = None,
         sources: Sources | None = None,
         artifacts: Artifacts | None = None,
@@ -128,6 +130,12 @@ class KnowledgeBase:
         capabilities: frozenset[str] | None = None,
         schema_manager: Any | None = None,
         transaction_factory: Callable[[Any], Transaction] | None = None,
+        parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
+        pipeline_registry_factory: Callable[
+            ["KnowledgeBase", frozenset[str]], Pipelines
+        ]
+        | None = None,
+        steps: Steps | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()
         self.config = config or MKBConfig()
@@ -135,14 +143,14 @@ class KnowledgeBase:
         self.object_store = object_store
         self.graph_store = graph_store
         self.graph = Graph(graph_store) if graph_store is not None else None
+        self.model_provider = model_provider
+        self.job_backend = job_backend
         self.collections = collections
         self.sources = sources
         self.artifacts = artifacts
         self.records = records
         self.schemas = schemas
         self.projections = projections
-        self.parsers = Parsers(self)
-        self.steps = Steps()
         self._schema_manager = schema_manager
         self._transaction_factory = transaction_factory
         detected_capabilities = set(capabilities or ())
@@ -152,7 +160,22 @@ class KnowledgeBase:
             detected_capabilities.add("object_streaming")
         if graph_store is not None:
             detected_capabilities.update(graph_store.capabilities)
-        self.pipelines = Pipelines(self, capabilities=frozenset(detected_capabilities))
+        if model_provider is not None:
+            detected_capabilities.update(model_provider.capabilities)
+        if job_backend is not None:
+            detected_capabilities.update(job_backend.capabilities)
+        effective_capabilities = frozenset(detected_capabilities)
+        self.parsers = (
+            parser_registry_factory(self)
+            if parser_registry_factory is not None
+            else Parsers(self)
+        )
+        self.steps = steps if steps is not None else Steps()
+        self.pipelines = (
+            pipeline_registry_factory(self, effective_capabilities)
+            if pipeline_registry_factory is not None
+            else Pipelines(self, capabilities=effective_capabilities)
+        )
         self._closed = False
 
     @classmethod
@@ -186,6 +209,15 @@ class KnowledgeBase:
         object_store_access_key: str | None = None,
         object_store_secret_key: str | None = None,
         capabilities: frozenset[str] | None = None,
+        graph_store: GraphStore | None = None,
+        model_provider: ModelProvider | None = None,
+        job_backend: JobBackend | None = None,
+        parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
+        pipeline_registry_factory: Callable[
+            ["KnowledgeBase", frozenset[str]], Pipelines
+        ]
+        | None = None,
+        steps: Steps | None = None,
     ) -> "KnowledgeBase":
         """Create an independent client without reading global environment settings.
 
@@ -235,6 +267,12 @@ class KnowledgeBase:
                 database=database,
                 object_store=object_store,
                 capabilities=capabilities,
+                graph_store=graph_store,
+                model_provider=model_provider,
+                job_backend=job_backend,
+                parser_registry_factory=parser_registry_factory,
+                pipeline_registry_factory=pipeline_registry_factory,
+                steps=steps,
             )
         except Exception:
             if object_store is not None:
@@ -291,6 +329,15 @@ class KnowledgeBase:
         database: Database,
         object_store: ObjectStore | None,
         capabilities: frozenset[str] | None = None,
+        graph_store: GraphStore | None = None,
+        model_provider: ModelProvider | None = None,
+        job_backend: JobBackend | None = None,
+        parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
+        pipeline_registry_factory: Callable[
+            ["KnowledgeBase", frozenset[str]], Pipelines
+        ]
+        | None = None,
+        steps: Steps | None = None,
     ) -> "KnowledgeBase":
         from mkb.adapters.generic_repositories import (
             GenericArtifactRepository,
@@ -304,6 +351,28 @@ class KnowledgeBase:
         from mkb.adapters.graph import InMemoryGraphStore
 
         def transaction_factory(session) -> Transaction:
+            rollback_actions: list[Callable[[], None]] = []
+            transaction_sources = (
+                Sources(
+                    GenericSourceRepository(database, session),
+                    object_store,
+                    default_bucket=config.raw_bucket,
+                    on_rollback=rollback_actions.append,
+                )
+                if object_store is not None
+                else None
+            )
+            transaction_artifacts = (
+                Artifacts(
+                    GenericArtifactRepository(database, session),
+                    object_store,
+                    default_bucket=config.processed_bucket,
+                    sources=transaction_sources,
+                    on_rollback=rollback_actions.append,
+                )
+                if object_store is not None and transaction_sources is not None
+                else None
+            )
             return Transaction(
                 collections=Collections(GenericCollectionRepository(database, session)),
                 records=Records(GenericRecordRepository(database, session)),
@@ -313,6 +382,9 @@ class KnowledgeBase:
                 projections=Projections(
                     GenericProjectionRepository(database, session)
                 ),
+                sources=transaction_sources,
+                artifacts=transaction_artifacts,
+                _rollback_actions=rollback_actions,
             )
 
         sources = (
@@ -329,7 +401,9 @@ class KnowledgeBase:
             config=config,
             database=database,
             object_store=object_store,
-            graph_store=InMemoryGraphStore(),
+            graph_store=graph_store if graph_store is not None else InMemoryGraphStore(),
+            model_provider=model_provider,
+            job_backend=job_backend,
             collections=Collections(GenericCollectionRepository(database)),
             sources=sources,
             artifacts=(
@@ -348,6 +422,9 @@ class KnowledgeBase:
             capabilities=capabilities,
             schema_manager=GenericSchemaManager(database),
             transaction_factory=transaction_factory,
+            parser_registry_factory=parser_registry_factory,
+            pipeline_registry_factory=pipeline_registry_factory,
+            steps=steps,
         )
 
     def __enter__(self) -> "KnowledgeBase":
@@ -371,6 +448,10 @@ class KnowledgeBase:
             self.object_store.close()
         if self.graph_store is not None:
             self.graph_store.close()
+        if self.model_provider is not None:
+            self.model_provider.close()
+        if self.job_backend is not None:
+            self.job_backend.close()
         if self.database is not None:
             self.database.close()
         self._closed = True
@@ -399,8 +480,15 @@ class KnowledgeBase:
         self._ensure_open()
         if self.database is None or self._transaction_factory is None:
             raise ConflictError("Transactions are unavailable for this client")
-        with self.database.transaction() as session:
-            yield self._transaction_factory(session)
+        transaction: Transaction | None = None
+        try:
+            with self.database.transaction() as session:
+                transaction = self._transaction_factory(session)
+                yield transaction
+        except Exception:
+            if transaction is not None:
+                transaction._compensate()
+            raise
 
     def _call(self, name: str, *args, **kwargs):
         self._ensure_open()

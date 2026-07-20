@@ -126,14 +126,18 @@ to simplify the new architecture.
 - [x] Introduce an immutable `MKBConfig` that can be created from explicit Python
       values. Environment and YAML loading should be optional constructors, not import-
       time behavior.
-- [ ] Move engine and session creation out of module globals in `mkb.db.engine` and into
-      an injected SQLAlchemy adapter owned by `KnowledgeBase`.
-- [ ] Inject object storage, graph storage, model provider, parser registry, pipeline
-      registry, and job backend into the application object.
+- [x] Move engine and session creation out of module globals in `mkb.db.engine` and into
+      an injected SQLAlchemy adapter owned by `KnowledgeBase`. Legacy facade aliases
+      are lazy compatibility proxies and no longer construct engines at import time.
+- [x] Inject object storage, graph storage, model provider, parser registry, pipeline
+      registry, and job backend into the application object. Provider and backend
+      behavior is implemented in their later feature phases; Phase 2 owns lifecycle,
+      isolation, and capability composition.
 - [x] Define explicit lifecycle methods or context-manager support so connections and
       worker resources are released predictably.
-- [ ] Add explicit transaction scopes. Collection, record, schema, and projection writes
-      now share one commit/rollback boundary; object-backed writes remain pending:
+- [x] Add explicit transaction scopes. Collection, source, artifact, record, schema,
+      and projection metadata share one commit/rollback boundary; object-backed writes
+      use reverse-order best-effort compensation on rollback:
 
       ```python
       with kb.transaction() as tx:

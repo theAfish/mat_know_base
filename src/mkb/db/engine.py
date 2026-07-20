@@ -1,6 +1,14 @@
-"""SQLAlchemy engines plus the Alembic-only schema boundary."""
+"""Alembic boundary and lazy compatibility database resources.
+
+New SDK clients own :class:`mkb.adapters.SQLAlchemyDatabase` instances. The names in
+this module remain only for the legacy facade and no longer create connections or
+engines merely because a module was imported.
+"""
 
 from __future__ import annotations
+
+from functools import cache
+from typing import Any, Callable
 
 from alembic import command
 from alembic.config import Config
@@ -11,13 +19,53 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from mkb.config import settings
 
-async_engine = create_async_engine(settings.pg_dsn, echo=False)
-AsyncSessionLocal = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+@cache
+def _legacy_async_engine():
+    from mkb.config import settings
 
-sync_engine = create_engine(settings.pg_dsn_sync, echo=False)
-SyncSessionLocal = sessionmaker(sync_engine, class_=Session, expire_on_commit=False)
+    return create_async_engine(settings.pg_dsn, echo=False)
+
+
+@cache
+def _legacy_async_sessions():
+    return sessionmaker(
+        _legacy_async_engine(),
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+
+@cache
+def _legacy_sync_engine() -> Engine:
+    from mkb.config import settings
+
+    return create_engine(settings.pg_dsn_sync, echo=False)
+
+
+@cache
+def _legacy_sync_sessions():
+    return sessionmaker(_legacy_sync_engine(), class_=Session, expire_on_commit=False)
+
+
+class _LazyCompatibilityResource:
+    """Resolve a legacy engine or factory only when it is actually used."""
+
+    def __init__(self, factory: Callable[[], Any]):
+        self._factory = factory
+
+    def __call__(self, *args, **kwargs):
+        return self._factory()(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._factory(), name)
+
+
+# Import-compatible aliases. Explicit SDK clients never use these proxies.
+async_engine = _LazyCompatibilityResource(_legacy_async_engine)
+AsyncSessionLocal = _LazyCompatibilityResource(_legacy_async_sessions)
+sync_engine = _LazyCompatibilityResource(_legacy_sync_engine)
+SyncSessionLocal = _LazyCompatibilityResource(_legacy_sync_sessions)
 
 
 class SchemaRevisionError(RuntimeError):
@@ -35,12 +83,13 @@ def expected_schema_revision() -> str:
     return head
 
 
-def current_schema_revision(engine: Engine = sync_engine) -> str | None:
-    with engine.connect() as connection:
+def current_schema_revision(engine: Engine | None = None) -> str | None:
+    selected_engine = engine if engine is not None else _legacy_sync_engine()
+    with selected_engine.connect() as connection:
         return MigrationContext.configure(connection).get_current_revision()
 
 
-def require_schema_current(engine: Engine = sync_engine) -> str:
+def require_schema_current(engine: Engine | None = None) -> str:
     current = current_schema_revision(engine)
     expected = expected_schema_revision()
     if current != expected:

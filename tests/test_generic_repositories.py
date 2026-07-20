@@ -121,6 +121,63 @@ def test_transaction_rolls_back_and_constraints_raise_typed_errors(tmp_path):
             )
 
 
+def test_transaction_commits_object_backed_writes_and_compensates_rollback(tmp_path):
+    kb = KnowledgeBase.from_url(
+        database_url=f"sqlite:///{tmp_path / 'object-transaction.db'}",
+        object_store_url=(tmp_path / "transaction-objects").as_uri(),
+    )
+    with kb:
+        kb.initialize()
+        with kb.transaction() as tx:
+            collection = tx.collections.create(name="Committed objects")
+            source = tx.sources.add_text(collection.id, "source")
+            artifact = tx.artifacts.add_bytes(
+                source.id,
+                b"artifact",
+                processing_type="TEXT",
+                format="txt",
+            )
+
+        assert kb.sources.require(source.id).id == source.id
+        assert kb.artifacts.require(artifact.id).id == artifact.id
+        assert kb.object_store.exists("raw", f"sources/{source.id}") is True
+        assert kb.object_store.exists("processed", f"artifacts/{artifact.id}") is True
+
+        rolled_back_collection_id = uuid.uuid4()
+        rolled_back_source_id = uuid.uuid4()
+        rolled_back_artifact_id = uuid.uuid4()
+        with pytest.raises(RuntimeError, match="abort"):
+            with kb.transaction() as tx:
+                tx.collections.create(
+                    name="Rolled back objects",
+                    collection_id=rolled_back_collection_id,
+                )
+                rolled_back_source = tx.sources.add_text(
+                    rolled_back_collection_id,
+                    "temporary",
+                    source_id=rolled_back_source_id,
+                )
+                tx.artifacts.add_bytes(
+                    rolled_back_source.id,
+                    b"temporary artifact",
+                    processing_type="TEXT",
+                    format="txt",
+                    artifact_id=rolled_back_artifact_id,
+                )
+                raise RuntimeError("abort")
+
+        assert kb.collections.get(rolled_back_collection_id) is None
+        assert kb.sources.get(rolled_back_source_id) is None
+        assert kb.artifacts.get(rolled_back_artifact_id) is None
+        assert kb.object_store.exists("raw", f"sources/{rolled_back_source_id}") is False
+        assert (
+            kb.object_store.exists(
+                "processed", f"artifacts/{rolled_back_artifact_id}"
+            )
+            is False
+        )
+
+
 def test_text_sources_use_object_store_and_compensate_failed_metadata_writes(tmp_path):
     kb = KnowledgeBase.from_url(
         database_url=f"sqlite:///{tmp_path / 'sources.db'}",
