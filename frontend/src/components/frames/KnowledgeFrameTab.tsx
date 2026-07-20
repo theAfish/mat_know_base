@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import axios from 'axios'
 
 import { getFrame, getFrameHistory } from '../../api/frames'
 import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
@@ -13,18 +14,33 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
   const [history, setHistory] = useState<ExtractionPass[]>([])
   const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(false)
 
-  const load = useCallback((showLoading = false) => {
+  const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
-    Promise.all([getFrame(projectId), getFrameHistory(projectId), getProject(projectId)])
-      .then(([f, h, p]) => {
-        setFrame(f)
-        setHistory(h as unknown as ExtractionPass[])
-        setProject(p)
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    setLoadError(null)
+
+    // The frame is the only request that determines this tab's empty state.
+    // History and project metadata are supplementary and must not hide an
+    // existing frame when either endpoint fails.
+    const [frameResult, historyResult, projectResult] = await Promise.allSettled([
+      getFrame(projectId),
+      getFrameHistory(projectId),
+      getProject(projectId),
+    ])
+
+    if (frameResult.status === 'fulfilled') {
+      setFrame(frameResult.value)
+    } else if (axios.isAxiosError(frameResult.reason) && frameResult.reason.response?.status === 404) {
+      setFrame(null)
+    } else {
+      setLoadError(frameResult.reason instanceof Error ? frameResult.reason.message : 'Could not load knowledge frame')
+    }
+
+    if (historyResult.status === 'fulfilled') setHistory(historyResult.value)
+    if (projectResult.status === 'fulfilled') setProject(projectResult.value)
+    setLoading(false)
   }, [projectId])
 
   useEffect(() => { load(true) }, [load])
@@ -45,6 +61,7 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
   }, [load, projectId])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
+  if (loadError) return <p className="text-sm text-red-300">Failed to load knowledge frame: {loadError}</p>
   if (!frame) return <p className="text-sm text-slate-400">No knowledge frame yet. Run Extract to generate one.</p>
 
   const { content, extraction_summary, extraction_version, status, extracted_at, agent_annotations } = frame

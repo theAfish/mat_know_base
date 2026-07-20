@@ -1,25 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 
-import { startJobPolling, type JobPollHandle } from '../../api/jobPolling'
-import { cancelJob } from '../../api/jobs'
 import {
   deleteProject,
   extractProject,
-  getProject,
-  getProjectJobs,
   kgExtractProject,
   processProject,
   projectToSpace,
   workflowExtractProject,
 } from '../../api/projects'
 import { useProjectRefresh } from '../../hooks/useProjectRefresh'
-import type { Job, Project, Space } from '../../types'
+import { useProjectJobController } from '../../hooks/useProjectJobController'
+import { useProjectJobs } from '../../store/jobsStore'
+import type { Project, Space } from '../../types'
 import JobProgress from '../JobProgress'
 import StatusBadge from '../StatusBadge'
 import ProjectAssetsPanel from './ProjectAssetsPanel'
-import WorkflowGraphTab from './WorkflowGraphTab'
-import GraphTab from '../frames/GraphTab'
-import { projectDisplayName } from '../../utils/projectName'
+import { ProjectDetailHeader, ProjectDetailTabs } from './ProjectDetailChrome'
+
+const WorkflowGraphTab = lazy(() => import('./WorkflowGraphTab'))
+const GraphTab = lazy(() => import('../frames/GraphTab'))
 
 
 export interface ProjectDetailProps {
@@ -40,80 +39,23 @@ export default function ProjectDetail({
   onProjectUpdated,
   onDeleted,
 }: ProjectDetailProps) {
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [selectedSpace, setSelectedSpace] = useState<string>(spaces[0]?.space_id ?? '')
   const [selectedSourceType, setSelectedSourceType] = useState<'frame' | 'markdown'>('frame')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
   const [graphView, setGraphView] = useState<'knowledge' | 'workflow'>('workflow')
-  const pollHandleRef = useRef<JobPollHandle | null>(null)
 
   const userSpaces = spaces.filter(s => s.name !== '__global_kg__')
 
-  const loadJobs = useCallback(async () => {
-    try {
-      const j = await getProjectJobs(project.project_id)
-      setJobs(j)
-    } catch { /* ignore */ }
-  }, [project.project_id])
-
-  useEffect(() => {
-    loadJobs()
-    return () => { pollHandleRef.current?.cancel() }
-  }, [loadJobs])
-
   const refreshProject = useProjectRefresh(project.project_id, onProjectUpdated)
-
-  const pollJob = useCallback((jobId: string) => {
-    setActiveJobId(jobId)
-    pollHandleRef.current?.cancel()
-    pollHandleRef.current = startJobPolling({
-      jobId,
-      onUpdate: job => setJobs(prev => {
-        const idx = prev.findIndex(j => j.job_id === jobId)
-        if (idx === -1) return [job, ...prev]
-        return prev.map(j => j.job_id === jobId ? job : j)
-      }),
-      // Refresh outer-list project tags incrementally so badges (Processed /
-      // Frame / asset_count) progress while the job runs, not only at end.
-      onTick: tick => { if (tick % 3 === 0) refreshProject() },
-      onComplete: () => {
-        setActiveJobId(null)
-        loadJobs()
-        refreshProject()
-        onJobComplete?.()
-      },
-      onFailed: () => setActiveJobId(null),
-    })
-  }, [loadJobs, onJobComplete, refreshProject])
-
-  const runAction = async (fn: () => Promise<{ job_id: string }>) => {
-    try {
-      setActionError(null)
-      const { job_id } = await fn()
-      pollJob(job_id)
-    } catch (err: unknown) {
-      console.error('Action failed', err)
-      const e = err as { response?: { data?: { detail?: string } }; message?: string }
-      setActionError(e?.response?.data?.detail ?? e?.message ?? 'Action failed')
-    }
-  }
-
-  const handleCancel = async () => {
-    if (!activeJobId) return
-    try {
-      await cancelJob(activeJobId)
-      setJobs(prev => prev.map(j =>
-        j.job_id === activeJobId ? { ...j, status: 'CANCELLED' as const, current_message: 'Cancelling…' } : j
-      ))
-      setActiveJobId(null)
-    } catch (err) {
-      console.error('Cancel failed', err)
-    }
-  }
+  const jobs = useProjectJobs(project.project_id)
+  const { activeJobId, activeJob, actionError, run: runAction, cancel: handleCancel } = useProjectJobController({
+    onComplete: () => {
+      refreshProject()
+      onJobComplete?.()
+    },
+  })
 
   const handleDelete = async () => {
     setDeleting(true)
@@ -129,7 +71,6 @@ export default function ProjectDetail({
     }
   }
 
-  const activeJob = jobs.find(j => j.job_id === activeJobId) ?? null
   const workflowActionLabel = project.workflow_status === 'IN_PROGRESS'
     ? '⛓ Resume Workflow'
     : project.workflow_status === 'FAILED'
@@ -141,24 +82,9 @@ export default function ProjectDetail({
       <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-700">
-          <div className="min-w-0 flex-1">
-            <h3 className="font-semibold text-slate-100 truncate">
-              {projectDisplayName(project)}
-            </h3>
-            <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
-              <span>{project.asset_count} asset(s)</span>
-              <span className="text-slate-600">·</span>
-              <span>Processed: <StatusBadge status={project.processing_status ?? 'UNPROCESSED'} /></span>
-              <span className="text-slate-600">·</span>
-              <span>Frame: <StatusBadge status={project.frame_status ?? 'NO_FRAME'} /></span>
-              <span className="text-slate-600">·</span>
-              <span>Workflow: <StatusBadge status={project.workflow_status ?? 'NO_WORKFLOW'} /></span>
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="flex-shrink-0 text-slate-400 hover:text-slate-200 text-xl leading-none"
-          >×</button>
+          <ProjectDetailHeader project={project} trailing={
+            <button onClick={onClose} className="flex-shrink-0 text-slate-400 hover:text-slate-200 text-xl leading-none">×</button>
+          } />
         </div>
 
         {/* Body */}
@@ -209,21 +135,18 @@ export default function ProjectDetail({
 
           <div>
             <div className="flex gap-1 border-b border-slate-700 mb-3">
-              {([['knowledge', 'Knowledge Graph'], ['workflow', 'Workflow Cards']] as const).map(([key, label]) => (
-                <button key={key} onClick={() => setGraphView(key)}
-                  className={`px-3 py-2 text-sm border-b-2 -mb-px ${graphView === key ? 'border-violet-400 text-violet-300' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
-                  {label}
-                </button>
-              ))}
+              <ProjectDetailTabs tabs={([['knowledge', 'Knowledge Graph'], ['workflow', 'Workflow Cards']] as const)} active={graphView} onChange={setGraphView} />
             </div>
-            {graphView === 'knowledge' && <GraphTab projectId={project.project_id} />}
+            {graphView === 'knowledge' && <Suspense fallback={<p className="text-sm text-slate-400">Loading graph…</p>}><GraphTab projectId={project.project_id} /></Suspense>}
             {graphView === 'workflow' && (
+              <Suspense fallback={<p className="text-sm text-slate-400">Loading workflow…</p>}>
               <WorkflowGraphTab
                 key={`${project.project_id}-${project.workflow_version ?? 0}`}
                 projectId={project.project_id}
                 actionsDisabled={!!activeJobId}
                 onWorkflowVersionDeleted={refreshProject}
               />
+              </Suspense>
             )}
           </div>
 

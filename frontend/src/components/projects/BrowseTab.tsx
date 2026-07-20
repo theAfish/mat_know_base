@@ -18,8 +18,6 @@ function projectsEqual(a: Project, b: Project): boolean {
     a.frame_status === b.frame_status &&
     a.workflow_status === b.workflow_status &&
     a.workflow_version === b.workflow_version &&
-    a.canonical_workflow_status === b.canonical_workflow_status &&
-    a.canonical_workflow_version === b.canonical_workflow_version &&
     a.created_at === b.created_at &&
     (a.group_id ?? null) === (b.group_id ?? null)
   )
@@ -142,7 +140,6 @@ export default function BrowseTab({ spaces }: { spaces: Space[] }) {
                 processed={p.processing_status ?? 'UNPROCESSED'}
                 frame={p.frame_status ?? 'NO_FRAME'}
                 workflow={p.workflow_status ?? 'NO_WORKFLOW'}
-                normalized={p.canonical_workflow_status ?? 'NO_CANONICAL_WORKFLOW'}
               />
             ),
           },

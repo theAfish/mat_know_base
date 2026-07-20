@@ -117,4 +117,12 @@ export const useProjectActiveJobs = (projectId: string | null): Job[] =>
     ? Object.values(s.jobs).filter(j => j.project_id === projectId && ACTIVE.has(j.status))
     : []))
 
+export const useProjectJobs = (projectId: string | null, limit = 8): Job[] =>
+  useJobsStore(useShallow(s => projectId
+    ? Object.values(s.jobs)
+        .filter(j => j.project_id === projectId)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit)
+    : []))
+
 export const isJobActive = (job: Job): boolean => ACTIVE.has(job.status)

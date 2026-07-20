@@ -6,6 +6,7 @@ from mkb import api
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Asset, ProcessedAsset, ProjectAsset
 from mkb.storage.s3 import download_bytes
+from mkb.services.workflows import compatibility as canonical_compat
 from mkb.web._helpers import (
     _parse_uuid,
     require_service_result,
@@ -22,7 +23,6 @@ from mkb.web._models import (
     SchemaCurateRequest,
     SchemaProposalEditRequest,
     SchemaProposalReviewRequest,
-    WorkflowRecanonicalizationRequest,
     WorkflowReextractionRequest,
 )
 from mkb.web._state import jobs
@@ -245,13 +245,13 @@ def delete_project_workflow_version(project_id: str, version: int):
 @router.get("/api/projects/{project_id}/canonical-workflows")
 def project_canonical_workflows(project_id: str, include_graph: bool = False):
     _parse_uuid(project_id, "project_id")
-    return api.list_canonical_workflows(project_id, include_graph=include_graph)
+    return canonical_compat.list_canonical_workflows(project_id, include_graph=include_graph)
 
 
 @router.get("/api/projects/{project_id}/canonical-workflows/latest")
 def latest_project_canonical_workflow(project_id: str):
     _parse_uuid(project_id, "project_id")
-    result = api.get_canonical_workflow(project_id)
+    result = canonical_compat.get_canonical_workflow(project_id)
     if not result:
         raise HTTPException(status_code=404, detail="No completed canonical workflow found")
     return result
@@ -260,23 +260,10 @@ def latest_project_canonical_workflow(project_id: str):
 @router.get("/api/projects/{project_id}/canonical-workflows/{version}")
 def project_canonical_workflow_version(project_id: str, version: int):
     _parse_uuid(project_id, "project_id")
-    result = api.get_canonical_workflow(project_id, version=version)
+    result = canonical_compat.get_canonical_workflow(project_id, version=version)
     if not result:
         raise HTTPException(status_code=404, detail="Canonical workflow version not found")
     return result
-
-
-@router.delete("/api/projects/{project_id}/canonical-workflows/{version}")
-def delete_project_canonical_workflow_version(project_id: str, version: int):
-    _parse_uuid(project_id, "project_id")
-    active = jobs.find_active_job(project_id=project_id, kind="canonical_workflow")
-    if active:
-        raise HTTPException(
-            status_code=409,
-            detail="Workflow canonicalization is currently running for this project. Cancel or wait for it to finish before deleting a version.",
-        )
-    result = api.delete_canonical_workflow_version(project_id, version)
-    return require_service_result_or_not_found(result)
 
 
 @router.get("/api/workflows/search")
@@ -302,19 +289,6 @@ def schedule_reextraction(project_id: str, body: WorkflowReextractionRequest):
     return require_service_result(result)
 
 
-@router.post("/api/projects/{project_id}/workflow-recanonicalize")
-def schedule_recanonicalization(project_id: str, body: WorkflowRecanonicalizationRequest):
-    _parse_uuid(project_id, "project_id")
-    try:
-        result = api.schedule_workflow_recanonicalization(
-            project_id, reason=body.reason, requested_by=body.requested_by,
-            raw_extraction_id=body.raw_extraction_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return require_service_result(result)
-
-
 @router.post("/api/workflow-maintenance/{task_id}/run")
 def run_maintenance_task(task_id: str):
     _parse_uuid(task_id, "task_id")
@@ -325,12 +299,6 @@ def run_maintenance_task(task_id: str):
 @router.get("/api/workflow-maintenance")
 def workflow_maintenance_tasks(status: str | None = None, project_id: str | None = None):
     return api.list_workflow_maintenance_tasks(status=status, project_id=project_id)
-
-
-@router.post("/api/workflow-maintenance-batch/recanonicalize")
-def run_recanonicalization_batch():
-    job_id = start_web_job_action(jobs, "workflow_recanonicalization_batch")
-    return {"job_id": job_id}
 
 
 @router.get("/api/workflow-schema")

@@ -413,35 +413,6 @@ def cmd_review_projections(args):
 
 
 
-# ── UI command ───────────────────────────────────────────────────
-
-
-def cmd_ui(args):
-    import subprocess
-    import sys
-    cmd = [
-        sys.executable, "-m", "streamlit", "run",
-        "src/mkb/ui/app.py",
-        "--server.port", str(args.port),
-    ]
-    
-    process = None
-    try:
-        process = subprocess.Popen(cmd)
-        process.wait()
-    except KeyboardInterrupt:
-        # Gracefully terminate the subprocess on Ctrl+C
-        if process and process.poll() is None:
-            process.terminate()
-            try:
-                # Give it 5 seconds to terminate gracefully
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # Force kill if it doesn't terminate gracefully
-                process.kill()
-                process.wait()
-
-
 def cmd_api(args):
     import logging
     import uvicorn
@@ -524,17 +495,6 @@ def cmd_workflow_reextract(args):
     result = schedule_workflow_reextraction(
         args.project_id, reason=args.reason, requested_by=args.requested_by,
         scope=scope, raw_extraction_id=args.raw_extraction_id,
-    )
-    if args.run and result.get("task_id"):
-        result = run_workflow_maintenance_task(result["task_id"], model=args.model, verbose=args.verbose)
-    _json_dump(result)
-
-
-def cmd_workflow_recanonicalize(args):
-    from mkb.api import run_workflow_maintenance_task, schedule_workflow_recanonicalization
-    result = schedule_workflow_recanonicalization(
-        args.project_id, reason=args.reason, requested_by=args.requested_by,
-        raw_extraction_id=args.raw_extraction_id,
     )
     if args.run and result.get("task_id"):
         result = run_workflow_maintenance_task(result["task_id"], model=args.model, verbose=args.verbose)
@@ -739,10 +699,6 @@ def main():
     p.add_argument("--verbose", "-v", action="store_true")
 
 
-    # ── UI ──
-    p = sub.add_parser("ui", help="Launch the Streamlit UI")
-    p.add_argument("--port", type=int, default=8501)
-
     # ── API ──
     p = sub.add_parser("api", help="Launch the FastAPI backend for the React UI")
     from mkb.config import settings as app_settings
@@ -807,18 +763,6 @@ def main():
     p.add_argument("--model")
     p.add_argument("--verbose", action="store_true")
 
-    p = sub.add_parser("workflow-recanonicalize", help="Queue canonical rebuild from a valid raw version")
-    p.add_argument("project_id")
-    p.add_argument("--reason", choices=[
-        "alias_added", "templates_merged", "slot_added", "granularity_relation_added",
-        "schema_version_changed", "raw_version_changed", "manual_request",
-    ], default="manual_request")
-    p.add_argument("--raw-extraction-id")
-    p.add_argument("--requested-by", default="cli")
-    p.add_argument("--run", action="store_true")
-    p.add_argument("--model")
-    p.add_argument("--verbose", action="store_true")
-
     p = sub.add_parser("workflow-tasks", help="List workflow maintenance tasks")
     p.add_argument("--status")
     p.add_argument("--project-id")
@@ -871,7 +815,6 @@ def main():
         "schema-proposals": cmd_schema_proposals,
         "schema-review": cmd_schema_review,
         "workflow-reextract": cmd_workflow_reextract,
-        "workflow-recanonicalize": cmd_workflow_recanonicalize,
         "workflow-tasks": cmd_workflow_tasks,
         "workflow-task-run": cmd_workflow_task_run,
         "workflow-index": cmd_workflow_index,
@@ -892,7 +835,6 @@ def main():
         "review-feedback": cmd_review_feedback,
         "resolve-feedback": cmd_resolve_feedback,
         "review-projections": cmd_review_projections,
-        "ui": cmd_ui,
         "api": cmd_api,
     }
 

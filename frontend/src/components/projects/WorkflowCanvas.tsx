@@ -19,24 +19,8 @@ import ReactFlow, {
   useNodesState,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-
-type WorkflowNodeKind = 'object' | 'operation' | 'planning' | 'reasoning' | 'unknown'
-
-export interface WorkflowCanvasNode {
-  id: string
-  label: string
-  kind: WorkflowNodeKind
-  title?: string
-  details?: Record<string, unknown>
-}
-
-export interface WorkflowCanvasEdge {
-  id: string
-  source: string
-  target: string
-  label?: string
-  title?: string
-}
+import { escapeXml, labelLines, type WorkflowCanvasEdge, type WorkflowCanvasNode, type WorkflowNodeKind } from '../../features/workflows/model'
+export type { WorkflowCanvasEdge, WorkflowCanvasNode } from '../../features/workflows/model'
 
 interface WorkflowNodeData {
   id: string
@@ -199,55 +183,6 @@ function sideVector(side: AnchorSide) {
     case 'left':
       return { x: -1, y: 0 }
   }
-}
-
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;')
-}
-
-function labelLines(label: string, maxChars = 18, maxLines = 3) {
-  const words = label.split(/\s+/).filter(Boolean)
-  if (words.length === 0) return ['']
-
-  const lines: string[] = []
-  let current = ''
-  let index = 0
-
-  while (index < words.length) {
-    const word = words[index]
-    const candidate = current ? `${current} ${word}` : word
-    if (candidate.length <= maxChars || current.length === 0) {
-      current = candidate
-      index += 1
-      continue
-    }
-
-    lines.push(current)
-    current = word
-    index += 1
-    if (lines.length === maxLines - 1) {
-      break
-    }
-  }
-
-  const tailWords = current ? [current, ...words.slice(index)] : words.slice(index)
-  const tail = tailWords.join(' ').trim()
-  if (tail) {
-    lines.push(tail)
-  }
-
-  if (lines.length > maxLines) {
-    lines.length = maxLines
-  }
-  if (lines.length === maxLines && lines[maxLines - 1].length > maxChars + 6) {
-    lines[maxLines - 1] = `${lines[maxLines - 1].slice(0, maxChars + 3).trimEnd()}...`
-  }
-  return lines
 }
 
 function nodeWidth(kind: WorkflowNodeKind) {

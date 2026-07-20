@@ -18,6 +18,8 @@ from mkb.agents.tools.knowledge_graph import (
 )
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import GraphElementReview, Projection, ProjectionStatus
+from mkb.services.normalization import merge_aliases as normalized_aliases
+from mkb.services.normalization import preserve_evidence, unique_strings
 
 
 MAX_DETAIL_RELATIONS = 120
@@ -360,25 +362,23 @@ def merge_concepts(
             )
             if canonical_existing is not None:
                 existing_aliases = canonical_existing.get("aliases", [])
-                from mkb.agents.tools.knowledge_graph import _coerce_string_list
-                canonical_existing["aliases"] = _coerce_string_list(existing_aliases + merge_aliases)
-                canonical_existing["source_project_ids"] = _coerce_string_list(
+                canonical_existing["aliases"] = normalized_aliases(canonical_label, existing_aliases, merge_aliases)
+                canonical_existing["source_project_ids"] = unique_strings(
                     canonical_existing.get("source_project_ids", []) + merge_project_ids
                 )
-                canonical_existing["source_frame_ids"] = _coerce_string_list(
+                canonical_existing["source_frame_ids"] = unique_strings(
                     canonical_existing.get("source_frame_ids", []) + merge_frame_ids
                 )
-                canonical_existing["knowledge_refs"] = (
-                    canonical_existing.get("knowledge_refs", []) + merge_refs
-                )[:50]
+                canonical_existing["knowledge_refs"] = preserve_evidence(
+                    canonical_existing.get("knowledge_refs", []), merge_refs,
+                )
             else:
-                from mkb.agents.tools.knowledge_graph import _coerce_string_list
                 kept_concepts.append({
                     "label": canonical_label,
-                    "aliases": _coerce_string_list(merge_aliases),
-                    "source_project_ids": _coerce_string_list(merge_project_ids),
-                    "source_frame_ids": _coerce_string_list(merge_frame_ids),
-                    "knowledge_refs": merge_refs[:50],
+                    "aliases": normalized_aliases(canonical_label, merge_aliases),
+                    "source_project_ids": unique_strings(merge_project_ids),
+                    "source_frame_ids": unique_strings(merge_frame_ids),
+                    "knowledge_refs": preserve_evidence(merge_refs),
                 })
 
             # Re-point relations

@@ -17,6 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
+from mkb.services.agent_tools.persistence import complete_projection, fail_projection
+from mkb.services.agent_tools.queries import projection_context
+from mkb.services.agent_tools.validation import validate_identifier
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
@@ -25,7 +28,6 @@ from mkb.db.models import (
     KnowledgeFrame,
     Projection,
     ProjectionStatus,
-    Space,
 )
 from mkb.spaces.schema_utils import normalize_projection_data
 
@@ -414,19 +416,14 @@ def save_projection(
     Returns:
         Dict with projection_id and status.
     """
-    pid = parse_uuidish(projection_id)
-    if not pid:
-        return {"error": invalid_identifier_message("projection_id", projection_id)}
-
-    now = datetime.now(timezone.utc)
+    pid, error = validate_identifier("projection_id", projection_id)
+    if error:
+        return error
 
     with SyncSessionLocal() as session:
-        projection = session.query(Projection).filter_by(projection_id=pid).first()
+        projection, frame, space = projection_context(session, pid)
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
-
-        frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
-        space = session.query(Space).filter_by(space_id=projection.space_id).first()
 
         schema = space.extraction_schema if space else {}
         write_projection_trace(
@@ -444,15 +441,12 @@ def save_projection(
         coerced_data, coercion_warning = _coerce_projection_payload(data, schema)
 
         if coerced_data is None:
-            projection.status = ProjectionStatus.FAILED
-            projection.agent_notes = (
-                f"save_projection rejected invalid payload type: {type(data).__name__}"
-            )
-            projection.validation_result = {
+            failure_message = f"save_projection rejected invalid payload type: {type(data).__name__}"
+            failure_validation = {
                 "warnings": [coercion_warning],
                 "notes": validation_notes,
             }
-            session.commit()
+            fail_projection(session, projection, message=failure_message, validation=failure_validation)
             logger.warning(
                 "Projection %s save_projection rejected payload type=%s",
                 projection_id,
@@ -495,12 +489,10 @@ def save_projection(
                 "notes": validation_notes,
             }
 
-        projection.data = normalized_data
-        projection.validation_result = validation_result or None
-        projection.agent_notes = agent_notes
-        projection.status = ProjectionStatus.COMPLETED
-        projection.extracted_at = now
-        session.commit()
+        complete_projection(
+            session, projection, data=normalized_data,
+            validation=validation_result, agent_notes=agent_notes,
+        )
 
         qa_pairs = normalized_data.get("qa_pairs") if isinstance(normalized_data, dict) else None
         questions = normalized_data.get("questions") if isinstance(normalized_data, dict) else None

@@ -296,14 +296,6 @@ JOB_ACTIONS: dict[str, JobAction] = {
         project_arg=None,
         validate=_require_keys("task_id"),
     ),
-    "workflow_recanonicalization_batch": JobAction(
-        "workflow_recanonicalization_batch",
-        "workflow_maintenance_batch",
-        "Recanonicalize Global Workflow Batch",
-        "run_pending_recanonicalizations",
-        build_kwargs=lambda **_kwargs: {},
-        project_arg=None,
-    ),
 }
 
 

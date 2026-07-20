@@ -19,78 +19,12 @@ import {
   saveColPrefs,
   slugifyExportName,
 } from './helpers'
-
-type ProjectionTableRow = Record<string, string>
-type ColumnDataType = 'boolean' | 'number' | 'date' | 'text'
+import {
+  compareText, inferColumnDataType, isBlank, loadSavedPage, parseBoolean, parseDate, parseNumber,
+  savePage, sortArrow, sortLabel, type ColumnDataType, type ProjectionTableRow,
+} from '../../features/projections/tableModel'
 
 const SELECTION_COLUMN_ID = '__projection_selection__'
-const PAGE_STORAGE_PREFIX = 'mkb:projection-table-page:'
-
-function isBlank(value: unknown): boolean {
-  return String(value ?? '').trim() === ''
-}
-
-function parseBoolean(value: unknown): number | null {
-  const normalized = String(value ?? '').trim().toLowerCase()
-  if (['true', 'yes', 'y', '1'].includes(normalized)) return 1
-  if (['false', 'no', 'n', '0'].includes(normalized)) return 0
-  return null
-}
-
-function parseNumber(value: unknown): number | null {
-  const normalized = String(value ?? '').trim().replace(/,/g, '')
-  if (!normalized) return null
-  const parsed = Number(normalized)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function parseDate(value: unknown): number | null {
-  const normalized = String(value ?? '').trim()
-  if (!normalized) return null
-  const parsed = Date.parse(normalized)
-  return Number.isNaN(parsed) ? null : parsed
-}
-
-function inferColumnDataType(rows: ProjectionTableRow[], col: string): ColumnDataType {
-  const values = rows.map(row => row[col]).filter(value => !isBlank(value))
-  if (values.length === 0) return 'text'
-  if (values.every(value => parseBoolean(value) !== null)) return 'boolean'
-  if (values.every(value => parseNumber(value) !== null)) return 'number'
-  if (values.every(value => parseDate(value) !== null)) return 'date'
-  return 'text'
-}
-
-function compareText(left: unknown, right: unknown): number {
-  return String(left ?? '').localeCompare(String(right ?? ''), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  })
-}
-
-function sortLabel(type: ColumnDataType, sorted: false | 'asc' | 'desc'): string {
-  if (!sorted) return 'Click to sort'
-  if (type === 'boolean') return sorted === 'asc' ? 'False → True (click for True → False)' : 'True → False (click to clear)'
-  if (type === 'number') return sorted === 'asc' ? '0 → 9 (click for 9 → 0)' : '9 → 0 (click to clear)'
-  if (type === 'date') return sorted === 'asc' ? 'Old → New (click for New → Old)' : 'New → Old (click to clear)'
-  return sorted === 'asc' ? 'A → Z (click for Z → A)' : 'Z → A (click to clear)'
-}
-
-function sortArrow(sorted: false | 'asc' | 'desc'): string {
-  if (!sorted) return '⇅'
-  return sorted === 'asc' ? '↑' : '↓'
-}
-
-function loadSavedPage(key: string): number {
-  if (typeof window === 'undefined') return 1
-  const saved = window.sessionStorage.getItem(`${PAGE_STORAGE_PREFIX}${key}`)
-  const page = saved ? Number(saved) : 1
-  return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
-}
-
-function savePage(key: string, page: number): void {
-  if (typeof window === 'undefined') return
-  window.sessionStorage.setItem(`${PAGE_STORAGE_PREFIX}${key}`, String(page))
-}
 
 export default function SectionTable({
   name,

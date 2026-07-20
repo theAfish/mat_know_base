@@ -8,7 +8,6 @@ const LIGHT_STYLES: Record<string, string> = {
   CANCELLED: 'bg-slate-500',
   NO_FRAME: 'bg-slate-500',
   NO_WORKFLOW: 'bg-slate-500',
-  NO_CANONICAL_WORKFLOW: 'bg-slate-500',
   PROCESSED: 'bg-emerald-400',
   UNPROCESSED: 'bg-slate-500',
   PARTIAL: 'bg-amber-400',
@@ -39,19 +38,16 @@ export default function StatusLights({
   processed,
   frame,
   workflow,
-  normalized,
 }: {
   processed: string
   frame: string
   workflow: string
-  normalized: string
 }) {
   return (
     <div className="inline-flex items-center gap-1.5 align-middle" aria-label="Project pipeline status">
       <Light label="Processed" status={processed} />
       <Light label="Frame" status={frame} />
       <Light label="Workflow" status={workflow} />
-      <Light label="Normalized" status={normalized} />
     </div>
   )
 }

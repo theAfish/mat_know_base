@@ -10,8 +10,6 @@ export interface Project {
   frame_status: string | null
   workflow_status: string
   workflow_version: number | null
-  canonical_workflow_status: string
-  canonical_workflow_version: number | null
   created_at: string
   group_id?: string | null
 }

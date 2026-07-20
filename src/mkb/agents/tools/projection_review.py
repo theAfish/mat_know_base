@@ -22,6 +22,7 @@ from mkb.db.models import (
     Space,
 )
 from mkb.spaces.schema_utils import normalize_projection_data
+from mkb.services.normalization import set_patch_value as _set_patch_value
 
 logger = logging.getLogger(__name__)
 
@@ -76,70 +77,6 @@ def _summarize_data_changes(before, after, path: str = "") -> dict:
         "sequence_changed_paths": sequence_changed_paths[:20],
         "sequence_filled_paths": sequence_filled_paths[:20],
     }
-
-
-def _parse_patch_path(path: str) -> list[str | int]:
-    parts: list[str | int] = []
-    token = ""
-    i = 0
-    while i < len(path):
-        char = path[i]
-        if char == ".":
-            if token:
-                parts.append(token)
-                token = ""
-            i += 1
-            continue
-        if char == "[":
-            if token:
-                parts.append(token)
-                token = ""
-            close = path.find("]", i)
-            if close < 0:
-                raise ValueError(f"Invalid path {path!r}: missing closing bracket")
-            index_text = path[i + 1:close].strip()
-            if not index_text.isdigit():
-                raise ValueError(f"Invalid path {path!r}: list index must be a non-negative integer")
-            parts.append(int(index_text))
-            i = close + 1
-            continue
-        token += char
-        i += 1
-    if token:
-        parts.append(token)
-    if not parts:
-        raise ValueError("Patch path cannot be empty")
-    return parts
-
-
-def _set_patch_value(data, path: str, value) -> None:
-    parts = _parse_patch_path(path)
-    current = data
-    for part in parts[:-1]:
-        if isinstance(part, int):
-            if not isinstance(current, list):
-                raise ValueError(f"Path {path!r} expected a list before index {part}")
-            if part >= len(current):
-                raise ValueError(f"Path {path!r} index {part} is out of range")
-            current = current[part]
-            continue
-        if not isinstance(current, dict):
-            raise ValueError(f"Path {path!r} expected an object before key {part!r}")
-        if part not in current or current[part] is None:
-            current[part] = {}
-        current = current[part]
-
-    last = parts[-1]
-    if isinstance(last, int):
-        if not isinstance(current, list):
-            raise ValueError(f"Path {path!r} expected a list before index {last}")
-        if last >= len(current):
-            raise ValueError(f"Path {path!r} index {last} is out of range")
-        current[last] = value
-        return
-    if not isinstance(current, dict):
-        raise ValueError(f"Path {path!r} expected an object before key {last!r}")
-    current[last] = value
 
 
 def _apply_projection_review_save(

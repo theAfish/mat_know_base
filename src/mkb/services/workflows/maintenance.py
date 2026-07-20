@@ -80,8 +80,7 @@ def list_workflow_maintenance_tasks(*, status: str | None = None, project_id: st
         } for row in query.order_by(WorkflowMaintenanceTask.created_at.desc()).all()]
 
 def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None = None, verbose: bool = False, progress_callback=None) -> dict:
-    """Execute one queued task, retaining both raw and canonical history."""
-    from mkb.agents.workflow_canonicalization import run_workflow_canonicalization
+    """Execute one queued raw-workflow task; canonical tasks are retired."""
     from mkb.agents.workflow_extraction import run_workflow_extraction
     from mkb.db.models import RawWorkflowExtraction, WorkflowMaintenanceTask
 
@@ -95,35 +94,21 @@ def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None
         task.started_at = datetime.now(timezone.utc)
         project_id, task_type, reason = task.project_id, task.task_type, task.reason
         source_raw_id, scope = task.source_raw_extraction_id, task.scope
-        target_schema_version = task.target_schema_version
         raw = session.query(RawWorkflowExtraction).filter_by(extraction_id=source_raw_id).first()
         baseline = raw.graph if raw else None
         session.commit()
     try:
-        if task_type == "reextract":
-            extraction = run_workflow_extraction(
-                project_id, model=model, verbose=verbose, progress_callback=progress_callback,
-                reextraction_request={
-                    "reason": reason, "scope": scope,
-                    "source_raw_extraction_id": str(source_raw_id),
-                    "baseline_graph": baseline,
-                },
-            )
-            if extraction.get("status") != "completed":
-                raise RuntimeError(extraction.get("message") or "Re-extraction failed")
-            canonical = run_workflow_canonicalization(
-                project_id, uuid.UUID(extraction["extraction_id"]), model=model,
-                verbose=verbose, progress_callback=progress_callback,
-                recanonicalization_reason="raw_version_changed",
-            )
-            result = {"extraction": extraction, "canonicalization": canonical}
-        else:
-            result = run_workflow_canonicalization(
-                project_id, source_raw_id, model=model, verbose=verbose,
-                progress_callback=progress_callback, recanonicalization_reason=reason,
-                target_schema_version=target_schema_version,
-            )
-        successful = result.get("status") == "completed" or result.get("canonicalization", {}).get("status") == "completed"
+        if task_type != "reextract":
+            raise RuntimeError("Canonical-workflow maintenance is retired; export existing data through compatibility reads")
+        result = run_workflow_extraction(
+            project_id, model=model, verbose=verbose, progress_callback=progress_callback,
+            reextraction_request={
+                "reason": reason, "scope": scope,
+                "source_raw_extraction_id": str(source_raw_id),
+                "baseline_graph": baseline,
+            },
+        )
+        successful = result.get("status") == "completed"
         if not successful:
             raise RuntimeError(result.get("message") or "Workflow maintenance failed")
     except Exception as exc:

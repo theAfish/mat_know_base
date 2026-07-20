@@ -16,16 +16,12 @@ from mkb.services.workflows.indexing import (
 )
 from mkb.services.workflows.legacy_canonicalization import (
     _serialize_canonical_workflow,
-    canonicalize_workflow,
-    delete_canonical_workflow_version,
     get_canonical_workflow,
     list_canonical_workflows,
 )
 from mkb.services.workflows.maintenance import (
     list_workflow_maintenance_tasks,
-    run_pending_recanonicalizations,
     run_workflow_maintenance_task,
-    schedule_workflow_recanonicalization,
     schedule_workflow_reextraction,
 )
 from mkb.services.workflows.schema_review import (
@@ -44,10 +40,8 @@ from mkb.services.workflows.serialization import (
 __all__ = [
     "_serialize_canonical_workflow",
     "_serialize_raw_workflow",
-    "canonicalize_workflow",
     "correct_raw_workflow",
     "curate_workflow_schema",
-    "delete_canonical_workflow_version",
     "delete_raw_workflow_version",
     "edit_schema_proposal",
     "extract_raw_workflow",
@@ -63,9 +57,7 @@ __all__ = [
     "rebuild_workflow_indexes",
     "review_raw_workflow",
     "review_schema_proposal",
-    "run_pending_recanonicalizations",
     "run_workflow_maintenance_task",
-    "schedule_workflow_recanonicalization",
     "schedule_workflow_reextraction",
     "search_canonical_workflows",
     "serialize_canonical_workflow",

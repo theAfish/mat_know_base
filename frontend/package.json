@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "lint": "tsc -b --noEmit",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run check:bundle",
+    "check:bundle": "node scripts/check-bundle-budgets.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

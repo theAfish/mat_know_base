@@ -31,9 +31,6 @@ dependencies = [
     "uvicorn>=0.35",
     "python-multipart>=0.0.20",
     "requests>=2.31",
-    "streamlit>=1.38",
-    "streamlit-agraph>=0.0.45",
-    "pyvis>=0.3.2",
 ]
 
 [project.optional-dependencies]
@@ -43,12 +40,18 @@ dev = [
     "ruff>=0.4",
     "ipython",
 ]
+streamlit-compat = [
+    "streamlit>=1.38",
+    "streamlit-agraph>=0.0.45",
+    "pyvis>=0.3.2",
+]
 
 [project.scripts]
 mkb = "mkb.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["mkb.ui*"]
 
 [tool.ruff]
 target-version = "py310"

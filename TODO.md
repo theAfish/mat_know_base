@@ -207,49 +207,69 @@ Goal: make MKB clean to develop, predictable to maintain, and safe to operate.
 
 ## P2 - Reduce architectural duplication
 
-- [ ] Finish merging the two project-detail experiences.
+- [x] Finish merging the two project-detail experiences.
   - Consolidate `components/projects/ProjectDetail.tsx` and
     `components/frames/ProjectDetail.tsx` around shared action, status, tab, and
     refresh components.
   - Route job state through one store and one polling/subscription layer.
+  - Implemented shared status/header and tab primitives, one project-job
+    controller, and the global jobs store/poller. Modal and full-page shells remain
+    presentation variants over those shared boundaries.
 
-- [ ] Split the largest React features along domain boundaries.
+- [x] Split the largest React features along domain boundaries.
   - Start with `SpacesPage.tsx`, `GraphPage.tsx`, `ProjectionsPage.tsx`,
     `ProjectGroupedList.tsx`, `WorkflowCanvas.tsx`, and `SectionTable.tsx`.
   - Extract pure transformations first, then presentation components, then thin
     route containers.
   - Keep feature-specific API, schemas, tests, and components together.
+  - Implemented feature-domain models for space drafts, graph visualization,
+    projection tables, workflow rendering, and grouped-project drag behavior.
+    Spaces, Graph, and Projections now have thin route entrypoints over feature
+    containers; the reusable list/canvas/table components consume pure models.
 
-- [ ] Finish frontend code splitting and set bundle budgets.
+- [x] Finish frontend code splitting and set bundle budgets.
   - The current build still reports chunks over 500 kB for frames and graph
     visualization, plus a roughly 1.2 MB PDF worker.
   - Lazy-load PDF, graph, workflow, and large table functionality only when opened.
   - Track compressed route/chunk budgets in CI.
+  - Progress: route, PDF preview, graph, workflow, and frame-detail tabs are lazy;
+    FramesPage's route chunk fell from about 449 kB to 8 kB. The frontend build
+    now enforces gzip budgets (180 KiB per JS chunk and 450 KiB for the PDF worker).
 
-- [ ] Remove the legacy Streamlit surface or move it to a separately installed
+- [x] Remove the legacy Streamlit surface or move it to a separately installed
   compatibility package.
   - Stop testing new behavior through `mkb.ui` helpers.
   - Move shared upload/project-name logic into backend domain helpers.
   - Remove Streamlit and visualization packages from default dependencies when the
     compatibility surface is retired.
+  - Implemented: the legacy package is excluded from wheels and CLI launch, its
+    dependencies are in `streamlit-compat`, and tests use backend domain helpers.
 
-- [ ] Split large agent-tool modules into query, validation, mutation, and
+- [x] Split large agent-tool modules into query, validation, mutation, and
   persistence layers.
   - Prioritize projection, schema curator, graph review, knowledge graph, and
     canonicalization tools.
   - Agent tools should validate tool-shaped input and delegate; they should not own
     transaction-heavy business rules.
+  - Implemented shared validation, query, and persistence layers for projection
+    and knowledge-graph saves; graph-review mutations delegate normalization and
+    evidence merge policy; schema-curator read models, transactional mutations,
+    and orchestration state now live in separate service modules. Canonicalization
+    agent launch code is retired.
 
-- [ ] Centralize graph and projection normalization rules.
+- [x] Centralize graph and projection normalization rules.
   - Put deduplication, aliases, relation validation, merge policy, patch/path
     operations, and source-evidence preservation behind domain services.
   - Add small regression fixtures for same-paper duplicates, cross-paper aliases,
     conflicting values, repeated reviews, and source preservation.
 
-- [ ] Complete the canonical-workflow retirement.
+- [x] Complete the canonical-workflow retirement.
   - Remove deprecated launch paths, frontend tabs, agent modules, schema tables, and
     dependencies after an explicit export/migration window.
   - Keep compatibility reads isolated and time-boxed if existing datasets need them.
+  - Implemented: launch/mutation paths, frontend status/tab/API, CLI commands, and
+    job actions are removed. Existing rows have isolated read-only compatibility
+    access through 2026-10-31; schema removal follows that declared export window.
 
 ## P2 - Improve testing and delivery
 

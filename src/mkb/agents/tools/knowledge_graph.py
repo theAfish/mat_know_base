@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
 from collections import Counter
-from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.agents.tools.projection import (
@@ -13,8 +11,12 @@ from mkb.agents.tools.projection import (
     request_frame_clarification,
 )
 from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import KnowledgeFrame, Projection, ProjectionStatus
+from mkb.db.models import Projection, ProjectionStatus
 from mkb.knowledge_graph import ensure_global_kg_space_id
+from mkb.services.normalization import canonical_label
+from mkb.services.agent_tools.persistence import complete_projection
+from mkb.services.agent_tools.queries import projection_context
+from mkb.services.agent_tools.validation import validate_identifier
 
 
 MAX_AGENT_GRAPH_CONCEPTS = 80
@@ -25,8 +27,7 @@ MAX_AGENT_ALIAS_PREVIEW = 3
 
 
 def _normalize_label(value: str) -> str:
-    collapsed = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    return collapsed
+    return canonical_label(value)
 
 
 def _coerce_string_list(value) -> list[str]:
@@ -597,9 +598,9 @@ def save_knowledge_graph(
     agent_notes: str = "",
 ) -> dict:
     """Save normalized concept-only graph data to a projection row."""
-    pid = parse_uuidish(projection_id)
-    if not pid:
-        return {"error": invalid_identifier_message("projection_id", projection_id)}
+    pid, error = validate_identifier("projection_id", projection_id)
+    if error:
+        return error
 
     normalized, validation = normalize_knowledge_graph_payload(data)
 
@@ -612,13 +613,10 @@ def save_knowledge_graph(
             )
         }
 
-    now = datetime.now(timezone.utc)
     with SyncSessionLocal() as session:
-        projection = session.query(Projection).filter_by(projection_id=pid).first()
+        projection, frame, _space = projection_context(session, pid)
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
-
-        frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
         if frame:
             project_id = str(frame.project_id)
             frame_id = str(frame.frame_id)
@@ -634,12 +632,10 @@ def save_knowledge_graph(
         if validation_notes:
             validation = {**validation, "notes": validation_notes}
 
-        projection.data = normalized
-        projection.validation_result = validation
-        projection.agent_notes = agent_notes
-        projection.status = ProjectionStatus.COMPLETED
-        projection.extracted_at = now
-        session.commit()
+        complete_projection(
+            session, projection, data=normalized,
+            validation=validation, agent_notes=agent_notes,
+        )
 
         return {
             "projection_id": str(projection.projection_id),
