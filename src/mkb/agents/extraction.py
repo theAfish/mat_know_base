@@ -123,7 +123,7 @@ async def _run_extraction_async(
 
         # Save initial extraction pass
         _emit("Initial extraction pass completed", stage="initial_pass")
-        _save_extraction_pass(project_id, pass_number=1, pass_type="initial")
+        _save_extraction_pass(project_id, pass_type="initial")
 
         # Passes 2..N: Review passes
         if max_passes > 1:
@@ -179,7 +179,7 @@ def _mark_frame_failed(project_id: uuid.UUID, error: str | None):
             db.commit()
 
 
-def _save_extraction_pass(project_id: uuid.UUID, pass_number: int, pass_type: str):
+def _save_extraction_pass(project_id: uuid.UUID, pass_type: str):
     """Save an ExtractionPass record for audit trail."""
     from mkb.db.models import ExtractionPass
 
@@ -189,7 +189,10 @@ def _save_extraction_pass(project_id: uuid.UUID, pass_number: int, pass_type: st
             pass_record = ExtractionPass(
                 pass_id=uuid.uuid4(),
                 frame_id=frame.frame_id,
-                pass_number=pass_number,
+                # Frame versions are cumulative across re-extraction runs.  Using
+                # a literal 1 here made every later initial pass look as though
+                # it happened before the existing review history.
+                pass_number=frame.extraction_version,
                 pass_type=pass_type,
                 content_snapshot=frame.content,
                 agent_notes=frame.extraction_summary,

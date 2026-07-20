@@ -67,6 +67,10 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
   const { content, extraction_summary, extraction_version, status, extracted_at, agent_annotations } = frame
   const clarifications = agent_annotations?.clarifications ?? []
   const resolvedFeedback = agent_annotations?.resolved_feedback ?? []
+  const sortedHistory = [...history].sort((a, b) => {
+    const byDate = new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    return byDate || b.pass_number - a.pass_number
+  })
 
   return (
     <div className="space-y-4">
@@ -84,17 +88,20 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
       )}
 
       {history.length > 0 && (
-        <div>
-          <p className="text-xs font-medium text-slate-400 mb-1">Extraction passes</p>
-          <div className="space-y-0.5">
-            {history.map((h, i) => (
-              <div key={i} className="text-xs text-slate-500 px-2 py-1 bg-slate-900 rounded">
-                Pass {h.pass_number} ({h.pass_type}) — {h.created_at.slice(0, 10)}
-                {h.changes_made ? ' · changes made' : ''}
+        <details className="group">
+          <summary className="text-xs font-medium text-slate-400 cursor-pointer select-none">
+            Extraction history ({history.length} {history.length === 1 ? 'entry' : 'entries'})
+            <span className="ml-1 text-slate-600 group-open:hidden">· newest v{sortedHistory[0].pass_number}</span>
+          </summary>
+          <div className="space-y-0.5 mt-1 max-h-72 overflow-y-auto pr-1">
+            {sortedHistory.map(h => (
+              <div key={h.pass_id} className="text-xs text-slate-500 px-2 py-1 bg-slate-900 rounded">
+                Version {h.pass_number} ({h.pass_type}) — {new Date(h.created_at).toLocaleString()}
+                {h.changes_made && Object.values(h.changes_made).some(count => count > 0) ? ' · changes made' : ''}
               </div>
             ))}
           </div>
-        </div>
+        </details>
       )}
 
       {content && (

@@ -78,7 +78,7 @@ export interface ExtractionPass {
   pass_id: string
   pass_number: number
   pass_type: string
-  changes_made: boolean
+  changes_made: Record<string, number> | null
   agent_notes: string | null
   created_at: string
 }

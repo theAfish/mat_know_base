@@ -102,7 +102,7 @@ def get_extraction_history(project_id: str | uuid.UUID) -> list[dict]:
         passes = (
             session.query(ExtractionPass)
             .filter_by(frame_id=frame.frame_id)
-            .order_by(ExtractionPass.pass_number)
+            .order_by(ExtractionPass.created_at.desc(), ExtractionPass.pass_number.desc())
             .all()
         )
         return [
@@ -119,4 +119,3 @@ def get_extraction_history(project_id: str | uuid.UUID) -> list[dict]:
 
 
 # ── Projects & Assets ────────────────────────────────────────────
-
