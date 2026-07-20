@@ -27,6 +27,26 @@ bindings belong to one object rather than module globals. The initial environmen
 adapter still uses the existing application services; independently configured SQLite,
 PostgreSQL, filesystem, S3, and graph adapters will be added incrementally.
 
+For pipeline execution and typed repository access without reading `.env` or YAML,
+construct an independent client explicitly:
+
+```python
+from mkb import KnowledgeBase
+
+with KnowledgeBase.from_url(
+    database_url="sqlite:////absolute/path/project.db",
+    object_store_url="file:///absolute/path/objects",
+) as kb:
+    kb.database.check()
+```
+
+S3-compatible storage uses
+`s3://bucket?endpoint=http://localhost:9000` plus the optional
+`object_store_access_key` and `object_store_secret_key` arguments. Construction never
+creates or migrates tables. Explicit clients deliberately reject legacy facade calls
+such as `list_projects()` because those operations still depend on global application
+configuration; use their grouped services as those repositories become writable.
+
 The client already owns explicit relational and object-store resources. They are
 available for health checks and are closed with the client:
 
@@ -124,6 +144,53 @@ projection = api.project(space_id=space["space_id"], project_id=project_id)
 print(processed, extracted)
 print(api.get_projection(projection["projection_id"]))
 ```
+
+## Custom local pipelines
+
+Pipeline definitions and registries belong to one `KnowledgeBase` instance. Steps run
+sequentially and merge their output mappings into the accumulated state. Optional
+Pydantic models validate step inputs, parameters, and outputs.
+
+```python
+from pydantic import BaseModel
+from mkb import KnowledgeBase, Pipeline, Step
+
+class Inputs(BaseModel):
+    text: str
+
+class Outputs(BaseModel):
+    word_count: int
+
+pipeline = Pipeline(
+    name="count-words",
+    steps=(
+        Step(
+            name="count",
+            input_model=Inputs,
+            output_model=Outputs,
+            deterministic=True,
+            handler=lambda context, state: {
+                "word_count": len(state["text"].split()),
+            },
+        ),
+    ),
+)
+
+with KnowledgeBase.from_url(database_url="sqlite:///:memory:") as kb:
+    kb.pipelines.register(pipeline)
+    run = kb.pipelines.run("count-words", inputs={"text": "custom project data"})
+    print(run.model_dump(mode="json"))
+```
+
+Steps may declare `required_capabilities`, `RetryPolicy`, `cacheable`,
+`timeout_seconds`, and `side_effects`. Capability requirements are checked before
+execution. Cache, timeout, and side-effect fields are currently provenance
+declarations; enforcement, durable jobs, cancellation, checkpointing, and caching
+remain future milestones.
+Failures raise `PipelineExecutionError`; its `run` attribute contains the failed typed
+run and completed step history. A progress callback receives typed `ProgressEvent`
+objects. Existing `Record` instances can be supplied directly in pipeline inputs, so
+local extracted data does not need to be reprocessed.
 
 Most mutating functions return a summary dictionary containing stable identifiers and
 counts. Read functions return a dictionary, a list of dictionaries, or `None` when a

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mkb import KnowledgeBase, MKBConfig
+from mkb import KnowledgeBase, MKBConfig, MKBError, Pipeline, Step, ValidationError
 
 
 def _services(calls, identity):
@@ -96,3 +96,42 @@ def test_client_owns_and_closes_injected_resources():
 
     assert database.closed is True
     assert object_store.closed is True
+
+
+def test_from_url_builds_isolated_database_object_store_and_pipeline_registry(tmp_path):
+    first = KnowledgeBase.from_url(
+        database_url=f"sqlite:///{tmp_path / 'first.db'}",
+        object_store_url=(tmp_path / "first-objects").as_uri(),
+    )
+    second = KnowledgeBase.from_url(
+        database_url=f"sqlite:///{tmp_path / 'second.db'}",
+        object_store_url=(tmp_path / "second-objects").as_uri(),
+    )
+    pipeline = Pipeline(name="first-only", steps=(Step(name="one", handler=lambda _c, _s: {}),))
+    try:
+        first.database.check()
+        second.database.check()
+        first.object_store.put_bytes("raw", "example.txt", b"first")
+        second.object_store.put_bytes("raw", "example.txt", b"second")
+        first.pipelines.register(pipeline)
+
+        assert first.object_store.get_bytes("raw", "example.txt") == b"first"
+        assert second.object_store.get_bytes("raw", "example.txt") == b"second"
+        assert first.pipelines.get("first-only") is pipeline
+        assert second.pipelines.get("first-only") is None
+        assert first.database is not second.database
+        with pytest.raises(MKBError, match="explicitly configured"):
+            first.list_projects()
+    finally:
+        first.close()
+        second.close()
+
+
+def test_from_url_rejects_invalid_configuration(tmp_path):
+    with pytest.raises(ValidationError, match="database_url"):
+        KnowledgeBase.from_url(database_url="")
+    with pytest.raises(ValidationError, match="file or s3"):
+        KnowledgeBase.from_url(
+            database_url=f"sqlite:///{tmp_path / 'invalid.db'}",
+            object_store_url="ftp://example.test/data",
+        )

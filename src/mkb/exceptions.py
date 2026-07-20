@@ -27,3 +27,8 @@ class ProviderError(MKBError):
 
 class PipelineExecutionError(MKBError):
     """A pipeline could not complete successfully."""
+
+    def __init__(self, message: str, *, run=None, step_run=None):
+        super().__init__(message)
+        self.run = run
+        self.step_run = step_run

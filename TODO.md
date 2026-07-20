@@ -95,7 +95,7 @@ to simplify the new architecture.
       )
       ```
 
-- [ ] Allow at least two independently configured `KnowledgeBase` instances in one
+- [x] Allow at least two independently configured `KnowledgeBase` instances in one
       Python process without shared settings, engines, sessions, job managers, or
       registries.
 - [x] Keep `from mkb import api` as a compatibility surface alongside an explicitly
@@ -157,7 +157,7 @@ to simplify the new architecture.
   - [x] `Schema`: typed extraction policy mapped read-only to current spaces.
   - `Entity` and `Relation`: graph elements.
   - `Evidence`: provenance linking outputs to sources/artifacts.
-  - `PipelineRun` and `StepRun`: execution and provenance records.
+  - [x] `PipelineRun` and `StepRun`: typed local execution and provenance records.
 - [ ] Keep materials concepts as a supported extension and map them explicitly:
   - research project -> collection
   - asset -> source
@@ -202,13 +202,13 @@ to simplify the new architecture.
 
 ## Phase 5 — Make custom pipelines a first-class public API
 
-- [ ] Implement `Pipeline`, `Step`, `StepContext`, `PipelineRun`, and `StepRun`.
-- [ ] Let steps declare typed inputs/outputs, configuration schema, required adapter
+- [x] Implement `Pipeline`, `Step`, `StepContext`, `PipelineRun`, and `StepRun`.
+- [x] Let steps declare typed inputs/outputs, configuration schema, required adapter
       capabilities, deterministic/cache behavior, retry policy, timeout, side effects,
       and progress events.
-- [ ] Support sequential pipelines first, then DAG dependencies when the contract is
+- [x] Support sequential pipelines first, then DAG dependencies when the contract is
       stable.
-- [ ] Support synchronous local execution:
+- [x] Support synchronous local execution:
 
       ```python
       run = kb.pipelines.run(
@@ -232,10 +232,11 @@ to simplify the new architecture.
 - [ ] Convert current operations into built-in steps and pipelines without changing
       output semantics: ingest, process, frame extraction, projection, graph extraction,
       workflow extraction, schema review, and feedback review.
-- [ ] Ensure old extracted records can be used as pipeline inputs without reprocessing
+- [x] Ensure old extracted records can be used as pipeline inputs without reprocessing
       their source documents.
 - [ ] Allow consumer registration of parsers, steps, schemas, and pipelines without
-      editing the MKB package.
+      editing the MKB package. Per-client pipeline registration is complete; parser,
+      standalone-step, and schema registries remain pending.
 
 ## Phase 6 — Expand the Python API to full application parity
 

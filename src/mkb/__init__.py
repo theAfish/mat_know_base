@@ -20,6 +20,16 @@ from mkb.models import (
     Source,
     StorageReference,
 )
+from mkb.pipelines import (
+    Pipeline,
+    PipelineRun,
+    Pipelines,
+    ProgressEvent,
+    RetryPolicy,
+    Step,
+    StepContext,
+    StepRun,
+)
 
 __version__ = "0.1.0"
 
@@ -37,10 +47,18 @@ __all__ = [
     "ObjectStore",
     "NotFoundError",
     "PipelineExecutionError",
+    "Pipeline",
+    "PipelineRun",
+    "Pipelines",
     "Projection",
+    "ProgressEvent",
     "Record",
     "ProviderError",
+    "RetryPolicy",
     "Source",
+    "Step",
+    "StepContext",
+    "StepRun",
     "StorageReference",
     "ValidationError",
     "__version__",

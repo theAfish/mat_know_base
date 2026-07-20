@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import parse_qs, unquote, urlparse
 
+from mkb.exceptions import MKBError, ValidationError
+from mkb.pipelines import Pipelines
 from mkb.ports import Database, ObjectStore
 from mkb.repositories import (
     Artifacts,
@@ -45,6 +48,19 @@ class ServiceBindings(Protocol):
     def project(self, space_id, **kwargs) -> dict: ...
     def get_projection(self, projection_id) -> dict | None: ...
     def list_projections(self, **kwargs) -> list[dict]: ...
+
+
+class _UnavailableServiceBindings:
+    """Prevents explicit clients from accidentally falling back to global services."""
+
+    def close(self) -> None:
+        return None
+
+    def __getattr__(self, name: str):
+        raise MKBError(
+            f"Compatibility operation {name!r} is unavailable on an explicitly "
+            "configured client; use a grouped SDK service"
+        )
 
 
 @dataclass(frozen=True)
@@ -93,7 +109,7 @@ class KnowledgeBase:
     def __init__(
         self,
         *,
-        services: ServiceBindings,
+        services: ServiceBindings | None = None,
         config: MKBConfig | None = None,
         database: Database | None = None,
         object_store: ObjectStore | None = None,
@@ -103,8 +119,9 @@ class KnowledgeBase:
         records: Records | None = None,
         schemas: ExtractionSchemas | None = None,
         projections: Projections | None = None,
+        capabilities: frozenset[str] | None = None,
     ):
-        self._services = services
+        self._services = services if services is not None else _UnavailableServiceBindings()
         self.config = config or MKBConfig()
         self.database = database
         self.object_store = object_store
@@ -114,6 +131,12 @@ class KnowledgeBase:
         self.records = records
         self.schemas = schemas
         self.projections = projections
+        detected_capabilities = set(capabilities or ())
+        if database is not None:
+            detected_capabilities.add("transactions")
+        if object_store is not None:
+            detected_capabilities.add("object_streaming")
+        self.pipelines = Pipelines(self, capabilities=frozenset(detected_capabilities))
         self._closed = False
 
     @classmethod
@@ -121,13 +144,7 @@ class KnowledgeBase:
         from mkb import api
         from mkb.adapters import (
             S3ObjectStore,
-            SQLAlchemyArtifactRepository,
-            SQLAlchemyCollectionRepository,
             SQLAlchemyDatabase,
-            SQLAlchemyExtractionSchemaRepository,
-            SQLAlchemyProjectionRepository,
-            SQLAlchemyRecordRepository,
-            SQLAlchemySourceRepository,
         )
 
         config = MKBConfig.from_environment()
@@ -137,19 +154,117 @@ class KnowledgeBase:
             access_key=config.object_store_access_key,
             secret_key=config.object_store_secret_key,
         )
-        return cls(
+        return cls._from_resources(
             services=api,
             config=config,
             database=database,
             object_store=object_store,
+        )
+
+    @classmethod
+    def from_url(
+        cls,
+        *,
+        database_url: str,
+        object_store_url: str | None = None,
+        object_store_access_key: str | None = None,
+        object_store_secret_key: str | None = None,
+        capabilities: frozenset[str] | None = None,
+    ) -> "KnowledgeBase":
+        """Create an independent client without reading global environment settings.
+
+        Supported object-store URLs are ``file:///absolute/root`` and
+        ``s3://bucket?endpoint=http://host:9000``. This constructor never runs schema
+        migrations and does not enable legacy global service calls.
+        """
+        from mkb.adapters import FileObjectStore, S3ObjectStore, SQLAlchemyDatabase
+
+        if not database_url.strip():
+            raise ValidationError("database_url must not be empty")
+        database = SQLAlchemyDatabase(database_url)
+        object_store = None
+        endpoint = None
+        raw_bucket = "raw"
+        try:
+            if object_store_url is not None:
+                parsed = urlparse(object_store_url)
+                if parsed.scheme == "file":
+                    if not parsed.path or not parsed.path.startswith("/"):
+                        raise ValidationError("file object-store URL must use an absolute path")
+                    object_store = FileObjectStore(unquote(parsed.path))
+                elif parsed.scheme == "s3":
+                    if not parsed.netloc:
+                        raise ValidationError("s3 object-store URL must include a bucket")
+                    raw_bucket = parsed.netloc
+                    endpoint = parse_qs(parsed.query).get("endpoint", [None])[0]
+                    object_store = S3ObjectStore(
+                        endpoint_url=endpoint,
+                        access_key=object_store_access_key,
+                        secret_key=object_store_secret_key,
+                    )
+                else:
+                    raise ValidationError(
+                        "object_store_url must use the file or s3 scheme"
+                    )
+
+            config = MKBConfig(
+                database_url=database_url,
+                object_store_endpoint=endpoint,
+                object_store_access_key=object_store_access_key,
+                object_store_secret_key=object_store_secret_key,
+                raw_bucket=raw_bucket,
+            )
+            return cls._from_resources(
+                config=config,
+                database=database,
+                object_store=object_store,
+                capabilities=capabilities,
+            )
+        except Exception:
+            if object_store is not None:
+                object_store.close()
+            database.close()
+            raise
+
+    @classmethod
+    def _from_resources(
+        cls,
+        *,
+        config: MKBConfig,
+        database: Database,
+        object_store: ObjectStore | None,
+        services: ServiceBindings | None = None,
+        capabilities: frozenset[str] | None = None,
+    ) -> "KnowledgeBase":
+        from mkb.adapters import (
+            SQLAlchemyArtifactRepository,
+            SQLAlchemyCollectionRepository,
+            SQLAlchemyExtractionSchemaRepository,
+            SQLAlchemyProjectionRepository,
+            SQLAlchemyRecordRepository,
+            SQLAlchemySourceRepository,
+        )
+
+        return cls(
+            services=services,
+            config=config,
+            database=database,
+            object_store=object_store,
             collections=Collections(SQLAlchemyCollectionRepository(database)),
-            sources=Sources(SQLAlchemySourceRepository(database), object_store),
-            artifacts=Artifacts(SQLAlchemyArtifactRepository(database), object_store),
-            records=Records(SQLAlchemyRecordRepository(database)),
-            schemas=ExtractionSchemas(
-                SQLAlchemyExtractionSchemaRepository(database)
+            sources=(
+                Sources(SQLAlchemySourceRepository(database), object_store)
+                if object_store is not None
+                else None
             ),
+            artifacts=(
+                Artifacts(SQLAlchemyArtifactRepository(database), object_store)
+                if object_store is not None
+                else None
+            ),
+            records=Records(SQLAlchemyRecordRepository(database)),
+            schemas=ExtractionSchemas(SQLAlchemyExtractionSchemaRepository(database)),
             projections=Projections(SQLAlchemyProjectionRepository(database)),
+            capabilities=capabilities,
         )
 
     def __enter__(self) -> "KnowledgeBase":
