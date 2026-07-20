@@ -10,6 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from mkb.ports import Database, ObjectStore
+from mkb.repositories import Collections
+
 
 class ServiceBindings(Protocol):
     """Callable service namespace consumed by :class:`KnowledgeBase`.
@@ -41,12 +44,15 @@ class ServiceBindings(Protocol):
 class MKBConfig:
     """Non-secret topology for one SDK instance.
 
-    Credentials stay in backend-specific adapters. This object is intentionally
-    immutable so one client's configuration cannot leak into another client.
+    Secret fields are excluded from ``repr`` and passed only to backend adapters.
+    This object is intentionally immutable so one client's configuration cannot leak
+    into another client.
     """
 
     database_url: str | None = field(default=None, repr=False)
     object_store_endpoint: str | None = None
+    object_store_access_key: str | None = field(default=None, repr=False)
+    object_store_secret_key: str | None = field(default=None, repr=False)
     raw_bucket: str = "raw"
     processed_bucket: str = "processed"
     archive_bucket: str = "archive"
@@ -60,6 +66,8 @@ class MKBConfig:
         return cls(
             database_url=settings.pg_dsn_sync,
             object_store_endpoint=settings.s3_endpoint,
+            object_store_access_key=settings.s3_access_key,
+            object_store_secret_key=settings.s3_secret_key,
             raw_bucket=settings.s3_bucket_raw,
             processed_bucket=settings.s3_bucket_processed,
             archive_bucket=settings.s3_bucket_archive,
@@ -75,16 +83,44 @@ class KnowledgeBase:
     for tests and future independently configured adapters.
     """
 
-    def __init__(self, *, services: ServiceBindings, config: MKBConfig | None = None):
+    def __init__(
+        self,
+        *,
+        services: ServiceBindings,
+        config: MKBConfig | None = None,
+        database: Database | None = None,
+        object_store: ObjectStore | None = None,
+        collections: Collections | None = None,
+    ):
         self._services = services
         self.config = config or MKBConfig()
+        self.database = database
+        self.object_store = object_store
+        self.collections = collections
         self._closed = False
 
     @classmethod
     def from_environment(cls) -> "KnowledgeBase":
         from mkb import api
+        from mkb.adapters import (
+            S3ObjectStore,
+            SQLAlchemyCollectionRepository,
+            SQLAlchemyDatabase,
+        )
 
-        return cls(services=api, config=MKBConfig.from_environment())
+        config = MKBConfig.from_environment()
+        database = SQLAlchemyDatabase(config.database_url)
+        return cls(
+            services=api,
+            config=config,
+            database=database,
+            object_store=S3ObjectStore(
+                endpoint_url=config.object_store_endpoint,
+                access_key=config.object_store_access_key,
+                secret_key=config.object_store_secret_key,
+            ),
+            collections=Collections(SQLAlchemyCollectionRepository(database)),
+        )
 
     def __enter__(self) -> "KnowledgeBase":
         self._ensure_open()
@@ -103,6 +139,10 @@ class KnowledgeBase:
         close = getattr(self._services, "close", None)
         if callable(close):
             close()
+        if self.object_store is not None:
+            self.object_store.close()
+        if self.database is not None:
+            self.database.close()
         self._closed = True
 
     def _ensure_open(self) -> None:

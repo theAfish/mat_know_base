@@ -27,6 +27,26 @@ bindings belong to one object rather than module globals. The initial environmen
 adapter still uses the existing application services; independently configured SQLite,
 PostgreSQL, filesystem, S3, and graph adapters will be added incrementally.
 
+The client already owns explicit relational and object-store resources. They are
+available for health checks and are closed with the client:
+
+```python
+with KnowledgeBase.from_environment() as kb:
+    kb.database.check()
+    kb.object_store.check((kb.config.raw_bucket, kb.config.processed_bucket))
+
+    # Typed generic view over the existing research_projects table.
+    collections = kb.collections.list(limit=100)
+    first = kb.collections.get(collections[0].id) if collections else None
+    if first:
+        print(first.model_dump(mode="json"))
+```
+
+The adapter interfaces are `mkb.Database` and `mkb.ObjectStore`; default implementations
+are available from `mkb.adapters`. Existing domain services are being moved onto these
+resources incrementally, so direct construction with a new database is not yet a full
+replacement for `from_environment()`.
+
 The API performs real database, object-storage, filesystem, processor, and LLM work.
 It is not an in-memory SDK. Configure `.env`, start infrastructure with `make up`, and
 run calls from the repository root so `config.yaml` and `alembic.ini` are found.

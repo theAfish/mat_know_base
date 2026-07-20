@@ -128,7 +128,7 @@ to simplify the new architecture.
       an injected SQLAlchemy adapter owned by `KnowledgeBase`.
 - [ ] Inject object storage, graph storage, model provider, parser registry, pipeline
       registry, and job backend into the application object.
-- [ ] Define explicit lifecycle methods or context-manager support so connections and
+- [x] Define explicit lifecycle methods or context-manager support so connections and
       worker resources are released predictably.
 - [ ] Add explicit transaction scopes:
 
@@ -141,13 +141,14 @@ to simplify the new architecture.
 - [ ] Document that PostgreSQL, object storage, and external graph databases cannot
       share one ACID transaction. Use stable IDs, staging states, idempotent writes,
       an outbox/event pattern, and compensating cleanup for cross-store operations.
-- [ ] Prove with tests that the current local PostgreSQL and MinIO configuration works
+- [x] Prove with tests that the current local PostgreSQL and MinIO configuration works
       through the injected adapters before changing any schema.
 
 ## Phase 3 — Introduce generic domain concepts without discarding old records
 
 - [ ] Define infrastructure-independent concepts:
-  - `Collection`: a logical grouping of data.
+  - [x] `Collection`: a typed logical grouping of data, initially mapped read-only to
+        existing `research_projects` rows through the injected SQLAlchemy adapter.
   - `Source`: an ingested file, URI, text, bytes, or external record.
   - `Artifact`: a derived or processed output.
   - `Record`: structured extracted data.

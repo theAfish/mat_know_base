@@ -73,3 +73,26 @@ def test_client_context_closes_and_rejects_further_calls():
     assert kb.closed is True
     with pytest.raises(RuntimeError, match="closed"):
         kb.list_projects()
+
+
+def test_client_owns_and_closes_injected_resources():
+    calls = []
+
+    class Resource:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    database = Resource()
+    object_store = Resource()
+    kb = KnowledgeBase(
+        services=_services(calls, "kb"),
+        database=database,
+        object_store=object_store,
+    )
+
+    kb.close()
+
+    assert database.closed is True
+    assert object_store.closed is True
