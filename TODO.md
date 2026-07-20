@@ -66,13 +66,15 @@ to simplify the new architecture.
 
 ### Required backup gate
 
-- [ ] Create a named full snapshot using the existing packer:
+- [x] Create a named full snapshot using the existing packer:
 
       ```bash
       make pack out=migration-snapshots/pre-sdk-refactor.tar.gz
       ```
 
-- [ ] Run `make restore-drill` and retain its successful output with the manifest.
+- [x] Run the validation-only restore drill and retain its successful output with the
+      manifest. The named 8.3 GB snapshot passed checksum validation and restored into
+      a disposable PostgreSQL database on 2026-07-20; live replacement was not enabled.
 - [ ] Additionally restore the named snapshot into disposable infrastructure and run
       inventory/reconciliation there. The existing validation-only drill checks the
       archive and PostgreSQL restore; the expanded drill must also prove MinIO and local
@@ -82,7 +84,7 @@ to simplify the new architecture.
 
 ## Phase 1 — Define and test the supported SDK contract
 
-- [ ] Replace the global-first design with an explicit configured application object:
+- [x] Replace the global-first design with an explicit configured application object:
 
       ```python
       from mkb import KnowledgeBase
@@ -96,7 +98,7 @@ to simplify the new architecture.
 - [ ] Allow at least two independently configured `KnowledgeBase` instances in one
       Python process without shared settings, engines, sessions, job managers, or
       registries.
-- [ ] Keep `from mkb import api` as a compatibility wrapper around an explicitly
+- [x] Keep `from mkb import api` as a compatibility surface alongside an explicitly
       configured default client. Mark it deprecated only after feature parity exists.
 - [ ] Define the public import boundary. Consumers must not need `mkb.db`, `mkb.web`,
       ORM models, storage internals, or service-private functions.
@@ -119,7 +121,7 @@ to simplify the new architecture.
 
 ## Phase 2 — Remove global configuration and persistence coupling
 
-- [ ] Introduce an immutable `MKBConfig` that can be created from explicit Python
+- [x] Introduce an immutable `MKBConfig` that can be created from explicit Python
       values. Environment and YAML loading should be optional constructors, not import-
       time behavior.
 - [ ] Move engine and session creation out of module globals in `mkb.db.engine` and into

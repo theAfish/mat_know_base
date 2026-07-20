@@ -1,13 +1,31 @@
 # Python API
 
-`mkb.api` is the supported compatibility facade for Python callers. Import from it,
-not from database models, web routers, or individual service modules. The facade is
-synchronous and returns JSON-compatible dictionaries and lists (UUIDs and timestamps
-may still be native Python values in some records).
+`KnowledgeBase` is the new explicit entry point for Python callers. During the SDK
+refactor it delegates to the same services and reads the same PostgreSQL and MinIO data
+as the current application; creating it does not migrate, copy, or re-extract data.
+
+```python
+from mkb import KnowledgeBase
+
+with KnowledgeBase.from_environment() as kb:
+    projects = kb.list_projects(limit=100)
+    frames = kb.list_frames(status="COMPLETED")
+```
+
+`mkb.api` remains the supported compatibility facade while feature parity is built.
+Existing automation does not need to change yet. Import from one of these public
+surfaces, not from database models, web routers, or individual service modules. Both
+surfaces are synchronous and currently return JSON-compatible dictionaries and lists
+(UUIDs and timestamps may still be native Python values in some records).
 
 ```python
 from mkb import api
 ```
+
+The explicit client is preferable for new code because its configuration and service
+bindings belong to one object rather than module globals. The initial environment
+adapter still uses the existing application services; independently configured SQLite,
+PostgreSQL, filesystem, S3, and graph adapters will be added incrementally.
 
 The API performs real database, object-storage, filesystem, processor, and LLM work.
 It is not an in-memory SDK. Configure `.env`, start infrastructure with `make up`, and
@@ -169,4 +187,3 @@ Public names listed in `mkb.api.__all__` are the compatibility surface. Keys in 
 dictionaries are less strictly versioned than function names; consumers should read
 needed keys and tolerate additive fields. Private names beginning with `_`, ORM models,
 and service internals are not supported API even if importable.
-
