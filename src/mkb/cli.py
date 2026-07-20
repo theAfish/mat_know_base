@@ -543,6 +543,28 @@ def cmd_reconcile(_args):
         raise SystemExit(1)
 
 
+def cmd_inventory(args):
+    from pathlib import Path
+
+    from mkb.migration_inventory import migration_inventory
+
+    result = migration_inventory()
+    if not args.out:
+        _json_dump(result)
+        return
+
+    output = Path(args.out)
+    if output.exists() and not args.overwrite:
+        raise FileExistsError(
+            f"Refusing to overwrite existing inventory: {output}; pass --overwrite explicitly"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(json.dumps(result, indent=2, default=str) + "\n")
+    temporary.replace(output)
+    print(f"Wrote read-only migration inventory to {output}")
+
+
 # ── Argument Parsing ─────────────────────────────────────────────
 
 
@@ -790,6 +812,10 @@ def main():
 
     sub.add_parser("reconcile", help="Read-only PostgreSQL/MinIO consistency check")
 
+    p = sub.add_parser("inventory", help="Write a read-only local data migration inventory")
+    p.add_argument("--out", help="JSON output path; prints to stdout when omitted")
+    p.add_argument("--overwrite", action="store_true", help="Replace an existing output file")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -821,6 +847,7 @@ def main():
         "workflow-search": cmd_workflow_search,
         "cleanup": cmd_cleanup,
         "reconcile": cmd_reconcile,
+        "inventory": cmd_inventory,
         "extraction-history": cmd_extraction_history,
         "project-run": cmd_project_run,
         "projections": cmd_projections,

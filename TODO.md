@@ -49,14 +49,14 @@ to simplify the new architecture.
       .venv/bin/python -m mkb.cli reconcile
       ```
 
-- [ ] Add an inventory command that emits JSON containing row counts and stable IDs for
+- [x] Add an inventory command that emits JSON containing row counts and stable IDs for
       every persistent model, including projects, groups, assets, project-asset links,
       processed assets, frames, extraction passes, spaces, projections, feedback,
       graph reviews, raw/canonical workflows, schema proposals/revisions, workflow
       maintenance/index entries, custom skills, post-processor scripts, and jobs.
-- [ ] Extend inventory with per-bucket object counts, total bytes, and checksums or a
+- [x] Extend inventory with per-bucket object counts, total bytes, and checksums or a
       deterministic object-key manifest.
-- [ ] Inventory local files under at least `data/papers`, `data/processed`,
+- [x] Inventory local files under at least `data/papers`, `data/processed`,
       `data/uploads`, `data/inbox`, and `data/runtime_settings.json` when present.
 - [ ] Detect broken references before migration: missing S3 objects, orphan objects,
       missing local mirrors, dangling foreign keys, duplicate logical identifiers, and
