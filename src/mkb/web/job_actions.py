@@ -368,6 +368,7 @@ def start_job_action(
     *,
     job_project_id: str | None = None,
     label: str | None = None,
+    idempotency_key: str | None = None,
     **kwargs: Any,
 ) -> str:
     spec = JOB_ACTIONS[action]
@@ -375,4 +376,15 @@ def start_job_action(
     active = _find_conflict(manager, spec, params["project_id"])
     if active:
         raise JobActionConflict(spec, active)
-    return manager.start_job(**params)
+    if spec.conflict_policy == "project_kind":
+        params["active_key"] = f"project:{params['project_id']}:{spec.kind}"
+    elif spec.conflict_policy == "global_kind":
+        params["active_key"] = f"global:{spec.kind}"
+    params["idempotency_key"] = idempotency_key
+    try:
+        return manager.start_job(**params)
+    except Exception as exc:
+        from mkb.jobs import JobConflict
+        if isinstance(exc, JobConflict):
+            raise JobActionConflict(spec, exc.existing) from exc
+        raise

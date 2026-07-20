@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 import uuid
@@ -12,9 +11,21 @@ from typing import BinaryIO
 
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import PostProcessorScript
+from mkb.config import settings
+from mkb.web.uploads import write_stream_bounded
 
 
 SCRIPTS_ROOT = Path("data/post_processor_scripts")
+MAX_SCRIPT_IO_BYTES = 64 * 1024
+MAX_SCRIPT_PAYLOAD_BYTES = 5 * 1024 * 1024
+
+
+def _require_uploaded_python_opt_in() -> None:
+    if not settings.allow_uploaded_python:
+        raise PermissionError(
+            "Uploaded Python post-processors are disabled. A trusted administrator "
+            "must explicitly set MKB_ALLOW_UPLOADED_PYTHON=true and restart MKB."
+        )
 
 
 def _script_to_dict(script: PostProcessorScript) -> dict:
@@ -33,14 +44,18 @@ def list_scripts() -> list[dict]:
 
 
 def create_script(filename: str, stream: BinaryIO) -> dict:
+    _require_uploaded_python_opt_in()
     safe_name = Path(filename or "").name
     if not safe_name.lower().endswith(".py"):
         raise ValueError("Post-processor script uploads must be Python (.py) files.")
     script_id = uuid.uuid4()
     SCRIPTS_ROOT.mkdir(parents=True, exist_ok=True)
     target = SCRIPTS_ROOT / f"{script_id.hex}_{safe_name}"
-    with target.open("wb") as output:
-        shutil.copyfileobj(stream, output)
+    write_stream_bounded(
+        target,
+        stream,
+        max_bytes=settings.upload_max_file_mb * 1024 * 1024,
+    )
     with SyncSessionLocal() as session:
         script = PostProcessorScript(
             script_id=script_id,
@@ -71,6 +86,7 @@ def run_script(script_config: dict | None, payload: dict) -> dict:
     """Run one registered script and validate its script-first decision."""
     if not isinstance(script_config, dict):
         return {"run_agent": True, "context": None, "patch": None, "script": None}
+    _require_uploaded_python_opt_in()
     raw_id = str(script_config.get("script_id") or "").strip()
     if not raw_id:
         raise ValueError("Post-processor script requires a script_id.")
@@ -92,13 +108,20 @@ def run_script(script_config: dict | None, payload: dict) -> dict:
         raise ValueError("Post-processor script timeout_seconds must be an integer.") from exc
     if not 1 <= timeout_seconds <= 300:
         raise ValueError("Post-processor script timeout_seconds must be between 1 and 300.")
+    serialized_payload = json.dumps(payload)
+    if len(serialized_payload.encode("utf-8")) > MAX_SCRIPT_PAYLOAD_BYTES:
+        raise ValueError("Post-processor input exceeds the 5 MiB limit.")
     try:
         completed = subprocess.run(
-            [sys.executable, str(script_path)], input=json.dumps(payload), capture_output=True,
+            [sys.executable, str(script_path)], input=serialized_payload, capture_output=True,
             text=True, cwd=script_path.parent, timeout=timeout_seconds, check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"Post-processor script timed out after {timeout_seconds} seconds.") from exc
+    stdout_bytes = completed.stdout.encode("utf-8")
+    stderr_bytes = completed.stderr.encode("utf-8")
+    if len(stdout_bytes) > MAX_SCRIPT_IO_BYTES or len(stderr_bytes) > MAX_SCRIPT_IO_BYTES:
+        raise ValueError("Post-processor output exceeded the 64 KiB limit.")
     if completed.returncode != 0:
         detail = completed.stderr.strip()
         raise ValueError(f"Post-processor script exited with code {completed.returncode}{': ' + detail if detail else ''}")
@@ -114,6 +137,15 @@ def run_script(script_config: dict | None, payload: dict) -> dict:
             raise ValueError("Post-processor script patch requires winning_projection_id.")
         if not isinstance(patch.get("updates"), list) or not patch["updates"]:
             raise ValueError("Post-processor script patch requires non-empty updates.")
+        if len(patch["updates"]) > 1000:
+            raise ValueError("Post-processor script patch contains too many updates.")
+        for update in patch["updates"]:
+            if not isinstance(update, dict) or not isinstance(update.get("path"), str):
+                raise ValueError("Every post-processor update requires a string path.")
+            if not update["path"].strip() or len(update["path"]) > 1000:
+                raise ValueError("Post-processor update path is invalid.")
+        if len(str(patch.get("review_notes") or "")) > 10_000:
+            raise ValueError("Post-processor review_notes is too large.")
     return {
         "run_agent": decision["run_agent"],
         "context": decision.get("context"),

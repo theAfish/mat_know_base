@@ -1,105 +1,40 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
 
-from mkb.db.engine import _apply_schema_compatibility
+from mkb.db.engine import (
+    SchemaRevisionError,
+    current_schema_revision,
+    expected_schema_revision,
+    require_schema_current,
+)
 
 
-def test_apply_schema_compatibility_adds_missing_extraction_version():
+def _sqlite_at_revision(revision: str | None):
     engine = create_engine("sqlite+pysqlite:///:memory:")
-
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE knowledge_frames (
-                    frame_id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    content TEXT,
-                    extraction_summary TEXT,
-                    times_checked INTEGER NOT NULL DEFAULT 0,
-                    extracted_at TEXT,
-                    source_metadata TEXT,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-                """
+    if revision is not None:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(64))"))
+            connection.execute(
+                text("INSERT INTO alembic_version (version_num) VALUES (:revision)"),
+                {"revision": revision},
             )
-        )
-
-    _apply_schema_compatibility(engine)
-
-    columns = {col["name"] for col in inspect(engine).get_columns("knowledge_frames")}
-    assert "extraction_version" in columns
+    return engine
 
 
-def test_apply_schema_compatibility_rebuilds_projection_index_without_uniqueness():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+def test_schema_revision_accepts_the_single_alembic_head():
+    expected = expected_schema_revision()
+    engine = _sqlite_at_revision(expected)
 
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE projections (
-                    projection_id TEXT PRIMARY KEY,
-                    space_id TEXT NOT NULL,
-                    frame_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    data TEXT,
-                    validation_result TEXT,
-                    agent_notes TEXT,
-                    extracted_at TEXT,
-                    space_version INTEGER NOT NULL,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE UNIQUE INDEX ix_projection_space_frame ON projections (space_id, frame_id)"
-            )
-        )
-
-    _apply_schema_compatibility(engine)
-
-    indexes = {
-        index["name"]: index
-        for index in inspect(engine).get_indexes("projections")
-    }
-    assert "ix_projection_space_frame" in indexes
-    assert not indexes["ix_projection_space_frame"]["unique"]
+    assert current_schema_revision(engine) == expected
+    assert require_schema_current(engine) == expected
 
 
-def test_apply_schema_compatibility_adds_missing_projection_review_columns_and_index():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+def test_schema_revision_rejects_empty_or_stale_database():
+    engine = _sqlite_at_revision(None)
 
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE projections (
-                    projection_id TEXT PRIMARY KEY,
-                    space_id TEXT NOT NULL,
-                    frame_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    data TEXT,
-                    validation_result TEXT,
-                    agent_notes TEXT,
-                    extracted_at TEXT,
-                    space_version INTEGER NOT NULL,
-                    created_at TEXT,
-                    updated_at TEXT
-                )
-                """
-            )
-        )
-
-    _apply_schema_compatibility(engine)
-
-    inspector = inspect(engine)
-    columns = {col["name"] for col in inspector.get_columns("projections")}
-    indexes = {index["name"]: index for index in inspector.get_indexes("projections")}
-
-    assert {"times_reviewed", "review_notes", "reviewed_at", "deleted_at"}.issubset(columns)
-    assert "ix_projection_deleted_at" in indexes
+    try:
+        require_schema_current(engine)
+    except SchemaRevisionError as exc:
+        assert "make migrate" in str(exc)
+        assert "unversioned/empty" in str(exc)
+    else:
+        raise AssertionError("empty database should not pass the schema check")

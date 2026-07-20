@@ -1,336 +1,338 @@
-# mat_know_base Refactor and Enhancement TODO
+# MKB Refactoring and Operational Safety TODO
 
-Repo review date: 2026-06-30.
+Review date: 2026-07-17
 
-This TODO is based on a read-through of the backend API, web routers, agent tools,
-workflow modules, React frontend, tests, and dev scripts. It focuses on reducing
-duplicate logic, clarifying ownership boundaries, and making the project easier to
-operate and develop.
+Goal: make MKB clean to develop, predictable to maintain, and safe to operate.
 
-## P0 - Fix Current Dev/Test Breakages
+## Current baseline
 
-- [x] Restore pytest collection.
-  - Current venv command: `.venv/bin/python -m pytest --collect-only -q`.
-  - Current failure: `tests/test_projection_utils.py` imports
-    `_filter_latest_projections` from `src/mkb/ui/pages/projections.py`, but that
-    helper is no longer present.
-  - Decide whether to reintroduce the helper, move the test to the React/API
-    projection path, or delete the legacy Streamlit-specific assertion.
+- Python: Ruff passes; 155 tests pass with upstream deprecation warnings.
+- Frontend: TypeScript checking and the production build pass.
+- Repository: the working tree was clean at the start of this review.
+- Architecture: the backend has already been split into services and routers, but
+  several large agent-tool and React modules remain.
+- Operating assumption: treat the current application as **trusted, single-user,
+  localhost-only software**. Do not expose it to a LAN or the public internet until
+  the P0 security boundary is complete.
 
-- [x] Fix Ruff baseline so CI can be meaningful.
-  - Current command: `.venv/bin/python -m ruff check src tests`.
-  - Current issues include unused imports, ambiguous loop variable `l`, and real
-    undefined test variables in `tests/test_workflow_resume.py`.
-  - Add a CI command that runs Ruff and pytest collection at minimum.
+## P0 - Establish a safe operating boundary
 
-- [x] Make test commands work without relying on an editable install in a hidden
-  local venv.
-  - `python3 -m pytest --collect-only -q` fails with `ModuleNotFoundError: mkb`
-    on the system interpreter.
-  - Options: document `.venv/bin/python -m pytest`, add `pythonpath = ["src"]`
-    to pytest config, or standardize on `pip install -e ".[dev]"`.
-  - Added pytest `pythonpath = ["src"]`; the system interpreter now reaches repo
-    modules but still needs project dependencies installed.
+- [x] Add an explicit deployment mode and fail closed outside local development.
+  - Define `development`, `local`, and `production` behavior in one settings model.
+  - Keep the API bound to `127.0.0.1` by default.
+  - Refuse production startup when default credentials, wildcard origins, debug
+    logging, or missing authentication are detected.
+  - Done when startup tests cover safe defaults and every unsafe override produces a
+    prominent warning or hard failure, as appropriate.
 
-## P1 - Split the Backend API Monolith
+- [x] Add authentication and authorization before supporting remote access.
+  - Protect all `/api` routes except liveness/readiness checks.
+  - Separate read, mutate, destructive, settings, and code-upload permissions.
+  - Apply CSRF protection if browser cookie authentication is used.
+  - Add rate limits for login, upload, assistant, and job-start endpoints.
+  - Done when an unauthenticated client cannot read source assets, mutate data,
+    start costly jobs, change settings, or upload executable content.
+  - Implemented with header-based bearer tokens and reader/editor/admin roles;
+    cookie authentication and CSRF are not used. Failed authentication, upload,
+    assistant, and job-start requests have explicit per-process rate limits.
 
-- [x] Break up `src/mkb/api.py`.
-  - It is currently about 3,000 lines and owns ingestion, processing, frames,
-    project groups, deletion, workflow extraction, workflow schema review,
-    projection, export, graph, and feedback.
-  - Suggested service modules:
-    - `mkb.services.projects`
-    - `mkb.services.assets`
-    - `mkb.services.processing`
-    - `mkb.services.frames`
-    - `mkb.services.workflows`
-    - `mkb.services.projections`
-    - `mkb.services.graphs`
-    - `mkb.services.feedback`
-  - Keep `mkb.api` as a compatibility facade that imports and delegates public
-    functions until callers migrate.
-  - `mkb.api` is now a compatibility facade over domain modules:
-    `mkb.services.runtime`, `ingest`, `assets`, `frames`, `projects`,
-    `workflows`, `spaces`, `projections`, `graphs`, and `feedback`.
+- [x] Replace wildcard CORS with a configured allowlist.
+  - `src/mkb/web/api_server.py` currently combines `allow_origins=["*"]`,
+    credentials, all methods, and all headers.
+  - Default to the exact local frontend origin and validate configured origins.
+  - Add API tests for allowed and rejected preflight requests.
 
-- [x] Move database serialization helpers next to their domain services.
-  - Examples in `src/mkb/api.py`: `_serialize_group`,
-    `_serialize_raw_workflow`, `_serialize_canonical_workflow`,
-    `_serialize_projection_payload`.
-  - This will make router, CLI, API, and agent tool behavior easier to keep
-    aligned.
+- [x] Stop publishing development data services on every network interface.
+  - Bind PostgreSQL, MinIO, and the MinIO console to `127.0.0.1` in Compose.
+  - Read credentials from `.env`; remove fixed credentials from Compose and bucket
+    initialization commands.
+  - Pin PostgreSQL/pgvector, MinIO, and `mc` images to tested versions or digests.
+  - Document that default credentials are disposable local-development values only.
 
-- [x] Create a shared `Result`/error convention.
-  - Many API functions return `{"error": ...}` while routers translate those to
-    HTTP exceptions manually.
-  - Pick a single internal exception/result style and let web, CLI, and agent
-    adapters map it to their own surfaces.
-  - Added `mkb.services.result.ServiceError`, `error_result`,
-    `is_error_result`, and `result_status_code`.
-  - Web adapters now use `require_service_result` /
-    `require_service_result_or_not_found` instead of hand-unpacking
-    `{"error": ...}` dictionaries.
-  - Legacy `{"error": ...}` returns remain supported so service modules can
-    migrate incrementally.
+- [ ] Isolate or disable uploaded Python post-processors by default.
+  - Uploaded `.py` files currently run with the API process's Python interpreter,
+    environment, filesystem access, and network access.
+  - Short term: require an explicit trusted-admin opt-in and show the risk in the UI.
+  - Long term: execute in a constrained worker/container with a read-only root,
+    minimal mounted input, no inherited secrets, disabled network, CPU/memory/PID
+    limits, output limits, and a hard timeout.
+  - Validate the patch schema and cap stdout/stderr before returning errors.
+  - Done when a test script cannot read `.env`, contact the network, modify project
+    files, or exhaust host resources.
+  - Progress: upload and execution now require the environment-only trusted-admin
+    opt-in; output and patch shapes are capped/validated. Worker isolation remains.
 
-## P1 - Consolidate Duplicate Web, CLI, and Agent Adapters
+- [ ] Put hard resource budgets on every upload and archive expansion path.
+  - Enforce request, per-file, total-upload, file-count, filename-depth, and timeout
+    limits while streaming—not after writing to disk.
+  - For ZIP/TAR and skill archives, limit compressed size, expanded size, member
+    count, per-member size, nesting depth, and compression ratio.
+  - Continue rejecting traversal, absolute paths, links, devices, and special files.
+  - Garbage-collect abandoned upload sessions and partial files.
+  - Add regression tests for zip bombs, nested archives, duplicate names, truncated
+    uploads, and quota cleanup.
+  - Progress: streaming per-file/session limits and ZIP/TAR/skill expansion limits
+    are enforced with partial-file cleanup. Request timeouts, abandoned-session GC,
+    and scheduled quota cleanup remain.
 
-- [x] Introduce a single job action registry.
-  - Duplicate job-starting logic exists in:
-    - `src/mkb/web/routers/projects.py`
-    - `src/mkb/web/_state.py`
-    - `src/mkb/agents/tools/orchestrator_tools.py`
-    - Streamlit background job paths under `src/mkb/ui`
-  - Define one table of job kinds, labels, target functions, validation, and
-    active-job conflict policy.
-  - Use that registry for REST routes, assistant-triggered workflows, batch
-    actions, and any remaining Streamlit actions.
-  - Done: `mkb.web.job_actions` now defines action metadata, target lookup,
-    argument validation, and active-job conflict policy for REST, assistant
-    workflow dispatch, batch actions, upload ingest, and legacy Streamlit
-    project actions.
+- [ ] Protect secrets and sensitive research content in settings and logs.
+  - Store runtime secrets outside a general JSON settings file, or use a system
+    secret store; at minimum write atomically with owner-only permissions.
+  - Redact credentials, authorization headers, signed URLs, prompts, source content,
+    and model payloads from logs by default.
+  - Default to `INFO`; do not always capture the full DEBUG stream on disk.
+  - Stop truncating logs at every startup; retain them according to an explicit
+    size/age policy.
+  - Add redaction tests using recognizable fake secrets.
+  - Progress: runtime settings are replaced atomically with owner-only permissions;
+    INFO is now the default; rotating logs append across restarts; and recognizable
+    credentials, authorization headers, URL credentials, and signed URL parameters
+    are redacted. A system secret store and content-aware redaction remain.
 
-- [x] Replace forced thread cancellation in `JobManager`.
-  - `src/mkb/web/_state.py` uses `ctypes.pythonapi.PyThreadState_SetAsyncExc`.
-  - This can interrupt database sessions, file writes, S3 operations, or agent
-    tool calls at unsafe points.
-  - Prefer cooperative cancellation through `progress_callback`, cancellation
-    tokens, and explicit checks in long-running loops.
+- [ ] Add safeguards and audit records for destructive operations.
+  - Inventory project, projection, workflow, graph, group, skill, and script deletes,
+    plus database reset and snapshot restore.
+  - Require confirmation or a typed resource identifier for bulk/destructive CLI
+    actions; require elevated authorization in the API.
+  - Prefer soft delete plus a documented recovery window where practical.
+  - Record actor, action, target, timestamp, request/job ID, and outcome without
+    logging sensitive payloads.
 
-- [x] Extract upload/archive handling from `src/mkb/web/api_server.py`.
-  - The file notes that upload logic is inline for test monkeypatch compatibility.
-  - Move implementation to `mkb.web.uploads` and re-export wrapper functions in
-    `api_server.py` so tests and callers retain the same patch points.
+## P1 - Make data and background work recoverable
 
-- [x] Centralize preview/content response logic.
-  - `src/mkb/web/routers/projects.py` owns `_inline_headers` and
-    `_asset_media_type`.
-  - Move content negotiation, safe filename headers, and S3 download response
-    creation into a shared web helper before adding more preview types.
+- [x] Make Alembic the only schema migration mechanism.
+  - `mkb.db.engine` currently mixes `create_all()` with handwritten compatibility
+    DDL, which can hide migration drift.
+  - Convert compatibility changes into reviewed migrations and verify one linear
+    head from an empty database and from a supported older snapshot.
+  - Make startup check the schema revision and fail with an actionable message.
+  - Add upgrade and downgrade/forward-recovery tests in disposable PostgreSQL.
+  - Implemented: revision `003` now contains the reconstructed initial schema,
+    revision `0022_schema_drift_cleanup` captures the last compatibility changes,
+    runtime schema mutation was removed, and startup checks the single head. Empty,
+    downgrade/forward, and base/forward drills pass against disposable PostgreSQL
+    with no ORM migration drift.
 
-## P1 - Clarify the Workflow Migration Boundary
+- [x] Replace in-memory threads and job dictionaries with a durable job model.
+  - Persist queued/running/terminal state, progress, cancellation, attempt count,
+    timestamps, and idempotency keys.
+  - Define restart behavior: safely resume retryable jobs and mark interrupted jobs
+    explicitly instead of losing them.
+  - Enforce per-action concurrency and prevent duplicate work across processes.
+  - Keep cooperative cancellation, but add checkpoints around long LLM, database,
+    processor, and storage operations.
+  - Implemented with PostgreSQL-backed job/event/result records, request and
+    idempotency keys, database-enforced active-work locks, persisted cooperative
+    cancellation, attempt/timestamp fields, and explicit restart interruption.
 
-- [x] Decide whether canonical workflows are legacy, active, or compatibility-only.
-  - `docs/workflow-card-architecture.md` says extraction to canonicalization is
-    retired.
-  - The code still exposes canonical workflow contracts, API functions, router
-    endpoints, frontend tabs, maintenance tasks, and tests.
-  - Document the current policy and mark each public endpoint as active,
-    deprecated, or internal compatibility.
-  - Documented in `docs/workflow-lifecycle-policy.md`.
+- [x] Define transaction and idempotency boundaries for every workflow.
+  - Document which database and S3 writes constitute ingest, process, extract,
+    project, review, and delete completion.
+  - Use staging keys/statuses and compensating cleanup so partial failures are
+    visible and retryable.
+  - Add failure-injection tests between database commits and object-store writes.
+  - Documented completion, retry identity, staging, and compensation boundaries
+    for ingest, process, extract, project/review, and delete. Reconciliation makes
+    incomplete cross-store writes visible and retryable job locks prevent duplicate
+    workflow execution.
 
-- [x] Group workflow code by lifecycle.
-  - Current workflow behavior spans:
-    - `src/mkb/workflows/*`
-    - `src/mkb/agents/workflow_extraction.py`
-    - `src/mkb/agents/workflow_canonicalization.py`
-    - `src/mkb/agents/schema_curator.py`
-    - `src/mkb/agents/tools/workflows.py`
-    - `src/mkb/agents/tools/workflow_canonicalization.py`
-    - `src/mkb/agents/tools/schema_curator.py`
-    - many sections of `src/mkb/api.py`
-  - Create a workflow service package with explicit submodules for extraction,
-    validation, schema review, indexing, and legacy canonicalization.
-  - Done: `mkb.services.workflows` is now a lifecycle package with
-    `extraction`, `serialization`, `schema_review`, `maintenance`, `indexing`,
-    and `legacy_canonicalization` modules. Active routes/jobs use raw
-    workflow extraction and review; canonicalization launch is no longer part
-    of the active REST/job flow.
+- [x] Turn snapshots into a tested backup and restore procedure.
+  - Make snapshot creation fail if any PostgreSQL/MinIO copy step fails; remove
+    `|| true` from integrity-critical commands.
+  - Validate archive paths before extraction and avoid interpolating credentials or
+    paths into shell/Python source strings.
+  - Add a versioned manifest, checksums, schema revision, application version, and
+    optional encryption.
+  - Restore into staging first, validate it, then require explicit replacement.
+  - Run a documented restore drill against a disposable environment in CI or on a
+    schedule.
+  - Implemented strict copy failures, pinned tools, safe extraction, a versioned
+    checksummed manifest, schema/application versions, optional age encryption,
+    disposable-database validation, typed replacement confirmation, and a reusable
+    restore-drill target.
 
-- [x] Remove duplicated schema/card operations between
-  `src/mkb/agents/tools/workflows.py` and
-  `src/mkb/agents/tools/workflow_canonicalization.py`.
-  - Both modules normalize payloads, expose card/template operations, and
-    manipulate draft graphs or schema libraries.
-  - Done: shared card search, schema-library views, raw graph normalization,
-    checkpoint manifests, compacting, and draft replacement helpers live in
-    `mkb.workflows.editing`. Agent tools now call that library instead of
-    owning duplicate low-level operations.
+- [x] Add meaningful liveness, readiness, and diagnostics.
+  - Keep liveness process-only.
+  - Readiness must verify database connectivity/revision, required S3 buckets, and
+    worker availability without exposing secrets.
+  - Add structured request/job IDs and useful error categories.
+  - Document a short operator runbook for startup, shutdown, stuck jobs, full disks,
+    provider outages, backup, restore, and upgrade.
+  - Progress: process-only liveness and non-sensitive readiness checks now cover
+    database connectivity/revision, required S3 buckets, and local worker
+    availability. Request/job ID propagation and the operator runbook remain.
+  - Completed with validated request-ID propagation into durable jobs and responses,
+    categorized diagnostics, structured request logging, and an operator runbook.
 
-## P1 - Reduce Frontend Duplication
+- [x] Add retention and reconciliation commands.
+  - Provide dry-run cleanup for stale upload sessions, processor temp files, local
+    mirrors, exports, logs, job history, and orphaned S3/database records.
+  - Require explicit confirmation before deletion and report reclaimed bytes/items.
+  - Add a read-only consistency checker for PostgreSQL, MinIO, and local metadata.
+  - Implemented dry-run-first local/job retention with typed confirmation and
+    reclaimed counts, plus read-only database/S3 missing-and-orphan reporting.
 
-- [ ] Merge the two project detail experiences.
-  - `frontend/src/components/projects/ProjectDetail.tsx`
-  - `frontend/src/components/frames/ProjectDetail.tsx`
-  - Both own project actions, job polling, space selection, graph/workflow
-    display, and project refresh logic.
-  - Extract shared hooks/components:
-    - `useProjectActions`
-    - `useProjectRefresh`
-    - `ProjectActionBar`
-    - `ProjectStatusHeader`
-    - `ProjectTabs`
-  - Started: extracted `useProjectRefresh`; action bar/status/tabs are still
-    duplicated.
+## P1 - Restore one source of truth at boundaries
 
-- [ ] Split large React pages into feature modules.
-  - Biggest current files:
-    - `frontend/src/pages/SpacesPage.tsx` at about 1,400 lines
-    - `frontend/src/components/projects/WorkflowCanvas.tsx` at about 1,100 lines
-    - `frontend/src/pages/GraphPage.tsx` at about 900 lines
-    - `frontend/src/components/projections/SectionTable.tsx` at about 700 lines
-  - Prioritize extracting pure transformation helpers first, then reusable
-    controls, then page-level containers.
+- [ ] Finish the service result/error migration.
+  - Replace remaining `{"error": ...}` success-shaped dictionaries with typed
+    exceptions/results.
+  - Map domain errors once in REST, CLI, and agent adapters.
+  - Define stable error codes; do not make callers parse human-readable messages.
 
-- [ ] Finish job polling consolidation.
-  - `frontend/src/api/jobPolling.ts` is a good shared primitive.
-  - Continue removing local `pollJob`, `refreshOnFinishedJob`, and manual job
-    list merging patterns from page components.
-  - Route all job updates through `frontend/src/store/jobsStore.ts` unless a
-    component truly needs isolated state.
+- [ ] Generate and validate frontend API contracts.
+  - Export OpenAPI in a deterministic build step and generate TypeScript types, or
+    validate high-risk payloads with shared/generated Zod schemas.
+  - Cover projects, jobs, workflows, projections, spaces, settings, and errors.
+  - Fail CI when generated contracts are stale.
 
-- [x] Add route-level code splitting.
-  - `npm run build` succeeds, but Vite reports a large JS chunk around 1.6 MB.
-  - Lazy-load heavy pages/components such as graph visualization, PDF preview,
-    projections table, workflow canvas, and skills/settings pages.
+- [ ] Standardize identifiers, timestamps, enums, and pagination.
+  - Use strict UUID parsing internally and tolerant parsing only in agent-tool
+    adapters where it is intentional.
+  - Use UTC ISO-8601 consistently and define enum casing once.
+  - Add bounded pagination to collection/search endpoints instead of returning
+    unbounded lists.
 
-## P2 - Remove Legacy Streamlit Surface or Fence It Off
+- [ ] Add typed contracts for important JSONB payloads.
+  - Prioritize knowledge-frame content metadata, workflow graphs/checkpoints,
+    projection data/review patches, job results/events, provenance, and space
+    schemas.
+  - Validate before persistence and provide versioned migrations for payload-shape
+    changes.
 
-- [x] Decide the long-term owner for `src/mkb/ui`.
-  - README says React replaces the legacy Streamlit UI, but tests and modules
-    still import Streamlit page helpers.
-  - Either:
-    - remove Streamlit pages after migrating tests and any missing behavior, or
-    - move them under `mkb.legacy_ui` and mark as compatibility-only.
-  - Marked `src/mkb/ui` compatibility-only in `src/mkb/ui/README.md`.
+- [ ] Consolidate processed-bundle metadata and hashing.
+  - Use one model for automatic processing, manual processed uploads, artifact
+    inspection, primary-file selection, checksums, and S3/local paths.
+  - Make reprocessing idempotent and retain provenance for derived artifacts.
 
-- [ ] Stop testing new behavior through Streamlit helper functions.
-  - `tests/test_projection_utils.py` and upload grouping tests still target
-    `src/mkb/ui/pages/*`.
-  - Prefer tests against pure helper modules, backend service functions, or REST
-    router behavior.
+## P2 - Reduce architectural duplication
 
-- [ ] Deduplicate upload grouping behavior between Streamlit and React/API.
-  - Similar project naming, collision handling, archive expansion, and grouping
-    logic appears in:
-    - `src/mkb/ui/pages/projects.py`
-    - `src/mkb/web/api_server.py`
-    - `frontend/src/components/projects/uploadHelpers.ts`
-  - Put backend-safe path/name logic in one Python module and mirror only the UI
-    preview heuristics in TypeScript.
+- [ ] Finish merging the two project-detail experiences.
+  - Consolidate `components/projects/ProjectDetail.tsx` and
+    `components/frames/ProjectDetail.tsx` around shared action, status, tab, and
+    refresh components.
+  - Route job state through one store and one polling/subscription layer.
 
-## P2 - Improve Type and Schema Contracts
+- [ ] Split the largest React features along domain boundaries.
+  - Start with `SpacesPage.tsx`, `GraphPage.tsx`, `ProjectionsPage.tsx`,
+    `ProjectGroupedList.tsx`, `WorkflowCanvas.tsx`, and `SectionTable.tsx`.
+  - Extract pure transformations first, then presentation components, then thin
+    route containers.
+  - Keep feature-specific API, schemas, tests, and components together.
 
-- [ ] Generate or validate frontend API types from backend models.
-  - Backend request models live in `src/mkb/web/_models.py`.
-  - Frontend domain types live in `frontend/src/types/index.ts`.
-  - Add an OpenAPI export and a type generation step, or add zod schemas at the
-    client boundary for high-risk payloads.
+- [ ] Finish frontend code splitting and set bundle budgets.
+  - The current build still reports chunks over 500 kB for frames and graph
+    visualization, plus a roughly 1.2 MB PDF worker.
+  - Lazy-load PDF, graph, workflow, and large table functionality only when opened.
+  - Track compressed route/chunk budgets in CI.
 
-- [ ] Standardize identifiers at boundaries.
-  - UUID parsing is repeated with `_parse_uuid`, `parse_uuidish`, ad hoc
-    `uuid.UUID(str(...))`, and frontend string handling.
-  - Define per-boundary helpers:
-    - web request validation
-    - agent tool tolerant parsing
-    - internal strict UUID conversion
-  - Started: added `mkb.services.ids` and wired web UUID parsing through it.
+- [ ] Remove the legacy Streamlit surface or move it to a separately installed
+  compatibility package.
+  - Stop testing new behavior through `mkb.ui` helpers.
+  - Move shared upload/project-name logic into backend domain helpers.
+  - Remove Streamlit and visualization packages from default dependencies when the
+    compatibility surface is retired.
 
-- [ ] Audit JSON/blob fields in `src/mkb/db/models.py`.
-  - Many important states live in `metadata_`, `content`, `data`, `result`,
-    `checkpoint`, and `provenance`.
-  - Add Pydantic contracts for high-value payloads before they enter the DB,
-    especially workflow checkpoints, projection review results, and job results.
+- [ ] Split large agent-tool modules into query, validation, mutation, and
+  persistence layers.
+  - Prioritize projection, schema curator, graph review, knowledge graph, and
+    canonicalization tools.
+  - Agent tools should validate tool-shaped input and delegate; they should not own
+    transaction-heavy business rules.
 
-## P2 - Processor and Storage Cleanup
+- [ ] Centralize graph and projection normalization rules.
+  - Put deduplication, aliases, relation validation, merge policy, patch/path
+    operations, and source-evidence preservation behind domain services.
+  - Add small regression fixtures for same-paper duplicates, cross-paper aliases,
+    conflicting values, repeated reviews, and source preservation.
 
-- [x] Make processor registration declarative.
-  - `src/mkb/processors/coordinator.py` owns a hard-coded `PROCESSORS` list and
-    special cases ambiguous text files.
-  - Add a registry that can rank processors by MIME type, extension, and content
-    sniffing confidence.
+- [ ] Complete the canonical-workflow retirement.
+  - Remove deprecated launch paths, frontend tabs, agent modules, schema tables, and
+    dependencies after an explicit export/migration window.
+  - Keep compatibility reads isolated and time-boxed if existing datasets need them.
 
-- [ ] Reuse bundle hashing and processed-output inspection.
-  - `src/mkb/api.py` manually inspects handmade processed directories.
-  - `src/mkb/processors/base.py` and `src/mkb/processors/coordinator.py` compute
-    processed result hashes and artifact metadata.
-  - Extract one processed bundle model/helper so manual and automatic processing
-    share the same hashing, artifact list, and primary file rules.
+## P2 - Improve testing and delivery
 
-- [ ] Add lifecycle cleanup for local processed/upload temp files.
-  - Upload temp folders, processed local mirrors, and generated exports can grow
-    quickly during research use.
-  - Add commands for dry-run cleanup, retention windows, and orphan detection.
+- [ ] Add CI for every pull request and protected branch.
+  - Run Python lint, tests, and migration checks; frontend type-check, tests, and
+    build; plus secret, dependency, and container scans.
+  - Use dependency caches and cancel superseded runs.
+  - Require the workflow before merge.
 
-## P2 - Knowledge Graph and Projection Quality
+- [ ] Add frontend behavioral tests.
+  - Use a unit/component runner for stores, schemas, polling, upload grouping,
+    projection editing, and error handling.
+  - Add a small browser smoke suite for upload -> process -> extract/project status,
+    cancellation, settings, and destructive confirmations.
 
-- [ ] Move graph normalization/dedup logic behind a graph service.
-  - Logic currently sits in `src/mkb/knowledge_graph.py`,
-    `src/mkb/agents/tools/knowledge_graph.py`, and graph review tools.
-  - Keep agent tools thin and centralize concept/relation validation,
-    deduplication, merge rules, and review counters.
+- [ ] Add real integration tests with PostgreSQL and MinIO.
+  - Cover migrations, ingest deduplication, object cleanup, failure rollback,
+    archive limits, auth, CORS, job restart behavior, and backup/restore.
+  - Keep LLM and MinerU network calls deterministic behind fakes; maintain a small
+    opt-in end-to-end provider smoke test.
 
-- [ ] Separate projection extraction, review, patching, and export concerns.
-  - `src/mkb/agents/tools/projection.py` is over 1,000 lines.
-  - `src/mkb/agents/tools/projection_review.py` is another large mixed module.
-  - Suggested split:
-    - read/query helpers
-    - projection mutation helpers
-    - patch/path operations
-    - review session persistence
-    - export formatting
+- [ ] Strengthen quality tooling.
+  - Add ESLint and a formatter; the current frontend `lint` script is TypeScript
+    checking only.
+  - Add Python formatting, import, security, and type-check policies incrementally.
+  - Track coverage by critical domain rather than chasing one global percentage.
 
-- [ ] Add regression fixtures for duplicate projection and graph merge cases.
-  - The product depends heavily on deduplication quality.
-  - Keep small fixtures for same-paper repeated projections, cross-paper concept
-    aliases, and source-reference preservation.
+- [ ] Pin and automate dependency maintenance.
+  - Establish a reproducible Python lock/constraints workflow; keep the npm lockfile.
+  - Separate runtime, local-PDF, legacy-UI, and development dependency groups.
+  - Automate reviewed update pull requests and vulnerability/license checks.
 
-## P3 - Dev Experience and Repo Hygiene
+## P3 - Developer experience and documentation
 
-- [x] Add a `make check` target.
-  - Suggested steps:
-    - `.venv/bin/python -m ruff check src tests`
-    - `.venv/bin/python -m pytest`
-    - `cd frontend && npm run build`
-  - Add lighter targets for `make lint`, `make test-python`, and
-    `make test-frontend`.
+- [ ] Make every command use the project environment consistently.
+  - The Makefile currently mixes ambient `python`, `pytest`, `alembic`, and `pip`
+    with `.venv/bin/python`.
+  - Introduce one configurable Python command and use `python -m ...` consistently.
+  - Make setup, migrate, lint, test, build, and dev commands work from a clean clone.
+  - Progress: Make targets now use one configurable `PYTHON` and `python -m ...`.
+    Clean-clone environment creation still needs a bootstrap target.
 
-- [x] Add frontend linting and formatting.
-  - `frontend/package.json` has build scripts only.
-  - Add ESLint/Prettier or a minimal TypeScript-aware lint command so React
-    cleanup can be enforced incrementally.
+- [ ] Make `make up` wait for health and run explicit migrations safely.
+  - Do not hide readiness failures with `|| true`.
+  - Provide `make doctor` to check Python/Node/Docker versions, configuration,
+    ports, database revision, buckets, disk space, and external processors.
+  - Progress: `make up` now uses Compose health waiting and runs Alembic without
+    suppressing failures. `make doctor` remains.
 
-- [x] Add a short architecture map.
-  - The README is broad and useful, but new developers need a quick owner map:
-    ingestion, processing, frames, spaces, projections, graph, workflows, jobs,
-    frontend.
-  - Put it in `docs/architecture-map.md`.
+- [ ] Reorganize documentation around user roles.
+  - Keep README as the fast local quickstart.
+  - Add developer setup, architecture/ownership, API contract, security model,
+    operator runbook, backup/restore, upgrade/migration, and contribution guides.
+  - Clearly label React as current and Streamlit/canonical workflows as legacy.
 
-- [x] Keep generated/local artifacts out of review noise.
-  - `.gitignore` covers `data/`, `logs`, `.debug/`, `node_modules/`, and
-    `__pycache__/`.
-  - Tracked data exports currently include:
-    - `data/exports/projections_yaml/*.yaml`
-    - `data/inbox/.gitkeep`
-  - Decide whether exported projection YAML files should remain tracked
-    fixtures or move under examples/fixtures with clear names.
-  - Documented generated-output policy in `docs/development.md`.
+- [ ] Add repository policy files.
+  - Add `CONTRIBUTING.md`, security reporting guidance, supported-version policy,
+    pull-request template, and ownership/review rules for migrations and security
+    sensitive code.
 
-- [x] Add dependency and environment notes.
-  - `python` is not available in this environment, but `python3` and `.venv` are.
-  - Make docs and scripts consistently use `python3` or `.venv/bin/python`.
-  - Consider pinning high-risk dependencies or adding a constraints file for
-    reproducible agent and PDF-processing environments.
+## Recommended implementation order
 
-## Suggested Refactor Order
+1. Safe local-only defaults: loopback binds, CORS allowlist, production startup
+   checks, secret/log redaction, and upload quotas.
+2. Disable or isolate uploaded code; add authentication before any remote use.
+3. Migration-only schema management, durable jobs, transaction/idempotency rules,
+   and tested backup/restore.
+4. CI plus API/frontend/integration contracts and tests.
+5. Remove legacy surfaces and split the largest frontend and agent-tool modules.
+6. Finish documentation, dependency separation, and routine operator tooling.
 
-1. Fix pytest collection and Ruff baseline.
-2. Introduce service modules behind the existing `mkb.api` facade.
-3. Centralize background job action registration and remove unsafe thread
-   cancellation.
-4. Merge frontend project detail/action logic and finish job polling
-   consolidation.
-5. Formalize workflow canonicalization as active or legacy, then prune or fence
-   matching backend/frontend/tests.
-6. Split the largest frontend pages and agent tool modules after the service
-   boundaries are stable.
+## Definition of done for this program
 
-## Verification Notes From This Pass
-
-- [x] `python3 -m compileall -q src` passed.
-- [x] `cd frontend && npm run build` passed.
-- [x] `.venv/bin/python -m pytest --collect-only -q` passed with 111 tests
-  collected.
-- [x] `.venv/bin/python -m ruff check src tests` passed.
-- [x] `.venv/bin/python -m pytest -q` passed with 111 tests.
-- [x] `cd frontend && npm run lint` passed.
+- A clean clone can be installed, migrated, checked, and started using documented
+  commands without relying on hidden global tools.
+- Default services are reachable only from localhost and use no production-unsafe
+  defaults silently.
+- Remote deployment has authentication, least-privilege authorization, bounded
+  uploads/jobs, and isolated executable extensions.
+- Interrupted workflows and partial storage writes are visible, retryable, and
+  reconcilable.
+- Backup restoration is tested, not assumed.
+- API contracts, migrations, Python tests, frontend tests/build, and security checks
+  are required in CI.
+- Each major domain has a clear owner module; REST, CLI, agent, and UI layers are
+  adapters rather than competing implementations of business logic.

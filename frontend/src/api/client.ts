@@ -5,6 +5,14 @@ const client = axios.create({
   timeout: 60_000,
 })
 
+// Production/local-auth deployments can set this for the browser session.
+// It is intentionally not persisted in localStorage.
+client.interceptors.request.use(config => {
+  const token = sessionStorage.getItem('mkb_api_token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
 /** Dispatched whenever any API response carries a job_id, so the job panel
  *  can immediately poll instead of waiting for the next slow-poll cycle. */
 export const JOB_STARTED_EVENT = 'mkb:job-started'

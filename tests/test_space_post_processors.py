@@ -133,6 +133,7 @@ def test_projection_reviewer_output_column_prompt_blocks_new_columns_by_default(
 
 def test_post_processor_script_returns_agent_decision(monkeypatch, tmp_path):
     from mkb.post_processors.registry import run_script
+    monkeypatch.setattr("mkb.post_processors.registry.settings.allow_uploaded_python", True)
 
     script = tmp_path / "gate.py"
     script.write_text(
@@ -161,6 +162,7 @@ def test_post_processor_script_returns_agent_decision(monkeypatch, tmp_path):
 
 def test_post_processor_script_requires_explicit_agent_decision(monkeypatch, tmp_path):
     from mkb.post_processors.registry import run_script
+    monkeypatch.setattr("mkb.post_processors.registry.settings.allow_uploaded_python", True)
 
     (tmp_path / "invalid.py").write_text("print('{}')\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -177,6 +179,7 @@ def test_post_processor_script_requires_explicit_agent_decision(monkeypatch, tmp
 
 def test_post_processor_script_preserves_valid_database_patch(monkeypatch, tmp_path):
     from mkb.post_processors.registry import run_script
+    monkeypatch.setattr("mkb.post_processors.registry.settings.allow_uploaded_python", True)
 
     (tmp_path / "patch.py").write_text(
         "import json\n"

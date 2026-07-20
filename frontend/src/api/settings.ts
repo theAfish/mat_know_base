@@ -1,6 +1,8 @@
 import client from './client'
 
 export interface RuntimeSettings {
+  deployment_mode: 'development' | 'local' | 'production'
+  allow_uploaded_python: boolean
   pdf_backend: 'local' | 'mineru_api'
   mineru_api_base: string
   mineru_api_token: string

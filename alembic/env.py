@@ -3,7 +3,6 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
 
 from mkb.config import settings
 from mkb.db.models import Base

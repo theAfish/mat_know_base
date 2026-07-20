@@ -296,6 +296,17 @@ Restore a snapshot:
 make unpack file=mkb_data_YYYYMMDD.tar.gz
 ```
 
+The first restore invocation validates only. To replace live data, run
+`bash scripts/unpack_data.sh <archive> --confirm-replace` and type the database
+name when prompted. See [the operator runbook](docs/operator-runbook.md).
+
+Maintenance is dry-run-first:
+
+```bash
+mkb cleanup
+mkb reconcile
+```
+
 ## Development
 
 Run Python tests:
@@ -320,6 +331,7 @@ make check
 Useful docs:
 
 - [docs/development.md](docs/development.md)
+- [docs/security.md](docs/security.md)
 - [src/mkb/ui/README.md](src/mkb/ui/README.md)
 
 ## Troubleshooting

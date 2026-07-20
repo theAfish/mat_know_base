@@ -16,6 +16,7 @@ MINIO_ENDPOINT="${MKB_S3_ENDPOINT:-http://localhost:9000}"
 MINIO_ACCESS_KEY="${MKB_S3_ACCESS_KEY:-minioadmin}"
 MINIO_SECRET_KEY="${MKB_S3_SECRET_KEY:-minioadmin}"
 MINIO_BUCKETS=(raw processed archive temp)
+MC_IMAGE="minio/mc:RELEASE.2025-04-16T18-13-26Z"
 
 LOCAL_DATA_DIRS=(data/papers data/processed data/uploads data/inbox)
 
@@ -75,10 +76,11 @@ for bucket in "${MINIO_BUCKETS[@]}"; do
         --user "$(id -u):$(id -g)" \
         -e MC_CONFIG_DIR=/tmp/.mc \
         --entrypoint /bin/sh \
-        minio/mc:latest \
+        "$MC_IMAGE" \
         -c "
             mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
-            mc mirror --overwrite mkb/$bucket /minio_mirror/ 2>&1 || true
+            mc stat mkb/$bucket >/dev/null && \
+            mc mirror --overwrite mkb/$bucket /minio_mirror/
         "
 
     count=$(find "$STAGING/minio/$bucket" -type f | wc -l)
@@ -104,17 +106,9 @@ for dir in "${LOCAL_DATA_DIRS[@]}"; do
 done
 
 # ── 4. Manifest ───────────────────────────────────────────────────────────────
-info "Writing manifest…"
-cat > "$STAGING/manifest.json" <<EOF
-{
-    "created_at": "$TIMESTAMP",
-    "pg_user": "$PG_USER",
-    "pg_database": "$PG_DATABASE",
-    "minio_endpoint_hint": "$MINIO_ENDPOINT",
-    "minio_buckets": $(printf '%s\n' "${MINIO_BUCKETS[@]}" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().split()))"),
-    "local_data_dirs": $(printf '%s\n' "${LOCAL_DATA_DIRS[@]}" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().split()))")
-}
-EOF
+info "Writing checksummed manifest…"
+SCHEMA_REVISION=$(docker compose exec -T postgres psql --username="$PG_USER" --dbname="$PG_DATABASE" --tuples-only --no-align --command="SELECT version_num FROM alembic_version")
+python3 scripts/snapshot_manifest.py create "$STAGING" --revision "$SCHEMA_REVISION"
 
 # ── 5. Create archive ─────────────────────────────────────────────────────────
 info "Creating archive: $ARCHIVE_NAME"
@@ -122,6 +116,11 @@ tar -czf "$ARCHIVE_NAME" -C "$STAGING" .
 
 SIZE=$(du -sh "$ARCHIVE_NAME" | cut -f1)
 info "Done! Archive: $ARCHIVE_NAME  ($SIZE)"
+if [ -n "${MKB_SNAPSHOT_AGE_RECIPIENT:-}" ]; then
+    require_cmd age "Install age to encrypt snapshots."
+    age --recipient "$MKB_SNAPSHOT_AGE_RECIPIENT" --output "${ARCHIVE_NAME}.age" "$ARCHIVE_NAME"
+    info "Encrypted copy: ${ARCHIVE_NAME}.age (plaintext retained for explicit handling)"
+fi
 info ""
 info "Share this file and have others run:"
 info "  bash scripts/unpack_data.sh $ARCHIVE_NAME"

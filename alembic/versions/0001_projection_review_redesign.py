@@ -7,6 +7,7 @@ Create Date: 2026-04-20
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "0004"
 down_revision = "003"
@@ -49,7 +50,7 @@ def downgrade() -> None:
         sa.Column("frame_id", sa.UUID(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum(
+            postgresql.ENUM(
                 "PENDING", "IN_PROGRESS", "COMPLETED", "FAILED",
                 "NEEDS_FEEDBACK", "REVIEWED",
                 name="projection_status",

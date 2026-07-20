@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 import shutil
 import uuid
-import zipfile
 from pathlib import Path
 from typing import BinaryIO
 
+from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import CustomSkill
+from mkb.web.uploads import safe_extract_archive, write_stream_bounded
 
 SKILLS_ROOT = Path("data/skills")
 MAX_SKILL_MD_CHARS = 80_000
@@ -75,41 +76,17 @@ def _root_with_skill_md(root: Path) -> Path:
     raise ValueError("Skill upload must contain a SKILL.md file at the skill root.")
 
 
-def _write_stream(target: Path, stream: BinaryIO) -> int:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    size = 0
-    with target.open("wb") as out:
-        while chunk := stream.read(1024 * 1024):
-            out.write(chunk)
-            size += len(chunk)
-    return size
+def _write_stream(target: Path, stream: BinaryIO, *, total_remaining: int | None = None) -> int:
+    return write_stream_bounded(
+        target,
+        stream,
+        max_bytes=settings.upload_max_file_mb * 1024 * 1024,
+        total_remaining=total_remaining,
+    )
 
 
 def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> int:
-    dest_root = dest_dir.resolve()
-    count = 0
-    with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.infolist():
-            if member.is_dir():
-                continue
-            rel = _safe_relpath(member.filename)
-            if rel is None:
-                continue
-            if rel.parts[0] == "__MACOSX" or rel.name == ".DS_Store":
-                continue
-            info_mode = member.external_attr >> 16
-            if info_mode and (info_mode & 0o170000) == 0o120000:
-                continue
-            target = (dest_dir / rel).resolve()
-            try:
-                target.relative_to(dest_root)
-            except ValueError:
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(member) as src, target.open("wb") as out:
-                shutil.copyfileobj(src, out)
-            count += 1
-    return count
+    return safe_extract_archive(zip_path, dest_dir)
 
 
 def _finalize_skill(staging_root: Path, *, source_type: str, fallback_name: str) -> dict:
@@ -123,6 +100,10 @@ def _finalize_skill(staging_root: Path, *, source_type: str, fallback_name: str)
     name = _extract_title(skill_md, fallback_name)
     description = _extract_description(skill_md)
     files = sorted(path for path in skill_root.rglob("*") if path.is_file())
+    if len(files) > settings.upload_max_files:
+        raise ValueError("Skill contains too many files.")
+    if sum(path.stat().st_size for path in files) > settings.upload_max_total_mb * 1024 * 1024:
+        raise ValueError("Skill exceeds the total upload byte budget.")
     skill_id = uuid.uuid4()
 
     SKILLS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -194,19 +175,26 @@ def create_skill_from_zip(filename: str, stream: BinaryIO) -> dict:
 def create_skill_from_files(files: list[tuple[str, BinaryIO]]) -> dict:
     if not files:
         raise ValueError("Folder skill upload must include at least one file.")
+    if len(files) > settings.upload_max_files:
+        raise ValueError("Folder skill upload contains too many files.")
     staging = SKILLS_ROOT / "_staging" / uuid.uuid4().hex
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True, exist_ok=True)
     try:
         top_name = "Uploaded skill"
+        total_written = 0
         for relname, stream in files:
             rel = _safe_relpath(relname)
             if rel is None:
                 continue
             if top_name == "Uploaded skill" and rel.parts:
                 top_name = rel.parts[0]
-            _write_stream(staging / rel, stream)
+            total_written += _write_stream(
+                staging / rel,
+                stream,
+                total_remaining=settings.upload_max_total_mb * 1024 * 1024 - total_written,
+            )
         return _finalize_skill(staging, source_type="folder", fallback_name=top_name)
     finally:
         if staging.exists():

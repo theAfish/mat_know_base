@@ -20,7 +20,7 @@ def _json_dump(obj):
 def cmd_setup(args):
     from mkb.api import setup
     setup()
-    print("Database tables created.")
+    print("Database migrated to the Alembic head.")
 
 
 def cmd_reset_db(args):
@@ -443,7 +443,13 @@ def cmd_ui(args):
 
 
 def cmd_api(args):
+    import logging
     import uvicorn
+    from mkb.config import settings
+    from mkb.runtime_settings import get_setting
+
+    for warning in settings.validate_startup(host=args.host, log_level=get_setting("log_level")):
+        logging.getLogger("mkb.cli").warning("UNSAFE LOCAL OVERRIDE: %s", warning)
 
     uvicorn.run(
         "mkb.web.api_server:app",
@@ -555,6 +561,26 @@ def cmd_workflow_search(args):
     _json_dump(search_canonical_workflows(
         args.source, args.operation, args.target, args.mode, args.limit,
     ))
+
+
+def cmd_cleanup(args):
+    from mkb.maintenance import apply_retention, prune_job_history, retention_plan
+    plan = retention_plan(older_than_days=args.older_than_days)
+    result = {"local": plan, "jobs": prune_job_history(older_than_days=args.job_days)}
+    if args.apply:
+        if args.confirm != "DELETE":
+            raise ValueError("--apply requires --confirm DELETE")
+        result["local"] = apply_retention(plan, confirm=args.confirm)
+        result["jobs"] = prune_job_history(older_than_days=args.job_days, apply=True)
+    _json_dump(result)
+
+
+def cmd_reconcile(_args):
+    from mkb.maintenance import consistency_report
+    result = consistency_report()
+    _json_dump(result)
+    if not result["ok"]:
+        raise SystemExit(1)
 
 
 # ── Argument Parsing ─────────────────────────────────────────────
@@ -719,8 +745,9 @@ def main():
 
     # ── API ──
     p = sub.add_parser("api", help="Launch the FastAPI backend for the React UI")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8503)
+    from mkb.config import settings as app_settings
+    p.add_argument("--host", default=app_settings.api_host)
+    p.add_argument("--port", type=int, default=app_settings.api_port)
     p.add_argument("--reload", action="store_true")
 
     # processed
@@ -811,6 +838,14 @@ def main():
     p.add_argument("--mode", choices=["strict", "alias-expanded", "template-expanded", "granularity-expanded", "evidence-required"], default="strict")
     p.add_argument("--limit", type=int, default=100)
 
+    p = sub.add_parser("cleanup", help="Plan or apply retention cleanup")
+    p.add_argument("--older-than-days", type=int, default=7)
+    p.add_argument("--job-days", type=int, default=30)
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--confirm", help="Required exact value DELETE when applying")
+
+    sub.add_parser("reconcile", help="Read-only PostgreSQL/MinIO consistency check")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -841,6 +876,8 @@ def main():
         "workflow-task-run": cmd_workflow_task_run,
         "workflow-index": cmd_workflow_index,
         "workflow-search": cmd_workflow_search,
+        "cleanup": cmd_cleanup,
+        "reconcile": cmd_reconcile,
         "extraction-history": cmd_extraction_history,
         "project-run": cmd_project_run,
         "projections": cmd_projections,

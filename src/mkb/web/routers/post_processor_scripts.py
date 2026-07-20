@@ -16,6 +16,8 @@ def list_post_processor_scripts():
 async def upload_post_processor_script(file: UploadFile = File(...)):
     try:
         return registry.create_script(file.filename or "", file.file)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

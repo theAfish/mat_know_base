@@ -17,6 +17,7 @@ from mkb.agents._utils import JobCancelled
 from mkb.agents.orchestrator import create_orchestrator_runner
 from mkb.agents.tools.orchestrator_tools import get_pending_workflows
 from mkb.config import settings
+from mkb.jobs import DatabaseJobStore, JobStore, MemoryJobStore
 from mkb.web.job_actions import action_for_workflow_kind, start_job_action
 
 _EVENT_LIMIT = 60
@@ -52,11 +53,12 @@ class AssistantSession:
 
 
 class JobManager:
-    def __init__(self, max_concurrent: int | None = None) -> None:
+    def __init__(self, max_concurrent: int | None = None, store: JobStore | None = None) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._queues: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
         self._cancelled: set[str] = set()
+        self._store = store or MemoryJobStore()
         limit = max_concurrent if max_concurrent is not None else settings.max_concurrent_jobs
         self._semaphore = threading.Semaphore(max(1, limit))
 
@@ -69,25 +71,48 @@ class JobManager:
         project_id: str | None = None,
         args: tuple[Any, ...] | None = None,
         kwargs: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        active_key: str | None = None,
+        retryable: bool = False,
+        max_attempts: int = 1,
     ) -> str:
         job_id = str(uuid.uuid4())
         q: queue.Queue = queue.Queue()
 
+        now = _now_iso()
+        row = {
+            "job_id": job_id,
+            "kind": kind,
+            "label": label,
+            "status": "QUEUED",
+            "project_id": project_id,
+            "request_id": None,
+            "idempotency_key": idempotency_key,
+            "active_key": active_key,
+            "attempt_count": 0,
+            "max_attempts": max(1, max_attempts),
+            "retryable": retryable,
+            "cancel_requested": False,
+            "result": None,
+            "error": None,
+            "error_category": None,
+            "current_message": "Queued",
+            "events": [],
+            "created_at": now,
+            "queued_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": now,
+        }
+        try:
+            from mkb.web.request_context import request_id_var
+            row["request_id"] = request_id_var.get()
+        except ImportError:
+            pass
+        created = self._store.create(row)
         with self._lock:
             self._queues[job_id] = q
-            self._jobs[job_id] = {
-                "job_id": job_id,
-                "kind": kind,
-                "label": label,
-                "status": "QUEUED",
-                "project_id": project_id,
-                "result": None,
-                "error": None,
-                "current_message": "Queued",
-                "events": [],
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-            }
+            self._jobs[job_id] = created
 
         worker_args = args or ()
         worker_kwargs = dict(kwargs or {})
@@ -95,7 +120,8 @@ class JobManager:
         def progress_callback(event: dict[str, Any] | str) -> None:
             # Cooperative cancellation: raise before queuing any more work so
             # the worker unwinds at the next inter-step boundary.
-            if job_id in self._cancelled:
+            persisted = self._store.get(job_id)
+            if job_id in self._cancelled or (persisted and persisted.get("cancel_requested")):
                 raise JobCancelled()
             if isinstance(event, str):
                 q.put({"type": "progress", "message": event})
@@ -155,6 +181,8 @@ class JobManager:
                     if et == "running":
                         job["status"] = "RUNNING"
                         job["current_message"] = "Running"
+                        job["started_at"] = _now_iso()
+                        job["attempt_count"] = int(job.get("attempt_count") or 0) + 1
                     elif et == "progress":
                         message = event.get("message") or event.get("label") or "Working"
                         job["current_message"] = str(message)
@@ -205,22 +233,34 @@ class JobManager:
                         if len(job["events"]) > _EVENT_LIMIT:
                             job["events"] = job["events"][-_EVENT_LIMIT:]
                         self._queues.pop(job_id, None)
+                        job["active_key"] = None
+                        job["finished_at"] = _now_iso()
                     elif et == "error":
                         job["status"] = "FAILED"
                         job["error"] = event.get("error") or "Unknown error"
                         job["current_message"] = job["error"]
                         self._queues.pop(job_id, None)
+                        job["active_key"] = None
+                        job["finished_at"] = _now_iso()
+                        job["error_category"] = "worker_error"
                     elif et == "cancelled":
                         job["status"] = "CANCELLED"
                         job["current_message"] = "Cancelled"
                         self._queues.pop(job_id, None)
+                        job["active_key"] = None
+                        job["finished_at"] = _now_iso()
                     job["updated_at"] = _now_iso()
+                    self._store.update(job_id, **{key: value for key, value in job.items() if key != "job_id"})
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         self._drain()
         with self._lock:
             job = self._jobs.get(job_id)
-            return dict(job) if job else None
+            if job is None:
+                job = self._store.get(job_id)
+                if job is not None:
+                    self._jobs[job_id] = job
+        return dict(job) if job else self._store.get(job_id)
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a QUEUED or RUNNING job.
@@ -242,13 +282,18 @@ class JobManager:
             # the user's intent immediately. The worker thread will still
             # unwind asynchronously; the drain loop ignores late events for
             # jobs already in a terminal state.
-            job["status"] = "CANCELLED"
+            job["status"] = "CANCELLED" if status == "QUEUED" else "CANCELLING"
+            job["cancel_requested"] = True
+            if status == "QUEUED":
+                job["active_key"] = None
+                job["finished_at"] = _now_iso()
             job["current_message"] = "Cancelled"
             job["updated_at"] = _now_iso()
             if status == "QUEUED":
                 # Thread is blocked on semaphore — the runner will see the
                 # cancellation flag when it wakes up and exit cleanly.
                 self._queues.pop(job_id, None)
+            self._store.update(job_id, **{key: value for key, value in job.items() if key != "job_id"})
         return True
 
     def cancel_all_active(self, *, project_id: str | None = None) -> list[str]:
@@ -271,45 +316,35 @@ class JobManager:
 
     def list_jobs(self, *, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         self._drain()
-        with self._lock:
-            rows = list(self._jobs.values())
-        if project_id is not None:
-            rows = [j for j in rows if j.get("project_id") == project_id]
-        _active = {"QUEUED", "RUNNING"}
-        rows.sort(
-            key=lambda j: (
-                0 if j.get("status") in _active else 1,
-                j.get("updated_at") or "",
-            ),
-            reverse=False,
-        )
-        # active jobs first (ascending order within active), then completed desc
-        active = [j for j in rows if j.get("status") in _active]
-        inactive = sorted(
-            [j for j in rows if j.get("status") not in _active],
-            key=lambda j: j.get("updated_at") or "",
-            reverse=True,
-        )
-        rows = active + inactive
-        return [dict(j) for j in rows[:limit]]
+        return self._store.list(limit=limit, project_id=project_id)
 
     def find_active_job(self, *, project_id: str | None = None, kind: str | None = None) -> dict[str, Any] | None:
         self._drain()
-        with self._lock:
-            for job in self._jobs.values():
-                if job.get("status") not in {"QUEUED", "RUNNING"}:
-                    continue
-                if project_id is not None and job.get("project_id") != project_id:
-                    continue
-                if kind is not None and job.get("kind") != kind:
-                    continue
-                return dict(job)
-        return None
+        try:
+            return self._store.find_active(project_id=project_id, kind=kind)
+        except Exception:
+            # Starting the job still requires a successful durable create, so
+            # this fallback cannot execute unpersisted work. It only keeps
+            # isolated adapters/tests able to inspect their local cache.
+            with self._lock:
+                for job in self._jobs.values():
+                    if job.get("status") not in {"QUEUED", "RUNNING", "CANCELLING"}:
+                        continue
+                    if project_id is not None and job.get("project_id") != project_id:
+                        continue
+                    if kind is not None and job.get("kind") != kind:
+                        continue
+                    return dict(job)
+            return None
+
+    def recover_interrupted(self) -> int:
+        """Mark work owned by a dead application process explicitly interrupted."""
+        return self._store.recover_interrupted()
 
 
 # ── Singletons shared by every router ────────────────────────────────────────
 
-jobs = JobManager()
+jobs = JobManager(store=DatabaseJobStore())
 assistant_lock = threading.Lock()
 assistant_session: AssistantSession | None = None
 

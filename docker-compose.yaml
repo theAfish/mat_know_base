@@ -1,33 +1,33 @@
 services:
   # ── PostgreSQL + pgvector ────────────────────────────────────
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.0-pg16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: mkb
-      POSTGRES_PASSWORD: mkb_dev
-      POSTGRES_DB: mkb
+      POSTGRES_USER: ${MKB_PG_USER:?Set MKB_PG_USER in .env}
+      POSTGRES_PASSWORD: ${MKB_PG_PASSWORD:?Set MKB_PG_PASSWORD in .env}
+      POSTGRES_DB: ${MKB_PG_DATABASE:?Set MKB_PG_DATABASE in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${MKB_PG_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mkb"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   # ── MinIO (S3-compatible object storage) ─────────────────────
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MKB_S3_ACCESS_KEY:?Set MKB_S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${MKB_S3_SECRET_KEY:?Set MKB_S3_SECRET_KEY in .env}
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web console
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # Web console
     volumes:
       - minio_data:/data
     healthcheck:
@@ -38,19 +38,26 @@ services:
 
   # ── MinIO bucket init (runs once) ────────────────────────────
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
       minio:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-        mc alias set mkb http://minio:9000 minioadmin minioadmin &&
-        mc mb --ignore-existing mkb/raw &&
-        mc mb --ignore-existing mkb/processed &&
-        mc mb --ignore-existing mkb/archive &&
-        mc mb --ignore-existing mkb/temp &&
+        mc alias set mkb http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+        mc mb --ignore-existing mkb/$$MKB_S3_BUCKET_RAW &&
+        mc mb --ignore-existing mkb/$$MKB_S3_BUCKET_PROCESSED &&
+        mc mb --ignore-existing mkb/$$MKB_S3_BUCKET_ARCHIVE &&
+        mc mb --ignore-existing mkb/$$MKB_S3_BUCKET_TEMP &&
         echo 'Buckets ready.'
       "
+    environment:
+      MINIO_ROOT_USER: ${MKB_S3_ACCESS_KEY:?Set MKB_S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${MKB_S3_SECRET_KEY:?Set MKB_S3_SECRET_KEY in .env}
+      MKB_S3_BUCKET_RAW: ${MKB_S3_BUCKET_RAW:-raw}
+      MKB_S3_BUCKET_PROCESSED: ${MKB_S3_BUCKET_PROCESSED:-processed}
+      MKB_S3_BUCKET_ARCHIVE: ${MKB_S3_BUCKET_ARCHIVE:-archive}
+      MKB_S3_BUCKET_TEMP: ${MKB_S3_BUCKET_TEMP:-temp}
 
 volumes:
   pg_data:

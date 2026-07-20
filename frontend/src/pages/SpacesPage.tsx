@@ -9,6 +9,7 @@ import {
 } from '../api/spaces'
 import { listSkills } from '../api/skills'
 import { listPostProcessorScripts, uploadPostProcessorScript } from '../api/postProcessorScripts'
+import { getSettings } from '../api/settings'
 import type { CustomSkill, PostProcessorProfile, PostProcessorScript, Space, SpaceCreatePayload } from '../types'
 
 const PURPOSE_OPTIONS = ['tabular_database', 'qa_benchmark', 'skill_cards', 'freeform'] as const
@@ -273,16 +274,23 @@ export default function SpacesPage() {
   const [busy, setBusy] = useState(false)
   const [skills, setSkills] = useState<CustomSkill[]>([])
   const [scripts, setScripts] = useState<PostProcessorScript[]>([])
+  const [uploadedPythonEnabled, setUploadedPythonEnabled] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
   const importFileRef = useRef<HTMLInputElement>(null)
 
   const refresh = async () => {
     try {
-      const [list, skillList, scriptList] = await Promise.all([listSpaces(), listSkills(), listPostProcessorScripts()])
+      const [list, skillList, scriptList, runtimeSettings] = await Promise.all([
+        listSpaces(),
+        listSkills(),
+        listPostProcessorScripts(),
+        getSettings(),
+      ])
       setSpaces(list)
       setSkills(skillList)
       setScripts(scriptList)
+      setUploadedPythonEnabled(runtimeSettings.allow_uploaded_python)
       if (selected) {
         const fresh = list.find(s => s.space_id === selected.space_id) ?? null
         if (fresh) {
@@ -501,6 +509,7 @@ export default function SpacesPage() {
                 draft={editor.draft}
                 skills={skills}
                 scripts={scripts}
+                uploadedPythonEnabled={uploadedPythonEnabled}
                 onUploadScript={async file => {
                   const script = await uploadPostProcessorScript(file)
                   setScripts(current => [...current, script].sort((a, b) => a.name.localeCompare(b.name)))
@@ -544,12 +553,14 @@ function SpaceForm({
   draft,
   skills,
   scripts,
+  uploadedPythonEnabled,
   onUploadScript,
   onChange,
 }: {
   draft: SpaceDraft
   skills: CustomSkill[]
   scripts: PostProcessorScript[]
+  uploadedPythonEnabled: boolean
   onUploadScript: (file: File) => Promise<PostProcessorScript>
   onChange: (draft: SpaceDraft) => void
 }) {
@@ -847,6 +858,7 @@ function SpaceForm({
           processors={draft.post_processors}
           skills={skills}
           scripts={scripts}
+          uploadedPythonEnabled={uploadedPythonEnabled}
           onUploadScript={onUploadScript}
           onChange={post_processors => setDraft({ post_processors })}
         />
@@ -859,12 +871,14 @@ function PostProcessorEditor({
   processors,
   skills,
   scripts,
+  uploadedPythonEnabled,
   onUploadScript,
   onChange,
 }: {
   processors: PostProcessorProfile[]
   skills: CustomSkill[]
   scripts: PostProcessorScript[]
+  uploadedPythonEnabled: boolean
   onUploadScript: (file: File) => Promise<PostProcessorScript>
   onChange: (processors: PostProcessorProfile[]) => void
 }) {
@@ -1017,7 +1031,7 @@ function PostProcessorEditor({
               </select>
             </label>
             <div className="flex items-end">
-              <button type="button" onClick={() => scriptUploadRef.current?.click()} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs">
+              <button type="button" disabled={!uploadedPythonEnabled} onClick={() => scriptUploadRef.current?.click()} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs disabled:cursor-not-allowed disabled:opacity-40">
                 Upload .py script
               </button>
               <input ref={scriptUploadRef} type="file" accept=".py,text/x-python" className="hidden" onChange={e => {
@@ -1025,6 +1039,11 @@ function PostProcessorEditor({
                 e.target.value = ''
               }} />
             </div>
+          </div>
+          <div className={uploadedPythonEnabled ? 'text-xs text-amber-400' : 'text-xs text-slate-500'}>
+            {uploadedPythonEnabled
+              ? 'Trusted-admin mode is active. Uploaded Python has API-process access to host files, environment variables, and the network.'
+              : 'Uploaded Python is disabled. A trusted administrator must explicitly opt in through the server environment.'}
           </div>
           {processor.script && (
             <div className="text-xs text-slate-500">

@@ -17,6 +17,7 @@ ARCHIVE_FILE=""
 DO_PG=true
 DO_MINIO=true
 DO_LOCAL=true
+CONFIRM_REPLACE=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -26,6 +27,7 @@ for arg in "$@"; do
         --no-pg)      DO_PG=false ;;
         --no-minio)   DO_MINIO=false ;;
         --no-local)   DO_LOCAL=false ;;
+        --confirm-replace) CONFIRM_REPLACE=true ;;
         --*)          echo "[unpack] Unknown flag: $arg" >&2; exit 1 ;;
         *)            ARCHIVE_FILE="$arg" ;;
     esac
@@ -77,26 +79,59 @@ fi
 
 # ── Extract archive ───────────────────────────────────────────────────────────
 STAGING=$(mktemp -d)
-trap 'rm -rf "$STAGING"' EXIT
+RESTORE_TEST_DB=""
+cleanup_staging() {
+    if [ -n "$RESTORE_TEST_DB" ]; then
+        docker compose exec -T postgres dropdb --username="$PG_USER" --if-exists "$RESTORE_TEST_DB" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$STAGING"
+}
+trap cleanup_staging EXIT
 
-info "Extracting $ARCHIVE_FILE…"
-tar -xzf "$ARCHIVE_FILE" -C "$STAGING"
+info "Validating and extracting $ARCHIVE_FILE into staging…"
+VALIDATION_ARCHIVE="$ARCHIVE_FILE"
+if [[ "$ARCHIVE_FILE" == *.age ]]; then
+    require_cmd age "Install age to decrypt snapshots."
+    if [ -z "${MKB_AGE_IDENTITY:-}" ]; then
+        error "Set MKB_AGE_IDENTITY to the age identity file."
+        exit 1
+    fi
+    VALIDATION_ARCHIVE="$STAGING/decrypted.tar.gz"
+    age --decrypt --identity "$MKB_AGE_IDENTITY" --output "$VALIDATION_ARCHIVE" "$ARCHIVE_FILE"
+fi
+EXTRACTED="$STAGING/extracted"
+python3 scripts/snapshot_manifest.py extract "$VALIDATION_ARCHIVE" "$EXTRACTED"
+
+if $DO_PG; then
+    DUMP_FILE="$EXTRACTED/postgres/dump.sql"
+    if [ ! -f "$DUMP_FILE" ]; then
+        error "postgres/dump.sql not found in archive."
+        exit 1
+    fi
+    RESTORE_TEST_DB="mkb_restore_test_$$"
+    info "Restoring PostgreSQL dump into disposable staging database…"
+    docker compose exec -T postgres createdb --username="$PG_USER" "$RESTORE_TEST_DB"
+    docker compose exec -T postgres psql --username="$PG_USER" --dbname="$RESTORE_TEST_DB" --set=ON_ERROR_STOP=1 --quiet < "$DUMP_FILE"
+    docker compose exec -T postgres psql --username="$PG_USER" --dbname="$RESTORE_TEST_DB" --tuples-only --no-align --command="SELECT version_num FROM alembic_version" >/dev/null
+    docker compose exec -T postgres dropdb --username="$PG_USER" "$RESTORE_TEST_DB"
+    RESTORE_TEST_DB=""
+    info "Disposable database restore validation passed."
+fi
 
 # Read manifest if present
-if [ -f "$STAGING/manifest.json" ]; then
+if [ -f "$EXTRACTED/manifest.json" ]; then
     info "Archive manifest:"
-    python3 -c "
-import json, sys
-m = json.load(open('$STAGING/manifest.json'))
-print(f\"  Created at : {m.get('created_at', 'unknown')}\")
-print(f\"  PG database: {m.get('pg_database', 'unknown')}\")
-print(f\"  Buckets    : {', '.join(m.get('minio_buckets', []))}\")
-"
+    python3 -m json.tool "$EXTRACTED/manifest.json"
+fi
+
+if ! $CONFIRM_REPLACE; then
+    error "Snapshot validated in staging. Re-run with --confirm-replace to replace live data."
+    exit 2
 fi
 
 # ── 1. PostgreSQL restore ─────────────────────────────────────────────────────
 if $DO_PG; then
-    DUMP_FILE="$STAGING/postgres/dump.sql"
+    DUMP_FILE="$EXTRACTED/postgres/dump.sql"
     if [ ! -f "$DUMP_FILE" ]; then
         error "postgres/dump.sql not found in archive."
         exit 1
@@ -104,11 +139,9 @@ if $DO_PG; then
 
     info "Restoring PostgreSQL database '$PG_DATABASE'…"
     info "  WARNING: This will DROP and recreate all tables in '$PG_DATABASE'."
-    echo -n "[unpack] Continue? [y/N] "
+    echo -n "[unpack] Type the database name '$PG_DATABASE' to confirm replacement: "
     read -r confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        info "Skipping PostgreSQL restore."
-    else
+    if [[ "$confirm" == "$PG_DATABASE" ]]; then
         docker compose exec -T postgres \
             psql \
             --username="$PG_USER" \
@@ -116,12 +149,15 @@ if $DO_PG; then
             --quiet \
             < "$DUMP_FILE"
         info "  PostgreSQL restore complete."
+    else
+        error "Database confirmation did not match."
+        exit 2
     fi
 fi
 
 # ── 2. MinIO restore ──────────────────────────────────────────────────────────
 if $DO_MINIO; then
-    MINIO_STAGING="$STAGING/minio"
+    MINIO_STAGING="$EXTRACTED/minio"
     if [ ! -d "$MINIO_STAGING" ]; then
         error "minio/ directory not found in archive."
         exit 1
@@ -140,11 +176,11 @@ if $DO_MINIO; then
             --user "$(id -u):$(id -g)" \
             -e MC_CONFIG_DIR=/tmp/.mc \
             --entrypoint /bin/sh \
-            minio/mc:latest \
+            minio/mc:RELEASE.2025-04-16T18-13-26Z \
             -c "
                 mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
                 mc mb --ignore-existing mkb/$bucket >/dev/null 2>&1 && \
-                mc mirror --overwrite /minio_mirror/ mkb/$bucket 2>&1 || true
+                mc mirror --overwrite --remove /minio_mirror/ mkb/$bucket
             "
 
         info "  → bucket '$bucket' restored."
@@ -153,7 +189,7 @@ fi
 
 # ── 3. Local data directories ─────────────────────────────────────────────────
 if $DO_LOCAL; then
-    LOCAL_STAGING="$STAGING/local"
+    LOCAL_STAGING="$EXTRACTED/local"
     if [ ! -d "$LOCAL_STAGING" ]; then
         info "No local/ directory in archive, skipping."
     else
@@ -175,7 +211,7 @@ if $DO_LOCAL; then
 
         # Top-level copy: restore the whole local/ tree onto the workspace root
         (cd "$LOCAL_STAGING" && find . -type f -print0 | tar --null -cf - --files-from -) | \
-            tar xf - --keep-newer-files 2>/dev/null || true
+            tar xf -
 
         info "  Local data restored."
     fi

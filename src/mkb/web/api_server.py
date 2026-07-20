@@ -1,9 +1,11 @@
 """FastAPI application entry point for the MKB web layer."""
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from mkb import api
+from mkb.config import settings
 from mkb.logging_setup import setup_logging
 
 # Ensure logging is configured even when uvicorn imports this module directly
@@ -29,6 +32,8 @@ from mkb.web._state import (  # noqa: E402  (re-exported for back-compat tests)
     jobs,
 )
 from mkb.web import uploads as upload_impl  # noqa: E402
+from mkb.web.security import ApiSecurityMiddleware  # noqa: E402
+from mkb.web.request_context import RequestContextMiddleware  # noqa: E402
 
 
 # ── Upload compatibility wrappers ───────────────────────────────────────────
@@ -90,13 +95,38 @@ def _run_upload_ingest(payload: list[UploadProject], progress_callback=None) -> 
 
 # ── App + middleware ────────────────────────────────────────────────────────
 
-app = FastAPI(title="MKB API", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    from mkb.db.engine import require_schema_current
+    from mkb.runtime_settings import get_setting
+
+    for warning in settings.validate_startup(log_level=get_setting("log_level")):
+        logger.warning("UNSAFE LOCAL OVERRIDE: %s", warning)
+    require_schema_current()
+    interrupted = jobs.recover_interrupted()
+    if interrupted:
+        logger.warning("Marked %d background job(s) interrupted after restart", interrupted)
+    logger.info(
+        "Deployment boundary active (mode=%s, host=%s, cors=%s)",
+        settings.deployment_mode.value,
+        settings.api_host,
+        settings.cors_origins,
+    )
+    yield
+
+
+app = FastAPI(title="MKB API", version="0.1.0", lifespan=_lifespan)
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(ApiSecurityMiddleware, settings=settings)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-Request-ID"],
 )
 
 from mkb.web.routers import (  # noqa: E402
@@ -151,15 +181,23 @@ def upload_file(
     _parse_uuid(upload_id, "upload_id")
     base = _UPLOAD_TEMP / upload_id
     base.mkdir(parents=True, exist_ok=True)
-    _safe_child(base, relative_path)
-    dest = _safe_child(base, upload_path)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with dest.open("wb") as fh:
-        while True:
-            chunk = file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            fh.write(chunk)
+    try:
+        upload_impl.validate_upload_path(relative_path)
+        upload_impl.validate_upload_path(upload_path)
+        dest = _safe_child(base, upload_path)
+        file_count, used_bytes = upload_impl.directory_usage(base)
+        if dest.exists():
+            raise upload_impl.UploadBudgetExceeded("Duplicate upload path")
+        if file_count >= settings.upload_max_files:
+            raise upload_impl.UploadBudgetExceeded("Upload session contains too many files")
+        upload_impl.write_stream_bounded(
+            dest,
+            file.file,
+            max_bytes=settings.upload_max_file_mb * 1024 * 1024,
+            total_remaining=settings.upload_max_total_mb * 1024 * 1024 - used_bytes,
+        )
+    except upload_impl.UploadBudgetExceeded as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -214,6 +252,8 @@ def upload_processed_for_asset(
     _parse_uuid(asset_id, "asset_id")
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
+    if len(files) > settings.upload_max_files:
+        raise HTTPException(status_code=413, detail="Too many files uploaded")
     if relative_paths is not None and len(relative_paths) != len(files):
         raise HTTPException(
             status_code=400,
@@ -222,18 +262,26 @@ def upload_processed_for_asset(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="mkb_proc_upload_"))
     try:
+        total_written = 0
         for idx, upload in enumerate(files):
             rel = (relative_paths[idx] if relative_paths else None) or upload.filename
             if not rel:
                 continue
-            dest = _safe_child(tmp_dir, rel)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with dest.open("wb") as fh:
-                while True:
-                    chunk = upload.file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
+            try:
+                upload_impl.validate_upload_path(rel)
+                dest = _safe_child(tmp_dir, rel)
+                if dest.exists():
+                    raise upload_impl.UploadBudgetExceeded("Duplicate upload path")
+                total_written += upload_impl.write_stream_bounded(
+                    dest,
+                    upload.file,
+                    max_bytes=settings.upload_max_file_mb * 1024 * 1024,
+                    total_remaining=(
+                        settings.upload_max_total_mb * 1024 * 1024 - total_written
+                    ),
+                )
+            except upload_impl.UploadBudgetExceeded as exc:
+                raise HTTPException(status_code=413, detail=str(exc)) from exc
 
         try:
             result = api.link_manual_processed_data(

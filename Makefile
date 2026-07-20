@@ -1,11 +1,12 @@
-.PHONY: up down logs migrate ingest list batches info purge install test lint test-python test-frontend check ci
+.PHONY: up down logs migrate ingest list batches info purge install test lint test-python test-frontend check ci cleanup reconcile restore-drill
+
+PYTHON ?= .venv/bin/python
 
 # ── Infrastructure ──────────────────────────────────────────────
 up:
-	docker compose up -d
-	@echo "Waiting for services…"
-	@docker compose exec postgres pg_isready -U mkb -q && echo "PostgreSQL ready" || true
-	@echo "MinIO console: http://localhost:9001  (minioadmin / minioadmin)"
+	docker compose up -d --wait
+	$(MAKE) migrate
+	@echo "MKB data services are healthy and migrated."
 
 down:
 	docker compose down
@@ -15,30 +16,36 @@ logs:
 
 # ── Database ────────────────────────────────────────────────────
 migrate:
-	alembic upgrade head
+	$(PYTHON) -m alembic upgrade head
 
 migration:  ## usage: make migration msg="add foo table"
-	alembic revision --autogenerate -m "$(msg)"
+	$(PYTHON) -m alembic revision --autogenerate -m "$(msg)"
 
 # ── Python ──────────────────────────────────────────────────────
 install:
-	pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e ".[dev]"
 
 # ── CLI shortcuts ───────────────────────────────────────────────
 ingest:  ## usage: make ingest dir=./data/inbox
-	python -m mkb.cli ingest $(dir)
+	$(PYTHON) -m mkb.cli ingest $(dir)
 
 list:
-	python -m mkb.cli list
+	$(PYTHON) -m mkb.cli list
 
 batches:
-	python -m mkb.cli batches
+	$(PYTHON) -m mkb.cli batches
 
 info:  ## usage: make info id=<asset_id or sha256_prefix>
-	python -m mkb.cli info $(id)
+	$(PYTHON) -m mkb.cli info $(id)
 
 purge:
-	python -m mkb.cli purge
+	$(PYTHON) -m mkb.cli purge
+
+cleanup:
+	$(PYTHON) -m mkb.cli cleanup
+
+reconcile:
+	$(PYTHON) -m mkb.cli reconcile
 
 # ── Data sharing ────────────────────────────────────────────────
 pack:  ## Create a portable snapshot: make pack [out=my_snapshot.tar.gz]
@@ -48,20 +55,23 @@ unpack:  ## Restore from snapshot: make unpack file=mkb_data_YYYYMMDD.tar.gz
 	@[ -n "$(file)" ] || (echo "Usage: make unpack file=<archive.tar.gz>"; exit 1)
 	bash scripts/unpack_data.sh $(file)
 
+restore-drill:
+	bash scripts/restore_drill.sh
+
 # ── Server ──────────────────────────────────────────────────────
 server:
-	python -m mkb.cli api --host 127.0.0.1 --port 8503
+	$(PYTHON) -m mkb.cli api --host 127.0.0.1 --port 8503
 
 # ── Tests ───────────────────────────────────────────────────────
 test:
-	pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -v
 
 lint:
-	.venv/bin/python -m ruff check src tests
+	$(PYTHON) -m ruff check src tests
 	cd frontend && npm run lint
 
 test-python:
-	.venv/bin/python -m pytest
+	$(PYTHON) -m pytest
 
 test-frontend:
 	cd frontend && npm run build
@@ -69,5 +79,5 @@ test-frontend:
 check: lint test-python test-frontend
 
 ci:
-	.venv/bin/python -m ruff check src tests
-	.venv/bin/python -m pytest --collect-only -q
+	$(PYTHON) -m ruff check src tests
+	$(PYTHON) -m pytest --collect-only -q

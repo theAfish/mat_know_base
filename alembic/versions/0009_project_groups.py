@@ -74,9 +74,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "fk_research_projects_group_id", "research_projects", type_="foreignkey"
-    )
-    op.drop_index("ix_research_projects_group_id", table_name="research_projects")
-    op.drop_column("research_projects", "group_id")
-    op.drop_table("project_groups")
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    tables = set(insp.get_table_names())
+    if "research_projects" in tables:
+        foreign_keys = {fk["name"] for fk in insp.get_foreign_keys("research_projects")}
+        if "fk_research_projects_group_id" in foreign_keys:
+            op.drop_constraint(
+                "fk_research_projects_group_id", "research_projects", type_="foreignkey"
+            )
+        indexes = {index["name"] for index in insp.get_indexes("research_projects")}
+        if "ix_research_projects_group_id" in indexes:
+            op.drop_index("ix_research_projects_group_id", table_name="research_projects")
+        columns = {column["name"] for column in insp.get_columns("research_projects")}
+        if "group_id" in columns:
+            op.drop_column("research_projects", "group_id")
+    if "project_groups" in tables:
+        op.drop_table("project_groups")
