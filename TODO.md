@@ -1,358 +1,404 @@
-# MKB Refactoring and Operational Safety TODO
+# MKB reusable Python package refactor
 
-Review date: 2026-07-17
+## Goal
 
-Goal: make MKB clean to develop, predictable to maintain, and safe to operate.
+Turn `mat-know-base` into a pip-installable knowledge-processing engine that other
+projects can configure with their own database, object store, graph store, schemas,
+data types, and pipelines. Keep the current materials-science application working as
+the first built-in application of that engine.
 
-## Current baseline
+The refactor must preserve all currently extracted local data. Existing PostgreSQL
+rows, MinIO objects, local processed files, identifiers, evidence links, workflow
+versions, projections, feedback, skills, and job history must not be dropped merely
+to simplify the new architecture.
 
-- Python: Ruff passes; 155 tests pass with upstream deprecation warnings.
-- Frontend: TypeScript checking and the production build pass.
-- Repository: the working tree was clean at the start of this review.
-- Architecture: the backend has already been split into services and routers, but
-  several large agent-tool and React modules remain.
-- Operating assumption: treat the current application as **trusted, single-user,
-  localhost-only software**. Do not expose it to a LAN or the public internet until
-  the P0 security boundary is complete.
+## Non-negotiable data-safety rules
 
-## P0 - Establish a safe operating boundary
+- [ ] Never use `reset_db()`, `reset_schema()`, `drop_all()`, `docker compose down -v`,
+      destructive restore, or a migration that drops populated tables during this
+      refactor.
+- [ ] Never rewrite existing UUIDs or S3 bucket/key values unless a reviewed migration
+      includes a verified old-to-new mapping and rollback procedure.
+- [ ] Treat PostgreSQL, all four MinIO buckets (`raw`, `processed`, `archive`, `temp`),
+      and local `data/` content as one dataset. Backing up only the database is not
+      sufficient.
+- [ ] Make every schema migration additive first: create new tables/columns, backfill,
+      verify, switch readers, and only consider cleanup in a later release.
+- [ ] Keep legacy tables and adapters readable for at least one complete release after
+      the new API becomes the default. For this local-only migration, retaining them
+      indefinitely is acceptable.
+- [ ] Run data migrations separately from application startup. Importing `mkb` or
+      creating a client must never silently migrate or delete data.
+- [ ] Any migration that changes persisted data must support a dry run, report counts,
+      be restartable/idempotent, and record its completion in a migration ledger.
+- [ ] Do not declare a phase complete until the pre-refactor snapshot passes a restore
+      drill and the post-migration reconciliation report passes.
 
-- [x] Add an explicit deployment mode and fail closed outside local development.
-  - Define `development`, `local`, and `production` behavior in one settings model.
-  - Keep the API bound to `127.0.0.1` by default.
-  - Refuse production startup when default credentials, wildcard origins, debug
-    logging, or missing authentication are detected.
-  - Done when startup tests cover safe defaults and every unsafe override produces a
-    prominent warning or hard failure, as appropriate.
+## Phase 0 — Freeze and inventory the local dataset
 
-- [x] Add authentication and authorization before supporting remote access.
-  - Protect all `/api` routes except liveness/readiness checks.
-  - Separate read, mutate, destructive, settings, and code-upload permissions.
-  - Apply CSRF protection if browser cookie authentication is used.
-  - Add rate limits for login, upload, assistant, and job-start endpoints.
-  - Done when an unauthenticated client cannot read source assets, mutate data,
-    start costly jobs, change settings, or upload executable content.
-  - Implemented with header-based bearer tokens and reader/editor/admin roles;
-    cookie authentication and CSRF are not used. Failed authentication, upload,
-    assistant, and job-start requests have explicit per-process rate limits.
+- [ ] Stop starting new extraction, projection, graph, review, and maintenance jobs;
+      allow active jobs to reach a terminal state.
+- [ ] Record the current git commit, package version, Alembic revision, configuration,
+      PostgreSQL version, MinIO version, and Docker Compose project name in a migration
+      manifest. Do not put credentials into the manifest.
+- [ ] Run the existing operational checks:
 
-- [x] Replace wildcard CORS with a configured allowlist.
-  - `src/mkb/web/api_server.py` currently combines `allow_origins=["*"]`,
-    credentials, all methods, and all headers.
-  - Default to the exact local frontend origin and validate configured origins.
-  - Add API tests for allowed and rejected preflight requests.
+      ```bash
+      make up
+      make doctor
+      .venv/bin/python -m mkb.cli reconcile
+      ```
 
-- [x] Stop publishing development data services on every network interface.
-  - Bind PostgreSQL, MinIO, and the MinIO console to `127.0.0.1` in Compose.
-  - Read credentials from `.env`; remove fixed credentials from Compose and bucket
-    initialization commands.
-  - Pin PostgreSQL/pgvector, MinIO, and `mc` images to tested versions or digests.
-  - Document that default credentials are disposable local-development values only.
+- [ ] Add an inventory command that emits JSON containing row counts and stable IDs for
+      every persistent model, including projects, groups, assets, project-asset links,
+      processed assets, frames, extraction passes, spaces, projections, feedback,
+      graph reviews, raw/canonical workflows, schema proposals/revisions, workflow
+      maintenance/index entries, custom skills, post-processor scripts, and jobs.
+- [ ] Extend inventory with per-bucket object counts, total bytes, and checksums or a
+      deterministic object-key manifest.
+- [ ] Inventory local files under at least `data/papers`, `data/processed`,
+      `data/uploads`, `data/inbox`, and `data/runtime_settings.json` when present.
+- [ ] Detect broken references before migration: missing S3 objects, orphan objects,
+      missing local mirrors, dangling foreign keys, duplicate logical identifiers, and
+      records whose stored schema/version cannot be resolved.
+- [ ] Save the inventory outside ephemeral Docker volumes, for example under a
+      timestamped `migration-snapshots/` directory that is excluded from git.
 
-- [ ] Isolate or disable uploaded Python post-processors by default.
-  - Uploaded `.py` files currently run with the API process's Python interpreter,
-    environment, filesystem access, and network access.
-  - Short term: require an explicit trusted-admin opt-in and show the risk in the UI.
-  - Long term: execute in a constrained worker/container with a read-only root,
-    minimal mounted input, no inherited secrets, disabled network, CPU/memory/PID
-    limits, output limits, and a hard timeout.
-  - Validate the patch schema and cap stdout/stderr before returning errors.
-  - Done when a test script cannot read `.env`, contact the network, modify project
-    files, or exhaust host resources.
-  - Progress: upload and execution now require the environment-only trusted-admin
-    opt-in; output and patch shapes are capped/validated. Worker isolation remains.
+### Required backup gate
 
-- [ ] Put hard resource budgets on every upload and archive expansion path.
-  - Enforce request, per-file, total-upload, file-count, filename-depth, and timeout
-    limits while streaming—not after writing to disk.
-  - For ZIP/TAR and skill archives, limit compressed size, expanded size, member
-    count, per-member size, nesting depth, and compression ratio.
-  - Continue rejecting traversal, absolute paths, links, devices, and special files.
-  - Garbage-collect abandoned upload sessions and partial files.
-  - Add regression tests for zip bombs, nested archives, duplicate names, truncated
-    uploads, and quota cleanup.
-  - Progress: streaming per-file/session limits and ZIP/TAR/skill expansion limits
-    are enforced with partial-file cleanup. Request timeouts, abandoned-session GC,
-    and scheduled quota cleanup remain.
+- [ ] Create a named full snapshot using the existing packer:
 
-- [ ] Protect secrets and sensitive research content in settings and logs.
-  - Store runtime secrets outside a general JSON settings file, or use a system
-    secret store; at minimum write atomically with owner-only permissions.
-  - Redact credentials, authorization headers, signed URLs, prompts, source content,
-    and model payloads from logs by default.
-  - Default to `INFO`; do not always capture the full DEBUG stream on disk.
-  - Stop truncating logs at every startup; retain them according to an explicit
-    size/age policy.
-  - Add redaction tests using recognizable fake secrets.
-  - Progress: runtime settings are replaced atomically with owner-only permissions;
-    INFO is now the default; rotating logs append across restarts; and recognizable
-    credentials, authorization headers, URL credentials, and signed URL parameters
-    are redacted. A system secret store and content-aware redaction remain.
+      ```bash
+      make pack out=migration-snapshots/pre-sdk-refactor.tar.gz
+      ```
 
-- [ ] Add safeguards and audit records for destructive operations.
-  - Inventory project, projection, workflow, graph, group, skill, and script deletes,
-    plus database reset and snapshot restore.
-  - Require confirmation or a typed resource identifier for bulk/destructive CLI
-    actions; require elevated authorization in the API.
-  - Prefer soft delete plus a documented recovery window where practical.
-  - Record actor, action, target, timestamp, request/job ID, and outcome without
-    logging sensitive payloads.
+- [ ] Run `make restore-drill` and retain its successful output with the manifest.
+- [ ] Additionally restore the named snapshot into disposable infrastructure and run
+      inventory/reconciliation there. The existing validation-only drill checks the
+      archive and PostgreSQL restore; the expanded drill must also prove MinIO and local
+      file restoration without touching live data.
+- [ ] Keep the pre-refactor snapshot until all old data has been read successfully
+      through the new API and a second post-migration snapshot has passed the same drill.
 
-## P1 - Make data and background work recoverable
+## Phase 1 — Define and test the supported SDK contract
 
-- [x] Make Alembic the only schema migration mechanism.
-  - `mkb.db.engine` currently mixes `create_all()` with handwritten compatibility
-    DDL, which can hide migration drift.
-  - Convert compatibility changes into reviewed migrations and verify one linear
-    head from an empty database and from a supported older snapshot.
-  - Make startup check the schema revision and fail with an actionable message.
-  - Add upgrade and downgrade/forward-recovery tests in disposable PostgreSQL.
-  - Implemented: revision `003` now contains the reconstructed initial schema,
-    revision `0022_schema_drift_cleanup` captures the last compatibility changes,
-    runtime schema mutation was removed, and startup checks the single head. Empty,
-    downgrade/forward, and base/forward drills pass against disposable PostgreSQL
-    with no ORM migration drift.
+- [ ] Replace the global-first design with an explicit configured application object:
 
-- [x] Replace in-memory threads and job dictionaries with a durable job model.
-  - Persist queued/running/terminal state, progress, cancellation, attempt count,
-    timestamps, and idempotency keys.
-  - Define restart behavior: safely resume retryable jobs and mark interrupted jobs
-    explicitly instead of losing them.
-  - Enforce per-action concurrency and prevent duplicate work across processes.
-  - Keep cooperative cancellation, but add checkpoints around long LLM, database,
-    processor, and storage operations.
-  - Implemented with PostgreSQL-backed job/event/result records, request and
-    idempotency keys, database-enforced active-work locks, persisted cooperative
-    cancellation, attempt/timestamp fields, and explicit restart interruption.
+      ```python
+      from mkb import KnowledgeBase
 
-- [x] Define transaction and idempotency boundaries for every workflow.
-  - Document which database and S3 writes constitute ingest, process, extract,
-    project, review, and delete completion.
-  - Use staging keys/statuses and compensating cleanup so partial failures are
-    visible and retryable.
-  - Add failure-injection tests between database commits and object-store writes.
-  - Documented completion, retry identity, staging, and compensation boundaries
-    for ingest, process, extract, project/review, and delete. Reconciliation makes
-    incomplete cross-store writes visible and retryable job locks prevent duplicate
-    workflow execution.
+      kb = KnowledgeBase.from_url(
+          database_url="postgresql+psycopg://...",
+          object_store_url="s3://raw?endpoint=http://localhost:9000",
+      )
+      ```
 
-- [x] Turn snapshots into a tested backup and restore procedure.
-  - Make snapshot creation fail if any PostgreSQL/MinIO copy step fails; remove
-    `|| true` from integrity-critical commands.
-  - Validate archive paths before extraction and avoid interpolating credentials or
-    paths into shell/Python source strings.
-  - Add a versioned manifest, checksums, schema revision, application version, and
-    optional encryption.
-  - Restore into staging first, validate it, then require explicit replacement.
-  - Run a documented restore drill against a disposable environment in CI or on a
-    schedule.
-  - Implemented strict copy failures, pinned tools, safe extraction, a versioned
-    checksummed manifest, schema/application versions, optional age encryption,
-    disposable-database validation, typed replacement confirmation, and a reusable
-    restore-drill target.
+- [ ] Allow at least two independently configured `KnowledgeBase` instances in one
+      Python process without shared settings, engines, sessions, job managers, or
+      registries.
+- [ ] Keep `from mkb import api` as a compatibility wrapper around an explicitly
+      configured default client. Mark it deprecated only after feature parity exists.
+- [ ] Define the public import boundary. Consumers must not need `mkb.db`, `mkb.web`,
+      ORM models, storage internals, or service-private functions.
+- [ ] Remove private names and database session factories from the future public
+      `__all__`; keep temporary compatibility shims only where existing code requires
+      them.
+- [ ] Introduce typed public models (Pydantic models or dataclasses) for collections,
+      sources, artifacts, records, schemas, entities, relations, evidence, pipeline
+      runs, jobs, pages, and operation receipts.
+- [ ] Permit `model_dump(mode="json")` or an equivalent stable serialization method on
+      public models.
+- [ ] Standardize exceptions: `MKBError`, `NotFoundError`, `ConflictError`,
+      `ValidationError`, `BackendUnavailableError`, `ProviderError`, and
+      `PipelineExecutionError`.
+- [ ] Standardize behavior: return a typed value on success, use `None` only for an
+      explicitly optional lookup, and raise typed exceptions rather than returning
+      `{"error": ...}`, false, or inconsistent partial results.
+- [ ] Add API contract tests for every public method, including argument types, result
+      types, errors, idempotency, and serialization.
 
-- [x] Add meaningful liveness, readiness, and diagnostics.
-  - Keep liveness process-only.
-  - Readiness must verify database connectivity/revision, required S3 buckets, and
-    worker availability without exposing secrets.
-  - Add structured request/job IDs and useful error categories.
-  - Document a short operator runbook for startup, shutdown, stuck jobs, full disks,
-    provider outages, backup, restore, and upgrade.
-  - Progress: process-only liveness and non-sensitive readiness checks now cover
-    database connectivity/revision, required S3 buckets, and local worker
-    availability. Request/job ID propagation and the operator runbook remain.
-  - Completed with validated request-ID propagation into durable jobs and responses,
-    categorized diagnostics, structured request logging, and an operator runbook.
+## Phase 2 — Remove global configuration and persistence coupling
 
-- [x] Add retention and reconciliation commands.
-  - Provide dry-run cleanup for stale upload sessions, processor temp files, local
-    mirrors, exports, logs, job history, and orphaned S3/database records.
-  - Require explicit confirmation before deletion and report reclaimed bytes/items.
-  - Add a read-only consistency checker for PostgreSQL, MinIO, and local metadata.
-  - Implemented dry-run-first local/job retention with typed confirmation and
-    reclaimed counts, plus read-only database/S3 missing-and-orphan reporting.
+- [ ] Introduce an immutable `MKBConfig` that can be created from explicit Python
+      values. Environment and YAML loading should be optional constructors, not import-
+      time behavior.
+- [ ] Move engine and session creation out of module globals in `mkb.db.engine` and into
+      an injected SQLAlchemy adapter owned by `KnowledgeBase`.
+- [ ] Inject object storage, graph storage, model provider, parser registry, pipeline
+      registry, and job backend into the application object.
+- [ ] Define explicit lifecycle methods or context-manager support so connections and
+      worker resources are released predictably.
+- [ ] Add explicit transaction scopes:
 
-## P1 - Restore one source of truth at boundaries
+      ```python
+      with kb.transaction() as tx:
+          collection = tx.collections.create(name="Experiment 42")
+          tx.sources.add_text(collection.id, notes)
+      ```
 
-- [ ] Finish the service result/error migration.
-  - Replace remaining `{"error": ...}` success-shaped dictionaries with typed
-    exceptions/results.
-  - Map domain errors once in REST, CLI, and agent adapters.
-  - Define stable error codes; do not make callers parse human-readable messages.
+- [ ] Document that PostgreSQL, object storage, and external graph databases cannot
+      share one ACID transaction. Use stable IDs, staging states, idempotent writes,
+      an outbox/event pattern, and compensating cleanup for cross-store operations.
+- [ ] Prove with tests that the current local PostgreSQL and MinIO configuration works
+      through the injected adapters before changing any schema.
 
-- [ ] Generate and validate frontend API contracts.
-  - Export OpenAPI in a deterministic build step and generate TypeScript types, or
-    validate high-risk payloads with shared/generated Zod schemas.
-  - Cover projects, jobs, workflows, projections, spaces, settings, and errors.
-  - Fail CI when generated contracts are stale.
+## Phase 3 — Introduce generic domain concepts without discarding old records
 
-- [ ] Standardize identifiers, timestamps, enums, and pagination.
-  - Use strict UUID parsing internally and tolerant parsing only in agent-tool
-    adapters where it is intentional.
-  - Use UTC ISO-8601 consistently and define enum casing once.
-  - Add bounded pagination to collection/search endpoints instead of returning
-    unbounded lists.
+- [ ] Define infrastructure-independent concepts:
+  - `Collection`: a logical grouping of data.
+  - `Source`: an ingested file, URI, text, bytes, or external record.
+  - `Artifact`: a derived or processed output.
+  - `Record`: structured extracted data.
+  - `Schema`: the desired structure and extraction policy for a record.
+  - `Entity` and `Relation`: graph elements.
+  - `Evidence`: provenance linking outputs to sources/artifacts.
+  - `PipelineRun` and `StepRun`: execution and provenance records.
+- [ ] Keep materials concepts as a supported extension and map them explicitly:
+  - research project -> collection
+  - asset -> source
+  - processed asset -> artifact
+  - knowledge frame -> record
+  - space -> schema/extraction profile
+  - projection -> schema-specific record
+  - raw workflow -> specialized workflow record
+- [ ] Prefer compatibility views/adapters over immediately renaming old tables. The
+      first implementation may read existing `research_projects`, `assets`,
+      `processed_assets`, `knowledge_frames`, `spaces`, and `projections` directly and
+      present generic typed models.
+- [ ] Preserve the original IDs in generic models. If a new universal ID is needed, add
+      it alongside the legacy ID and maintain a unique mapping table.
+- [ ] Preserve raw JSON payloads, schema versions, timestamps, status fields, source
+      paths, S3 locations, evidence, review annotations, and agent notes losslessly.
+- [ ] Add round-trip tests using a sanitized copy of representative current records:
+      legacy row -> new typed model -> serialized form -> model, with no meaningful
+      field loss.
 
-- [ ] Add typed contracts for important JSONB payloads.
-  - Prioritize knowledge-frame content metadata, workflow graphs/checkpoints,
-    projection data/review patches, job results/events, provenance, and space
-    schemas.
-  - Validate before persistence and provide versioned migrations for payload-shape
-    changes.
+## Phase 4 — Define ports and default adapters
 
-- [ ] Consolidate processed-bundle metadata and hashing.
-  - Use one model for automatic processing, manual processed uploads, artifact
-    inspection, primary-file selection, checksums, and S3/local paths.
-  - Make reprocessing idempotent and retain provenance for derived artifacts.
+- [ ] Add narrow protocols for collection/source/artifact/record repositories, object
+      storage, graph storage, vector search, parsers, model providers, and jobs.
+- [ ] Do not create one artificial storage interface for relational, object, vector,
+      and graph data. Keep the ports distinct and compose them in `KnowledgeBase`.
+- [ ] Declare adapter capabilities such as transactions, vector search, full-text
+      search, streaming, graph traversal, and bulk upsert. Fail early when a pipeline
+      requires an unsupported capability.
+- [ ] Implement and test these initial adapters:
+  - Existing PostgreSQL/pgvector schema adapter, including all current local data.
+  - Existing MinIO/S3 adapter, preserving current buckets and keys.
+  - Filesystem object store for lightweight local projects and tests.
+  - SQLite metadata repository for a minimal pip-package quickstart.
+  - In-memory or NetworkX graph adapter for a minimal local graph setup.
+- [ ] Add Neo4j or another external graph adapter later as an optional extra; it is not
+      required to migrate the current local dataset.
+- [ ] Add repository conformance tests that every adapter must pass, plus capability-
+      specific tests.
 
-## P2 - Reduce architectural duplication
+## Phase 5 — Make custom pipelines a first-class public API
 
-- [x] Finish merging the two project-detail experiences.
-  - Consolidate `components/projects/ProjectDetail.tsx` and
-    `components/frames/ProjectDetail.tsx` around shared action, status, tab, and
-    refresh components.
-  - Route job state through one store and one polling/subscription layer.
-  - Implemented shared status/header and tab primitives, one project-job
-    controller, and the global jobs store/poller. Modal and full-page shells remain
-    presentation variants over those shared boundaries.
+- [ ] Implement `Pipeline`, `Step`, `StepContext`, `PipelineRun`, and `StepRun`.
+- [ ] Let steps declare typed inputs/outputs, configuration schema, required adapter
+      capabilities, deterministic/cache behavior, retry policy, timeout, side effects,
+      and progress events.
+- [ ] Support sequential pipelines first, then DAG dependencies when the contract is
+      stable.
+- [ ] Support synchronous local execution:
 
-- [x] Split the largest React features along domain boundaries.
-  - Start with `SpacesPage.tsx`, `GraphPage.tsx`, `ProjectionsPage.tsx`,
-    `ProjectGroupedList.tsx`, `WorkflowCanvas.tsx`, and `SectionTable.tsx`.
-  - Extract pure transformations first, then presentation components, then thin
-    route containers.
-  - Keep feature-specific API, schemas, tests, and components together.
-  - Implemented feature-domain models for space drafts, graph visualization,
-    projection tables, workflow rendering, and grouped-project drag behavior.
-    Spaces, Graph, and Projections now have thin route entrypoints over feature
-    containers; the reusable list/canvas/table components consume pure models.
+      ```python
+      run = kb.pipelines.run(
+          pipeline,
+          inputs={"source_id": source.id},
+          parameters={"model": "openai/qwen-plus"},
+      )
+      ```
 
-- [x] Finish frontend code splitting and set bundle budgets.
-  - The current build still reports chunks over 500 kB for frames and graph
-    visualization, plus a roughly 1.2 MB PDF worker.
-  - Lazy-load PDF, graph, workflow, and large table functionality only when opened.
-  - Track compressed route/chunk budgets in CI.
-  - Progress: route, PDF preview, graph, workflow, and frame-detail tabs are lazy;
-    FramesPage's route chunk fell from about 449 kB to 8 kB. The frontend build
-    now enforces gzip budgets (180 KiB per JS chunk and 450 KiB for the PDF worker).
+- [ ] Support durable submission using the same pipeline definition:
 
-- [x] Remove the legacy Streamlit surface or move it to a separately installed
-  compatibility package.
-  - Stop testing new behavior through `mkb.ui` helpers.
-  - Move shared upload/project-name logic into backend domain helpers.
-  - Remove Streamlit and visualization packages from default dependencies when the
-    compatibility surface is retired.
-  - Implemented: the legacy package is excluded from wheels and CLI launch, its
-    dependencies are in `streamlit-compat`, and tests use backend domain helpers.
+      ```python
+      job = kb.pipelines.submit(pipeline, inputs={"source_id": source.id})
+      completed = kb.jobs.wait(job.id)
+      ```
 
-- [x] Split large agent-tool modules into query, validation, mutation, and
-  persistence layers.
-  - Prioritize projection, schema curator, graph review, knowledge graph, and
-    canonicalization tools.
-  - Agent tools should validate tool-shaped input and delegate; they should not own
-    transaction-heavy business rules.
-  - Implemented shared validation, query, and persistence layers for projection
-    and knowledge-graph saves; graph-review mutations delegate normalization and
-    evidence merge policy; schema-curator read models, transactional mutations,
-    and orchestration state now live in separate service modules. Canonicalization
-    agent launch code is retired.
+- [ ] Add checkpointing, cancellation, resumption, structured progress, per-step logs,
+      provenance, stable run IDs, and idempotency keys.
+- [ ] Implement caching only after deterministic cache keys include step version,
+      configuration, source fingerprint, model identity, and relevant schema version.
+- [ ] Convert current operations into built-in steps and pipelines without changing
+      output semantics: ingest, process, frame extraction, projection, graph extraction,
+      workflow extraction, schema review, and feedback review.
+- [ ] Ensure old extracted records can be used as pipeline inputs without reprocessing
+      their source documents.
+- [ ] Allow consumer registration of parsers, steps, schemas, and pipelines without
+      editing the MKB package.
 
-- [x] Centralize graph and projection normalization rules.
-  - Put deduplication, aliases, relation validation, merge policy, patch/path
-    operations, and source-evidence preservation behind domain services.
-  - Add small regression fixtures for same-paper duplicates, cross-paper aliases,
-    conflicting values, repeated reviews, and source preservation.
+## Phase 6 — Expand the Python API to full application parity
 
-- [x] Complete the canonical-workflow retirement.
-  - Remove deprecated launch paths, frontend tabs, agent modules, schema tables, and
-    dependencies after an explicit export/migration window.
-  - Keep compatibility reads isolated and time-boxed if existing datasets need them.
-  - Implemented: launch/mutation paths, frontend status/tab/API, CLI commands, and
-    job actions are removed. Existing rows have isolated read-only compatibility
-    access through 2026-10-31; schema removal follows that declared export window.
+- [ ] Provide grouped services on `KnowledgeBase`:
+  - `kb.collections`: create/get/list/update/delete and grouping.
+  - `kb.sources`: add file/bytes/text/URI/records, list, inspect, and stream content.
+  - `kb.artifacts`: list, register, inspect, and stream content.
+  - `kb.records`: create/get/list/query/export with evidence.
+  - `kb.schemas`: create/version/get/list/update/delete.
+  - `kb.graph`: entity/relation upsert, query, traversal, extraction, and review.
+  - `kb.pipelines`: register/get/list/run/submit/resume.
+  - `kb.jobs`: submit/get/list/wait/cancel and event streaming.
+  - `kb.feedback`: create/list/review/resolve.
+  - `kb.skills`: create/get/list/delete.
+  - `kb.post_processors`: register/get/list/delete.
+  - `kb.settings`: inspect effective configuration without exposing secrets.
+  - `kb.maintenance`: inventory, reconcile, backup metadata, and safe cleanup plans.
+- [ ] Add missing simple lookups such as `get_project`/`get_collection`; never implement
+      a singular lookup by scanning a limited list result.
+- [ ] Add public source/artifact content access instead of requiring ORM and S3 imports.
+- [ ] Support all useful ingestion forms:
+  - managed file copy
+  - bytes and text
+  - directory convenience ingestion
+  - external URI/reference without copying
+  - structured record batches
+  - externally processed artifact registration
+- [ ] Provide both sync and async clients only where async behavior is real. Do not make
+      synchronous ORM/storage calls appear asynchronous through superficial wrappers.
+- [ ] Generate API reference documentation from the typed public surface and include
+      complete local, PostgreSQL/MinIO, custom pipeline, and migration examples.
 
-## P2 - Improve testing and delivery
+## Phase 7 — Make the CLI, FastAPI server, and materials app consume the SDK
 
-- [ ] Add CI for every pull request and protected branch.
-  - Run Python lint, tests, and migration checks; frontend type-check, tests, and
-    build; plus secret, dependency, and container scans.
-  - Use dependency caches and cancel superseded runs.
-  - Require the workflow before merge.
+- [ ] Enforce this dependency direction:
 
-- [ ] Add frontend behavioral tests.
-  - Use a unit/component runner for stores, schemas, polling, upload grouping,
-    projection editing, and error handling.
-  - Add a small browser smoke suite for upload -> process -> extract/project status,
-    cancellation, settings, and destructive confirmations.
+      ```text
+      React -> FastAPI -> KnowledgeBase/application services -> core -> ports
+      CLI -------------> KnowledgeBase/application services -> core -> ports
+      Python user -----> KnowledgeBase/application services -> core -> ports
+      ```
 
-- [ ] Add real integration tests with PostgreSQL and MinIO.
-  - Cover migrations, ingest deduplication, object cleanup, failure rollback,
-    archive limits, auth, CORS, job restart behavior, and backup/restore.
-  - Keep LLM and MinerU network calls deterministic behind fakes; maintain a small
-    opt-in end-to-end provider smoke test.
+- [ ] Move direct ORM/S3 access out of web routes, including raw and processed asset
+      preview/download paths.
+- [ ] Move web-only job management behind `kb.jobs` so notebooks and other applications
+      can use the same durable job behavior.
+- [ ] Move settings, skills, assistant sessions, post-processor scripts, diagnostics,
+      and maintenance behind supported application services where appropriate.
+- [ ] Rewrite CLI commands to call the same public SDK. Keep interactive confirmation
+      in the CLI while destructive SDK methods require explicit confirmation tokens or
+      policies.
+- [ ] Keep current React behavior as an integration test for feature parity.
+- [ ] Keep current materials APIs as `kb.materials.frames`, `kb.materials.spaces`,
+      `kb.materials.projections`, and `kb.materials.workflows`, or provide an equivalent
+      `MaterialsKnowledgeBase` extension.
+- [ ] Do not remove the legacy facade until the CLI, HTTP API, UI, examples, and local
+      data validation all pass through the new implementation.
 
-- [ ] Strengthen quality tooling.
-  - Add ESLint and a formatter; the current frontend `lint` script is TypeScript
-    checking only.
-  - Add Python formatting, import, security, and type-check policies incrementally.
-  - Track coverage by critical domain rather than chasing one global percentage.
+## Phase 8 — Migrate the current local data safely
 
-- [ ] Pin and automate dependency maintenance.
-  - Establish a reproducible Python lock/constraints workflow; keep the npm lockfile.
-  - Separate runtime, local-PDF, legacy-UI, and development dependency groups.
-  - Automate reviewed update pull requests and vulnerability/license checks.
+### Migration strategy
 
-## P3 - Developer experience and documentation
+- [ ] Prefer an in-place, additive migration so the existing Compose PostgreSQL and
+      MinIO services remain the initial production adapters.
+- [ ] Add new generic tables only when compatibility views/adapters are insufficient.
+      Suggested additions include pipeline definitions/runs/step runs, generic record
+      metadata, evidence links, backend registrations, and legacy-ID mappings.
+- [ ] Add Alembic upgrades only. During the preservation window, downgrades for new
+      migrations must not drop old tables or old columns containing user data; a safe
+      downgrade may instead remove only demonstrably empty new structures or refuse.
+- [ ] Backfill in bounded batches with stable ordering and commits. Store the last
+      completed key/checkpoint so interruption and retry cannot duplicate records.
+- [ ] Make backfills use upsert plus deterministic keys. Running the migration twice
+      must produce identical counts and mappings.
+- [ ] Initially leave S3 objects in their current buckets and keys. Store references to
+      those locations in new models instead of copying blobs unnecessarily.
+- [ ] Initially leave local processed mirrors in place. Add a storage reference rather
+      than moving files during schema migration.
+- [ ] Add dual-read support: prefer the new representation when present and fall back to
+      the legacy representation. Add dual-write only for the shortest necessary
+      transition and test it carefully.
+- [ ] Compare pre- and post-migration inventories. Every old persistent ID must be
+      accounted for as migrated, intentionally retained behind an adapter, or explicitly
+      classified as ephemeral.
+- [ ] Verify content, not only counts: sample and checksum raw assets, processed
+      artifacts, frames, projection payloads, workflow graphs, and evidence references.
+- [ ] Run old-versus-new query comparisons for representative projects, frames, spaces,
+      projections, graphs, workflows, feedback, skills, and exports.
+- [ ] Run the full Python tests, frontend build, API integration tests, and a local UI
+      smoke test against the migrated data.
+- [ ] Create and restore-drill a post-migration snapshot before changing default readers.
 
-- [ ] Make every command use the project environment consistently.
-  - The Makefile currently mixes ambient `python`, `pytest`, `alembic`, and `pip`
-    with `.venv/bin/python`.
-  - Introduce one configurable Python command and use `python -m ...` consistently.
-  - Make setup, migrate, lint, test, build, and dev commands work from a clean clone.
-  - Progress: Make targets now use one configurable `PYTHON` and `python -m ...`.
-    Clean-clone environment creation still needs a bootstrap target.
+### Cutover and rollback
 
-- [ ] Make `make up` wait for health and run explicit migrations safely.
-  - Do not hide readiness failures with `|| true`.
-  - Provide `make doctor` to check Python/Node/Docker versions, configuration,
-    ports, database revision, buckets, disk space, and external processors.
-  - Progress: `make up` now uses Compose health waiting and runs Alembic without
-    suppressing failures. `make doctor` remains.
+- [ ] Cut over one read path at a time behind a configuration flag. Start with read-only
+      list/get/export operations, then writes, then long-running pipelines.
+- [ ] Keep the legacy read flag available until all local data has been exercised through
+      the new SDK.
+- [ ] Rollback means switching readers/writers back to legacy adapters and restoring the
+      pre-refactor snapshot only if additive changes somehow corrupted existing state.
+      A normal code rollback should not require restoring data.
+- [ ] Never run the live replacement path in `unpack_data.sh` unless the current live
+      dataset has first been snapshotted and the exact target has been confirmed.
+- [ ] After cutover, run:
 
-- [ ] Reorganize documentation around user roles.
-  - Keep README as the fast local quickstart.
-  - Add developer setup, architecture/ownership, API contract, security model,
-    operator runbook, backup/restore, upgrade/migration, and contribution guides.
-  - Clearly label React as current and Streamlit/canonical workflows as legacy.
+      ```bash
+      make doctor
+      .venv/bin/python -m mkb.cli reconcile
+      make check
+      ```
 
-- [ ] Add repository policy files.
-  - Add `CONTRIBUTING.md`, security reporting guidance, supported-version policy,
-    pull-request template, and ownership/review rules for migrations and security
-    sensitive code.
+- [ ] Retain the pre- and post-migration snapshots until at least one complete local work
+      cycle has succeeded: ingest, process, extract, project, graph/workflow operations,
+      review, query, and export.
 
-## Recommended implementation order
+## Phase 9 — Packaging and distribution
 
-1. Safe local-only defaults: loopback binds, CORS allowlist, production startup
-   checks, secret/log redaction, and upload quotas.
-2. Disable or isolate uploaded code; add authentication before any remote use.
-3. Migration-only schema management, durable jobs, transaction/idempotency rules,
-   and tested backup/restore.
-4. CI plus API/frontend/integration contracts and tests.
-5. Remove legacy surfaces and split the largest frontend and agent-tool modules.
-6. Finish documentation, dependency separation, and routine operator tooling.
+- [ ] Keep the base wheel lightweight and provide optional extras, for example:
+  - `mat-know-base[postgres]`
+  - `mat-know-base[s3]`
+  - `mat-know-base[pdf]`
+  - `mat-know-base[neo4j]`
+  - `mat-know-base[server]`
+  - `mat-know-base[materials]`
+  - `mat-know-base[all]`
+- [ ] Ensure `pip install mat-know-base` supports a minimal SQLite + filesystem example
+      without Docker, PostgreSQL, MinIO, FastAPI, React, or MinerU.
+- [ ] Keep Alembic resources and built-in pipeline/schema assets inside the wheel and
+      resolve them with `importlib.resources`, not the current working directory.
+- [ ] Remove assumptions that `config.yaml`, `.env`, `alembic.ini`, `data/`, or the repo
+      root exists beside the installed package.
+- [ ] Add versioned database compatibility metadata and refuse to open a database newer
+      than the installed library understands.
+- [ ] Adopt semantic versioning, a deprecation policy, a public API compatibility test,
+      changelog, and migration guide.
+- [ ] Test wheel and source distribution installation in clean environments for the
+      minimum and supported Python versions.
+- [ ] Publish release candidates locally first and install the built wheel into a
+      separate external example project before publishing publicly.
 
-## Definition of done for this program
+## External example repository acceptance test
 
-- A clean clone can be installed, migrated, checked, and started using documented
-  commands without relying on hidden global tools.
-- Default services are reachable only from localhost and use no production-unsafe
-  defaults silently.
-- Remote deployment has authentication, least-privilege authorization, bounded
-  uploads/jobs, and isolated executable extensions.
-- Interrupted workflows and partial storage writes are visible, retryable, and
-  reconcilable.
-- Backup restoration is tested, not assumed.
-- API contracts, migrations, Python tests, frontend tests/build, and security checks
-  are required in CI.
-- Each major domain has a clear owner module; REST, CLI, agent, and UI layers are
-  adapters rather than competing implementations of business logic.
+Before declaring the reusable SDK ready, a project depending only on the built wheel
+must be able to:
+
+- [ ] Create a new SQLite/filesystem knowledge base.
+- [ ] Connect to the existing local PostgreSQL/MinIO knowledge base and read all current
+      extracted data without changing it.
+- [ ] Create a separate database with no state leaking between the two clients.
+- [ ] Register a custom source type, parser, schema, and at least two custom pipeline
+      steps.
+- [ ] Ingest arbitrary file, text, and structured-record data.
+- [ ] Run a custom pipeline and persist structured records, evidence, and graph relations.
+- [ ] Query, inspect, and export results using only public imports.
+- [ ] Resume or retry an interrupted pipeline without duplicating outputs.
+- [ ] Run without importing `mkb.db`, `mkb.web`, ORM models, service-private modules, or
+      repository source files.
+
+## Definition of done
+
+- [ ] The current materials application, CLI, HTTP API, and React UI work through the new
+      application services.
+- [ ] Current local data is fully readable and usable; no required re-extraction is
+      necessary.
+- [ ] Pre- and post-migration snapshots both pass restore drills.
+- [ ] Inventory counts, identifier mappings, object references, and representative
+      content checks pass.
+- [ ] Two independently configured knowledge bases work in one process.
+- [ ] An external project can define and run a custom pipeline using only the installed
+      public package.
+- [ ] The old facade has either full compatibility coverage or a documented, tested
+      deprecation path.
+- [ ] No destructive cleanup of legacy data is required for the first stable SDK release.

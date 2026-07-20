@@ -1,30 +1,60 @@
-# Development Notes
+# Developer setup
 
-Use the project virtual environment for Python checks. The repository is
-configured with `pythonpath = ["src"]`, so tests can import `mkb` without an
-editable install, but the interpreter still needs project dependencies.
+## Clean clone
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
-cd frontend && npm install
-```
-
-Common checks:
+Install Python 3.10+, Node.js 20+, npm, Docker Compose, and `libmagic`, then run:
 
 ```bash
-make ci          # Ruff plus pytest collection
-make lint        # Python Ruff plus frontend TypeScript check
-make check       # Python tests, frontend build, and lint
+make bootstrap
 ```
 
-The bare `python3` interpreter may collect imports from `src`, but it will fail
-unless dependencies such as `pydantic-settings`, `google-adk`, `pgvector`, and
-`streamlit` are installed in that interpreter. Prefer `.venv/bin/python` in
-scripts and documentation when reproducibility matters.
+This creates `.venv`, upgrades its pip, installs `.[dev]`, runs `npm ci` from the
+committed lockfile, and creates `.env` only if absent. Edit `.env`, then:
 
-Local runtime artifacts live under `data/`, `.debug/`, `logs/`, and
-`docker_volumes/`. Projection export YAMLs should be treated as generated output
-unless they are deliberately promoted to named fixtures under `examples/` or
-`tests/fixtures/`.
+```bash
+make up       # waits for healthy PostgreSQL/MinIO, then migrates
+make doctor   # verifies the whole local environment
+make dev      # FastAPI and Vite; Ctrl+C stops both
+```
+
+All Make targets use `PYTHON ?= .venv/bin/python` and Python modules (`python -m
+...`) consistently. Override it explicitly for tooling or CI. `BOOTSTRAP_PYTHON`
+is used only to create the environment, and `NPM` can likewise be overridden.
+
+## Validation and build
+
+```bash
+make lint
+make test-python
+make test-frontend
+make check
+make build
+```
+
+`make build` writes a Python wheel under `build/wheels/` and builds the production
+React bundle. CI should begin with `make bootstrap` (or reproduce its pinned npm
+install and editable dev install) before invoking these targets.
+
+## Database changes
+
+Start PostgreSQL, edit SQLAlchemy models, then create a revision:
+
+```bash
+make migration msg="describe the schema change"
+```
+
+Review both upgrade and downgrade operations. Test forward migration with `make
+migrate` and restoration against a disposable database. Migration changes require
+database-owner review; see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+Never rewrite a revision already shared or deployed. Add a new corrective revision.
+
+## Runtime files and legacy surfaces
+
+Local artifacts live under `data/`, `.debug/`, `logs/`, and Docker volumes. Treat
+exports as generated unless deliberately promoted to `examples/` or `tests/fixtures/`.
+
+React (`frontend/`) is current. Streamlit (`src/mkb/ui/`) and legacy canonical
+workflow adapters are compatibility-only. Fix regressions there when necessary, but
+place new behavior in services and React.
 

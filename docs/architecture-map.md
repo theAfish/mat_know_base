@@ -1,4 +1,4 @@
-# Architecture Map
+# Architecture and ownership
 
 This map names the main ownership areas in the repository so refactors can move
 code toward clearer boundaries without changing behavior accidentally.
@@ -29,7 +29,7 @@ code toward clearer boundaries without changing behavior accidentally.
   frame/project detail tabs.
 - Spaces and projections: `src/mkb/spaces/`, projection agents/tools, projection
   routers, and projection table components.
-- Workflows: `src/mkb/workflows/`, workflow extraction/canonicalization agents,
+- Workflows: `src/mkb/services/workflows/`, workflow extraction/canonicalization agents,
   schema curator tools, and workflow tabs.
 - Knowledge graph: `src/mkb/knowledge_graph.py`, graph agent/tools, graph review
   tools, graph router, and graph frontend page.
@@ -50,3 +50,15 @@ Adapters should stay thin:
 Shared behavior belongs in domain services or pure helpers before it is reused
 by routers, CLI commands, agent tools, and legacy compatibility surfaces.
 
+## Review ownership
+
+`CODEOWNERS` records the enforceable GitHub review routing. Changes under `alembic/`,
+`src/mkb/db/`, or `alembic.ini` need migration/database review. Authentication,
+uploads, executable post-processors, deployment configuration, Compose exposure, and
+security documentation need security review. Until dedicated teams exist, the
+repository owner fills both roles; split these entries into teams as maintainership
+grows.
+
+Cross-boundary changes should name the owning service in the pull request and keep
+transport/UI adapters free of duplicated domain policy. API compatibility changes also
+require updates to `docs/python-api.md` or `docs/api-contract.md` as applicable.
