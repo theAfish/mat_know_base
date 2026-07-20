@@ -14,13 +14,27 @@ with KnowledgeBase.from_environment() as kb:
 
 `mkb.api` remains the supported compatibility facade while feature parity is built.
 Existing automation does not need to change yet. Import from one of these public
-surfaces, not from database models, web routers, or individual service modules. Both
-surfaces are synchronous and currently return JSON-compatible dictionaries and lists
-(UUIDs and timestamps may still be native Python values in some records).
+surfaces, not from database models, web routers, or individual service modules. The
+compatibility facade and legacy methods on `KnowledgeBase` still return dictionaries
+and lists; grouped SDK services such as `kb.collections`, `kb.schemas`, and `kb.graph`
+return typed public models.
 
 ```python
 from mkb import api
 ```
+
+## Public import boundary
+
+The supported root package exports the configured client, immutable configuration,
+typed domain and operation models, pipeline/parser definitions, grouped registry
+types, transactions, and the public exception hierarchy. All typed models support
+`model_dump(mode="json")`.
+
+Custom adapter authors may explicitly import protocols from `mkb.ports` and default
+implementations from `mkb.adapters`. Application consumers should not import
+`mkb.db`, `mkb.web`, ORM classes, session factories, or storage implementation
+modules. The old port aliases remain explicitly importable from `mkb` for temporary
+compatibility, but are intentionally absent from `mkb.__all__`.
 
 The explicit client is preferable for new code because its configuration and service
 bindings belong to one object rather than module globals. The initial environment
@@ -38,6 +52,24 @@ with KnowledgeBase.from_url(
     object_store_url="file:///absolute/path/objects",
 ) as kb:
     kb.database.check()
+    kb.initialize()  # explicit, idempotent creation of missing SDK-owned tables
+
+    collection = kb.collections.create(name="Experiment 42")
+    kb.records.create(
+        collection_id=collection.id,
+        data={"material": "nickelate", "temperature_c": 800},
+    )
+    source = kb.sources.add_text(
+        collection.id,
+        "custom project notes",
+        filename="notes.txt",
+    )
+    artifact = kb.artifacts.add_bytes(
+        source.id,
+        b"normalized notes",
+        processing_type="NORMALIZED_TEXT",
+        format="txt",
+    )
 ```
 
 S3-compatible storage uses
@@ -46,6 +78,43 @@ S3-compatible storage uses
 creates or migrates tables. Explicit clients deliberately reject legacy facade calls
 such as `list_projects()` because those operations still depend on global application
 configuration; use their grouped services as those repositories become writable.
+`initialize()` creates only the portable `mkb_*` tables owned by the new SDK. It uses
+additive, idempotent table creation and never drops or renames tables.
+It returns the current portable schema version; `kb.schema_version()` reports the
+stored version afterward. Revisions are recorded in `mkb_schema_migrations`. Revision
+1 contains collections, sources, records, and schemas; revision 2 adds artifacts and
+projections.
+
+Multiple relational writes can share one commit or rollback boundary:
+
+```python
+with KnowledgeBase.from_url(database_url="sqlite:////tmp/research.db") as kb:
+    kb.initialize()
+    with kb.transaction() as tx:
+        collection = tx.collections.create(name="Experiment 43")
+        record = tx.records.create(
+            collection_id=collection.id,
+            data=[{"sample": "A", "result": 12.4}],
+        )
+        schema = tx.schemas.create(
+            name="experiment-result",
+            domain="my project",
+            definition={"type": "array"},
+            system_prompt="Extract supported experiment results.",
+        )
+        tx.projections.create(
+            schema_id=schema.id,
+            record_id=record.id,
+            data={"sample": "A", "result": 12.4},
+        )
+```
+
+The current transaction object includes collections, records, schemas, and projections.
+Direct `sources.add_bytes(...)` and `sources.add_text(...)` calls write content first, commit
+metadata second, and delete the new object if the metadata write fails. Artifact byte
+registration follows the same compensation rule. Object-backed writes are not available
+on the transaction object because S3 and filesystem operations cannot participate in
+the relational ACID transaction.
 
 The client already owns explicit relational and object-store resources. They are
 available for health checks and are closed with the client:
@@ -90,9 +159,10 @@ The generic model mapping is deliberately compatible with the current local sche
 `research_projects` become `Collection`, `assets` become `Source`, processed assets
 become `Artifact`, `knowledge_frames` become `Record`, spaces become
 `ExtractionSchema`, and stored projections become `Projection`. IDs, timestamps,
-status values, review metadata, schema versions, and raw JSON are retained. Typed
-lookups and lists are read-only in this phase; existing mutation methods remain on the
-compatibility facade until transaction-aware repositories are available.
+status values, review metadata, schema versions, and raw JSON are retained. The
+environment-backed typed services remain read-only to protect the existing local
+dataset. Explicitly configured, initialized databases support collection, record, and
+schema creation through portable transaction-aware repositories.
 
 All public models support `model_dump(mode="json")` and `model_dump_json()`. The
 `records.export_json(...)` and `projections.export_json(...)` helpers return JSON text
@@ -191,6 +261,36 @@ Failures raise `PipelineExecutionError`; its `run` attribute contains the failed
 run and completed step history. A progress callback receives typed `ProgressEvent`
 objects. Existing `Record` instances can be supplied directly in pipeline inputs, so
 local extracted data does not need to be reprocessed.
+
+Parsers and reusable standalone steps are also registered on one configured client;
+they do not mutate module-global registries. Portable schemas are persisted by the
+client's metadata repository:
+
+```python
+from mkb import Parser, Pipeline, Step
+
+kb.parsers.register(
+    Parser(
+        name="notes",
+        source_types=frozenset({"text/plain"}),
+        handler=lambda context, content: {"text": content.decode("utf-8")},
+    )
+)
+kb.steps.register(
+    Step(
+        name="word-count",
+        deterministic=True,
+        handler=lambda context, state: {"words": len(state["text"].split())},
+    )
+)
+kb.schemas.register(
+    name="notes-schema",
+    domain="general",
+    definition={"type": "object", "properties": {"words": {"type": "integer"}}},
+    system_prompt="Extract only supported values.",
+)
+kb.pipelines.register(Pipeline(name="notes", steps=(kb.steps.require("word-count"),)))
+```
 
 Most mutating functions return a summary dictionary containing stable identifiers and
 counts. Read functions return a dictionary, a list of dictionaries, or `None` when a

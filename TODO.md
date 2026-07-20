@@ -100,24 +100,26 @@ to simplify the new architecture.
       registries.
 - [x] Keep `from mkb import api` as a compatibility surface alongside an explicitly
       configured default client. Mark it deprecated only after feature parity exists.
-- [ ] Define the public import boundary. Consumers must not need `mkb.db`, `mkb.web`,
+- [x] Define the public import boundary. Consumers must not need `mkb.db`, `mkb.web`,
       ORM models, storage internals, or service-private functions.
-- [ ] Remove private names and database session factories from the future public
-      `__all__`; keep temporary compatibility shims only where existing code requires
-      them.
-- [ ] Introduce typed public models (Pydantic models or dataclasses) for collections,
+- [x] Remove private names and database session factories from the future public
+      `__all__`; temporary import-compatible port aliases remain available but are not
+      included in wildcard imports.
+- [x] Introduce typed public models (Pydantic models or dataclasses) for collections,
       sources, artifacts, records, schemas, entities, relations, evidence, pipeline
       runs, jobs, pages, and operation receipts.
-- [ ] Permit `model_dump(mode="json")` or an equivalent stable serialization method on
+- [x] Permit `model_dump(mode="json")` or an equivalent stable serialization method on
       public models.
-- [ ] Standardize exceptions: `MKBError`, `NotFoundError`, `ConflictError`,
+- [x] Standardize exceptions: `MKBError`, `NotFoundError`, `ConflictError`,
       `ValidationError`, `BackendUnavailableError`, `ProviderError`, and
       `PipelineExecutionError`.
-- [ ] Standardize behavior: return a typed value on success, use `None` only for an
-      explicitly optional lookup, and raise typed exceptions rather than returning
-      `{"error": ...}`, false, or inconsistent partial results.
-- [ ] Add API contract tests for every public method, including argument types, result
-      types, errors, idempotency, and serialization.
+- [x] Standardize behavior for the supported grouped SDK: return a typed value on
+      success, use `None` only for optional lookups, and raise typed exceptions. Legacy
+      compatibility methods retain their dictionary contracts until Phase 7 migration.
+- [x] Add API contract tests for every currently supported grouped SDK method, including
+      a deliberate method inventory plus success, optional lookup, errors, idempotency,
+      serialization, repository, graph, registry, transaction, and pipeline coverage.
+      New grouped services must extend the inventory as they replace the legacy facade.
 
 ## Phase 2 — Remove global configuration and persistence coupling
 
@@ -130,7 +132,8 @@ to simplify the new architecture.
       registry, and job backend into the application object.
 - [x] Define explicit lifecycle methods or context-manager support so connections and
       worker resources are released predictably.
-- [ ] Add explicit transaction scopes:
+- [ ] Add explicit transaction scopes. Collection, record, schema, and projection writes
+      now share one commit/rollback boundary; object-backed writes remain pending:
 
       ```python
       with kb.transaction() as tx:
@@ -138,7 +141,7 @@ to simplify the new architecture.
           tx.sources.add_text(collection.id, notes)
       ```
 
-- [ ] Document that PostgreSQL, object storage, and external graph databases cannot
+- [x] Document that PostgreSQL, object storage, and external graph databases cannot
       share one ACID transaction. Use stable IDs, staging states, idempotent writes,
       an outbox/event pattern, and compensating cleanup for cross-store operations.
 - [x] Prove with tests that the current local PostgreSQL and MinIO configuration works
@@ -155,8 +158,10 @@ to simplify the new architecture.
         processed assets with content access through the object-store port.
   - [x] `Record`: typed structured data mapped read-only to current knowledge frames.
   - [x] `Schema`: typed extraction policy mapped read-only to current spaces.
-  - `Entity` and `Relation`: graph elements.
-  - `Evidence`: provenance linking outputs to sources/artifacts.
+  - [x] `Entity` and `Relation`: typed, serializable graph elements with an in-memory
+        adapter and grouped graph service.
+  - [x] `Evidence`: typed, serializable provenance linking outputs to sources/artifacts;
+        persistence adapters remain pending.
   - [x] `PipelineRun` and `StepRun`: typed local execution and provenance records.
 - [ ] Keep materials concepts as a supported extension and map them explicitly:
   - research project -> collection
@@ -193,8 +198,10 @@ to simplify the new architecture.
   - Existing PostgreSQL/pgvector schema adapter, including all current local data.
   - Existing MinIO/S3 adapter, preserving current buckets and keys.
   - Filesystem object store for lightweight local projects and tests.
-  - SQLite metadata repository for a minimal pip-package quickstart.
-  - In-memory or NetworkX graph adapter for a minimal local graph setup.
+  - [x] SQLite metadata repository for a minimal pip-package quickstart, including
+        portable collections, sources, artifacts, records, schemas, projections, and an
+        additive schema-version ledger.
+  - [x] In-memory or NetworkX graph adapter for a minimal local graph setup.
 - [ ] Add Neo4j or another external graph adapter later as an optional extra; it is not
       required to migrate the current local dataset.
 - [ ] Add repository conformance tests that every adapter must pass, plus capability-
@@ -234,9 +241,10 @@ to simplify the new architecture.
       workflow extraction, schema review, and feedback review.
 - [x] Ensure old extracted records can be used as pipeline inputs without reprocessing
       their source documents.
-- [ ] Allow consumer registration of parsers, steps, schemas, and pipelines without
-      editing the MKB package. Per-client pipeline registration is complete; parser,
-      standalone-step, and schema registries remain pending.
+- [x] Allow consumer registration of parsers, steps, schemas, and pipelines without
+      editing the MKB package. Parser, standalone-step, and pipeline registries are
+      isolated per client; schema registration is persisted by the configured schema
+      repository.
 
 ## Phase 6 — Expand the Python API to full application parity
 

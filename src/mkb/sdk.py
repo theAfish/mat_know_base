@@ -7,13 +7,16 @@ changing callers or migrating the existing database prematurely.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
 
-from mkb.exceptions import MKBError, ValidationError
+from mkb.exceptions import ConflictError, MKBError, ValidationError
+from mkb.graph import Graph
 from mkb.pipelines import Pipelines
-from mkb.ports import Database, ObjectStore
+from mkb.ports import Database, GraphStore, ObjectStore
 from mkb.repositories import (
     Artifacts,
     Collections,
@@ -22,6 +25,8 @@ from mkb.repositories import (
     Records,
     Sources,
 )
+from mkb.registries import Parsers, Steps
+from mkb.transactions import Transaction
 
 
 class ServiceBindings(Protocol):
@@ -113,6 +118,7 @@ class KnowledgeBase:
         config: MKBConfig | None = None,
         database: Database | None = None,
         object_store: ObjectStore | None = None,
+        graph_store: GraphStore | None = None,
         collections: Collections | None = None,
         sources: Sources | None = None,
         artifacts: Artifacts | None = None,
@@ -120,22 +126,32 @@ class KnowledgeBase:
         schemas: ExtractionSchemas | None = None,
         projections: Projections | None = None,
         capabilities: frozenset[str] | None = None,
+        schema_manager: Any | None = None,
+        transaction_factory: Callable[[Any], Transaction] | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()
         self.config = config or MKBConfig()
         self.database = database
         self.object_store = object_store
+        self.graph_store = graph_store
+        self.graph = Graph(graph_store) if graph_store is not None else None
         self.collections = collections
         self.sources = sources
         self.artifacts = artifacts
         self.records = records
         self.schemas = schemas
         self.projections = projections
+        self.parsers = Parsers(self)
+        self.steps = Steps()
+        self._schema_manager = schema_manager
+        self._transaction_factory = transaction_factory
         detected_capabilities = set(capabilities or ())
         if database is not None:
             detected_capabilities.add("transactions")
         if object_store is not None:
             detected_capabilities.add("object_streaming")
+        if graph_store is not None:
+            detected_capabilities.update(graph_store.capabilities)
         self.pipelines = Pipelines(self, capabilities=frozenset(detected_capabilities))
         self._closed = False
 
@@ -154,7 +170,7 @@ class KnowledgeBase:
             access_key=config.object_store_access_key,
             secret_key=config.object_store_secret_key,
         )
-        return cls._from_resources(
+        return cls._from_legacy_resources(
             services=api,
             config=config,
             database=database,
@@ -214,7 +230,7 @@ class KnowledgeBase:
                 object_store_secret_key=object_store_secret_key,
                 raw_bucket=raw_bucket,
             )
-            return cls._from_resources(
+            return cls._from_generic_resources(
                 config=config,
                 database=database,
                 object_store=object_store,
@@ -227,7 +243,7 @@ class KnowledgeBase:
             raise
 
     @classmethod
-    def _from_resources(
+    def _from_legacy_resources(
         cls,
         *,
         config: MKBConfig,
@@ -267,6 +283,73 @@ class KnowledgeBase:
             capabilities=capabilities,
         )
 
+    @classmethod
+    def _from_generic_resources(
+        cls,
+        *,
+        config: MKBConfig,
+        database: Database,
+        object_store: ObjectStore | None,
+        capabilities: frozenset[str] | None = None,
+    ) -> "KnowledgeBase":
+        from mkb.adapters.generic_repositories import (
+            GenericArtifactRepository,
+            GenericCollectionRepository,
+            GenericExtractionSchemaRepository,
+            GenericProjectionRepository,
+            GenericRecordRepository,
+            GenericSchemaManager,
+            GenericSourceRepository,
+        )
+        from mkb.adapters.graph import InMemoryGraphStore
+
+        def transaction_factory(session) -> Transaction:
+            return Transaction(
+                collections=Collections(GenericCollectionRepository(database, session)),
+                records=Records(GenericRecordRepository(database, session)),
+                schemas=ExtractionSchemas(
+                    GenericExtractionSchemaRepository(database, session)
+                ),
+                projections=Projections(
+                    GenericProjectionRepository(database, session)
+                ),
+            )
+
+        sources = (
+            Sources(
+                GenericSourceRepository(database),
+                object_store,
+                default_bucket=config.raw_bucket,
+            )
+            if object_store is not None
+            else None
+        )
+
+        return cls(
+            config=config,
+            database=database,
+            object_store=object_store,
+            graph_store=InMemoryGraphStore(),
+            collections=Collections(GenericCollectionRepository(database)),
+            sources=sources,
+            artifacts=(
+                Artifacts(
+                    GenericArtifactRepository(database),
+                    object_store,
+                    default_bucket=config.processed_bucket,
+                    sources=sources,
+                )
+                if object_store is not None
+                else None
+            ),
+            records=Records(GenericRecordRepository(database)),
+            schemas=ExtractionSchemas(GenericExtractionSchemaRepository(database)),
+            projections=Projections(GenericProjectionRepository(database)),
+            capabilities=capabilities,
+            schema_manager=GenericSchemaManager(database),
+            transaction_factory=transaction_factory,
+        )
+
     def __enter__(self) -> "KnowledgeBase":
         self._ensure_open()
         return self
@@ -286,6 +369,8 @@ class KnowledgeBase:
             close()
         if self.object_store is not None:
             self.object_store.close()
+        if self.graph_store is not None:
+            self.graph_store.close()
         if self.database is not None:
             self.database.close()
         self._closed = True
@@ -293,6 +378,29 @@ class KnowledgeBase:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("KnowledgeBase is closed")
+
+    def initialize(self) -> int:
+        """Explicitly create missing SDK-owned tables without dropping existing data."""
+        self._ensure_open()
+        if self._schema_manager is None:
+            raise ConflictError("This client does not manage a portable SDK schema")
+        return self._schema_manager.initialize()
+
+    def schema_version(self) -> int | None:
+        """Return the initialized portable schema version, or ``None`` if absent."""
+        self._ensure_open()
+        if self._schema_manager is None:
+            return None
+        return self._schema_manager.version()
+
+    @contextmanager
+    def transaction(self) -> Iterator[Transaction]:
+        """Open one relational transaction for SDK-managed repositories."""
+        self._ensure_open()
+        if self.database is None or self._transaction_factory is None:
+            raise ConflictError("Transactions are unavailable for this client")
+        with self.database.transaction() as session:
+            yield self._transaction_factory(session)
 
     def _call(self, name: str, *args, **kwargs):
         self._ensure_open()

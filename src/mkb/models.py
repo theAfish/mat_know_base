@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
+
+PageItem = TypeVar("PageItem")
 
 
 class Collection(BaseModel):
@@ -136,3 +138,91 @@ class Projection(BaseModel):
     supersedes_ids: tuple[str, ...] = ()
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class Entity(BaseModel):
+    """Backend-neutral node in a knowledge graph."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    type: str
+    name: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class Relation(BaseModel):
+    """Directed, typed edge between two graph entities."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    type: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class Evidence(BaseModel):
+    """Lossless provenance linking an SDK output to source material."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    output_type: str
+    output_id: uuid.UUID
+    source_id: uuid.UUID | None = None
+    artifact_id: uuid.UUID | None = None
+    locator: dict[str, Any] = Field(default_factory=dict)
+    excerpt: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class Job(BaseModel):
+    """Serializable state for a submitted background operation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    kind: str
+    status: str
+    label: str | None = None
+    idempotency_key: str | None = None
+    progress: float | None = Field(default=None, ge=0.0, le=1.0)
+    message: str | None = None
+    result: Any = None
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class Page(BaseModel, Generic[PageItem]):
+    """Bounded result page with stable pagination metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    items: tuple[PageItem, ...] = ()
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)
+    total: int | None = Field(default=None, ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+
+
+class OperationReceipt(BaseModel):
+    """Typed acknowledgement for an accepted or completed mutation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    operation: str
+    status: str
+    resource_type: str | None = None
+    resource_id: uuid.UUID | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
