@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from mkb.ports import Database, ObjectStore
-from mkb.repositories import Collections
+from mkb.repositories import (
+    Artifacts,
+    Collections,
+    ExtractionSchemas,
+    Projections,
+    Records,
+    Sources,
+)
 
 
 class ServiceBindings(Protocol):
@@ -91,12 +98,22 @@ class KnowledgeBase:
         database: Database | None = None,
         object_store: ObjectStore | None = None,
         collections: Collections | None = None,
+        sources: Sources | None = None,
+        artifacts: Artifacts | None = None,
+        records: Records | None = None,
+        schemas: ExtractionSchemas | None = None,
+        projections: Projections | None = None,
     ):
         self._services = services
         self.config = config or MKBConfig()
         self.database = database
         self.object_store = object_store
         self.collections = collections
+        self.sources = sources
+        self.artifacts = artifacts
+        self.records = records
+        self.schemas = schemas
+        self.projections = projections
         self._closed = False
 
     @classmethod
@@ -104,22 +121,35 @@ class KnowledgeBase:
         from mkb import api
         from mkb.adapters import (
             S3ObjectStore,
+            SQLAlchemyArtifactRepository,
             SQLAlchemyCollectionRepository,
             SQLAlchemyDatabase,
+            SQLAlchemyExtractionSchemaRepository,
+            SQLAlchemyProjectionRepository,
+            SQLAlchemyRecordRepository,
+            SQLAlchemySourceRepository,
         )
 
         config = MKBConfig.from_environment()
         database = SQLAlchemyDatabase(config.database_url)
+        object_store = S3ObjectStore(
+            endpoint_url=config.object_store_endpoint,
+            access_key=config.object_store_access_key,
+            secret_key=config.object_store_secret_key,
+        )
         return cls(
             services=api,
             config=config,
             database=database,
-            object_store=S3ObjectStore(
-                endpoint_url=config.object_store_endpoint,
-                access_key=config.object_store_access_key,
-                secret_key=config.object_store_secret_key,
-            ),
+            object_store=object_store,
             collections=Collections(SQLAlchemyCollectionRepository(database)),
+            sources=Sources(SQLAlchemySourceRepository(database), object_store),
+            artifacts=Artifacts(SQLAlchemyArtifactRepository(database), object_store),
+            records=Records(SQLAlchemyRecordRepository(database)),
+            schemas=ExtractionSchemas(
+                SQLAlchemyExtractionSchemaRepository(database)
+            ),
+            projections=Projections(SQLAlchemyProjectionRepository(database)),
         )
 
     def __enter__(self) -> "KnowledgeBase":

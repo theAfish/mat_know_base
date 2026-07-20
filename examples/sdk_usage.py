@@ -18,6 +18,48 @@ def main() -> None:
         if collections:
             first = collections[0]
             print(first.model_dump(mode="json"))
+            sources = (
+                kb.sources.list(collection_id=first.id, limit=10) if kb.sources else []
+            )
+            if sources:
+                source = sources[0]
+                print({
+                    "source_id": str(source.id),
+                    "source_content_exists": kb.sources.content_exists(source.id),
+                })
+                artifacts = (
+                    kb.artifacts.list(source_id=source.id, limit=10)
+                    if kb.artifacts
+                    else []
+                )
+                if artifacts:
+                    artifact = artifacts[0]
+                    print({
+                        "artifact_id": str(artifact.id),
+                        "artifact_content_exists": kb.artifacts.content_exists(artifact.id),
+                    })
+
+            record = kb.records.get_for_collection(first.id) if kb.records else None
+            if record:
+                print({
+                    "record_id": str(record.id),
+                    "record_status": record.status,
+                    "record_json_bytes": len(record.model_dump_json().encode()),
+                })
+
+            projections = (
+                kb.projections.list(collection_id=first.id, newest_only=True, limit=10)
+                if kb.projections
+                else []
+            )
+            if projections:
+                projection = projections[0]
+                schema = kb.schemas.get(projection.schema_id) if kb.schemas else None
+                print({
+                    "projection_id": str(projection.id),
+                    "schema": schema.name if schema else str(projection.schema_id),
+                    "projection_json_bytes": len(projection.model_dump_json().encode()),
+                })
 
         projects = kb.list_projects(limit=10)
         print(f"Found {len(projects)} project(s)")

@@ -1,9 +1,10 @@
+import io
 from pathlib import Path
 
 import pytest
 from sqlalchemy import text
 
-from mkb.adapters import FileObjectStore, SQLAlchemyDatabase
+from mkb.adapters import FileObjectStore, S3ObjectStore, SQLAlchemyDatabase
 
 
 def test_sqlalchemy_databases_are_isolated_and_transactional(tmp_path: Path):
@@ -52,3 +53,20 @@ def test_file_object_stores_are_isolated_and_reject_unsafe_keys(tmp_path: Path):
     assert [item.key for item in first.list("raw", "papers/")] == ["papers/a.txt"]
     with pytest.raises(ValueError, match="Unsafe"):
         first.put_bytes("raw", "../escape", b"bad")
+
+
+def test_s3_open_returns_stream_without_eager_read():
+    class Client:
+        def __init__(self):
+            self.body = io.BytesIO(b"streamed")
+
+        def get_object(self, **_kwargs):
+            return {"Body": self.body}
+
+    client = Client()
+    store = S3ObjectStore(client=client)
+
+    stream = store.open("raw", "paper.pdf")
+
+    assert stream is client.body
+    assert stream.read(3) == b"str"

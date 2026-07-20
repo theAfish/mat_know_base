@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Iterable, cast
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -53,12 +52,17 @@ class S3ObjectStore:
         self._client.put_object(Bucket=bucket, Key=key, Body=data)
 
     def get_bytes(self, bucket: str, key: str) -> bytes:
-        self._ensure_open()
-        _safe_key(key)
-        return self._client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        body = self.open(bucket, key)
+        try:
+            return body.read()
+        finally:
+            body.close()
 
     def open(self, bucket: str, key: str) -> BinaryIO:
-        return io.BytesIO(self.get_bytes(bucket, key))
+        self._ensure_open()
+        _safe_key(key)
+        body = self._client.get_object(Bucket=bucket, Key=key)["Body"]
+        return cast(BinaryIO, body)
 
     def exists(self, bucket: str, key: str) -> bool:
         self._ensure_open()

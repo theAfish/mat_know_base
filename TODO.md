@@ -149,10 +149,12 @@ to simplify the new architecture.
 - [ ] Define infrastructure-independent concepts:
   - [x] `Collection`: a typed logical grouping of data, initially mapped read-only to
         existing `research_projects` rows through the injected SQLAlchemy adapter.
-  - `Source`: an ingested file, URI, text, bytes, or external record.
-  - `Artifact`: a derived or processed output.
-  - `Record`: structured extracted data.
-  - `Schema`: the desired structure and extraction policy for a record.
+  - [x] `Source`: a typed ingested input, initially mapped read-only to existing assets
+        with collection membership and content access through the object-store port.
+  - [x] `Artifact`: a typed derived output, initially mapped read-only to existing
+        processed assets with content access through the object-store port.
+  - [x] `Record`: typed structured data mapped read-only to current knowledge frames.
+  - [x] `Schema`: typed extraction policy mapped read-only to current spaces.
   - `Entity` and `Relation`: graph elements.
   - `Evidence`: provenance linking outputs to sources/artifacts.
   - `PipelineRun` and `StepRun`: execution and provenance records.
@@ -160,18 +162,20 @@ to simplify the new architecture.
   - research project -> collection
   - asset -> source
   - processed asset -> artifact
-  - knowledge frame -> record
-  - space -> schema/extraction profile
-  - projection -> schema-specific record
+  - [x] knowledge frame -> record
+  - [x] space -> schema/extraction profile
+  - [x] projection -> schema-specific record
   - raw workflow -> specialized workflow record
-- [ ] Prefer compatibility views/adapters over immediately renaming old tables. The
+- [x] Prefer compatibility views/adapters over immediately renaming old tables. The
       first implementation may read existing `research_projects`, `assets`,
       `processed_assets`, `knowledge_frames`, `spaces`, and `projections` directly and
       present generic typed models.
-- [ ] Preserve the original IDs in generic models. If a new universal ID is needed, add
+- [x] Preserve the original IDs in generic models. If a new universal ID is needed, add
       it alongside the legacy ID and maintain a unique mapping table.
 - [ ] Preserve raw JSON payloads, schema versions, timestamps, status fields, source
       paths, S3 locations, evidence, review annotations, and agent notes losslessly.
+      The current collection/source/artifact/record/schema/projection adapters preserve
+      their mapped fields; dedicated evidence models and verification are still pending.
 - [ ] Add round-trip tests using a sanitized copy of representative current records:
       legacy row -> new typed model -> serialized form -> model, with no meaningful
       field loss.

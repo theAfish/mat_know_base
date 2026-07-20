@@ -40,7 +40,43 @@ with KnowledgeBase.from_environment() as kb:
     first = kb.collections.get(collections[0].id) if collections else None
     if first:
         print(first.model_dump(mode="json"))
+
+        sources = kb.sources.list(collection_id=first.id)
+        if sources:
+            source = sources[0]
+            with kb.sources.open(source.id) as content:
+                header = content.read(16)
+
+            artifacts = kb.artifacts.list(source_id=source.id)
+            if artifacts and kb.artifacts.content_exists(artifacts[0].id):
+                processed = kb.artifacts.read_bytes(artifacts[0].id)
+
+        # Existing knowledge_frames, spaces, and projections are exposed without
+        # rewriting their rows or normalizing their stored JSON payloads.
+        record = kb.records.get_for_collection(first.id)
+        schemas = kb.schemas.list()
+        projections = kb.projections.list(
+            collection_id=first.id,
+            status="COMPLETED",
+            newest_only=True,
+        )
+        json_text = kb.projections.export_json(
+            collection_id=first.id,
+            newest_only=True,
+        )
 ```
+
+The generic model mapping is deliberately compatible with the current local schema:
+`research_projects` become `Collection`, `assets` become `Source`, processed assets
+become `Artifact`, `knowledge_frames` become `Record`, spaces become
+`ExtractionSchema`, and stored projections become `Projection`. IDs, timestamps,
+status values, review metadata, schema versions, and raw JSON are retained. Typed
+lookups and lists are read-only in this phase; existing mutation methods remain on the
+compatibility facade until transaction-aware repositories are available.
+
+All public models support `model_dump(mode="json")` and `model_dump_json()`. The
+`records.export_json(...)` and `projections.export_json(...)` helpers return JSON text
+without writing files, so package consumers decide where exported data belongs.
 
 The adapter interfaces are `mkb.Database` and `mkb.ObjectStore`; default implementations
 are available from `mkb.adapters`. Existing domain services are being moved onto these
