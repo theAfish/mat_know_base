@@ -58,6 +58,12 @@ class MaterialSpaces(_BoundOperations):
     def get(self, identifier: str) -> dict | None:
         return self._call("get_space", identifier)
 
+    def update(self, space_id: str, **changes) -> dict:
+        return self._call("update_space", space_id, **changes)
+
+    def delete(self, space_id: str) -> dict:
+        return self._call("delete_space", space_id)
+
     def import_file(self, path: str | Path) -> dict:
         if self._file_loader is None:
             raise ConflictError("Materials space file import is unavailable")
@@ -89,6 +95,9 @@ class MaterialProjections(_BoundOperations):
 
     def get(self, projection_id: str) -> dict | None:
         return self._call("get_projection", projection_id)
+
+    def delete(self, projection_id: str) -> bool:
+        return self._call("delete_projection", projection_id)
 
     def review(self, *, space_id: str, project_id: str, **kwargs) -> dict:
         return self._call(
@@ -130,6 +139,38 @@ class MaterialProjections(_BoundOperations):
             return self._space_exporter(space, output, overwrite=overwrite)
         except Exception as exc:
             raise ValidationError(str(exc)) from exc
+
+    def export(
+        self,
+        projection_id: str,
+        output: str | Path,
+        *,
+        format: str = "yaml",
+        overwrite: bool = False,
+    ) -> dict:
+        return self._call(
+            "export_projection",
+            projection_id,
+            output,
+            format=format,
+            overwrite=overwrite,
+        )
+
+    def export_all(
+        self,
+        space: str,
+        output: str | Path,
+        *,
+        format: str = "yaml",
+        overwrite: bool = False,
+    ) -> dict:
+        return self._call(
+            "export_space_projections",
+            space,
+            output,
+            format=format,
+            overwrite=overwrite,
+        )
 
 
 class MaterialGraph(_BoundOperations):
@@ -177,6 +218,47 @@ class MaterialLibrary(_BoundOperations):
         return self._call("link_manual_processed_data", **kwargs)
 
 
+class MaterialProjects(_BoundOperations):
+    """Project and project-group operations with React-compatible payloads."""
+
+    def list(self, *, limit: int = 50) -> list[dict]:
+        return self._call("list_projects", limit=limit)
+
+    def rename(self, project_id: str, label: str, **kwargs) -> dict:
+        return self._call("rename_project", project_id, label, **kwargs)
+
+    def delete(self, project_id: str, **kwargs) -> dict:
+        return self._call("delete_project", project_id, **kwargs)
+
+    def list_assets(self, *, project_id: str, limit: int = 100) -> list[dict]:
+        return self._call("list_assets", project_id=project_id, limit=limit)
+
+    def list_processed_assets(
+        self,
+        *,
+        project_id: str,
+        limit: int = 100,
+    ) -> list[dict]:
+        return self._call(
+            "list_processed_assets", project_id=project_id, limit=limit
+        )
+
+    def list_groups(self) -> list[dict]:
+        return self._call("list_project_groups")
+
+    def create_group(self, name: str, **kwargs) -> dict:
+        return self._call("create_project_group", name, **kwargs)
+
+    def update_group(self, group_id: str, **changes) -> dict:
+        return self._call("update_project_group", group_id, **changes)
+
+    def delete_group(self, group_id: str) -> dict:
+        return self._call("delete_project_group", group_id)
+
+    def assign_group(self, project_ids: list[str], group_id: str | None) -> dict:
+        return self._call("assign_projects_to_group", project_ids, group_id)
+
+
 class MaterialWorkflows(_BoundOperations):
     """Typed workflow records plus materials review and maintenance operations."""
 
@@ -212,6 +294,24 @@ class MaterialWorkflows(_BoundOperations):
     def correct(self, extraction_id: str, graph: dict, **kwargs) -> dict:
         return self._call("correct_raw_workflow", extraction_id, graph, **kwargs)
 
+    def readiness(self, project_id: str) -> dict:
+        return self._call("get_raw_workflow_extraction_readiness", project_id)
+
+    def list_raw(self, project_id: str, **kwargs) -> list[dict]:
+        return self._call("list_raw_workflows", project_id, **kwargs)
+
+    def get_raw(self, project_id: str, **kwargs) -> dict | None:
+        return self._call("get_raw_workflow", project_id, **kwargs)
+
+    def delete_raw_version(self, project_id: str, version: int) -> dict:
+        return self._call("delete_raw_workflow_version", project_id, version)
+
+    def list_canonical(self, project_id: str, **kwargs) -> list[dict]:
+        return self._call("list_canonical_workflows", project_id, **kwargs)
+
+    def get_canonical(self, project_id: str, **kwargs) -> dict | None:
+        return self._call("get_canonical_workflow", project_id, **kwargs)
+
     def curate_schema(self, **kwargs):
         if self._schema_curator is None:
             raise ConflictError("Workflow schema curation is unavailable")
@@ -223,6 +323,15 @@ class MaterialWorkflows(_BoundOperations):
 
     def review_schema_proposal(self, proposal_id: str, **kwargs) -> dict:
         return self._call("review_schema_proposal", proposal_id, **kwargs)
+
+    def edit_schema_proposal(self, proposal_id: str, **changes) -> dict:
+        return self._call("edit_schema_proposal", proposal_id, **changes)
+
+    def schema_proposal_revisions(self, proposal_id: str) -> list[dict]:
+        return self._call("get_schema_proposal_revisions", proposal_id)
+
+    def schema_status(self) -> dict:
+        return self._call("get_workflow_schema_status")
 
     def schedule_reextraction(self, project_id: str, **kwargs) -> dict:
         return self._call("schedule_workflow_reextraction", project_id, **kwargs)
@@ -251,3 +360,4 @@ class Materials:
     graph: MaterialGraph = field(default_factory=MaterialGraph)
     feedback: MaterialFeedback = field(default_factory=MaterialFeedback)
     library: MaterialLibrary = field(default_factory=MaterialLibrary)
+    projects: MaterialProjects = field(default_factory=MaterialProjects)

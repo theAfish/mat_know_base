@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
-from mkb import api
 from mkb.web._helpers import _parse_uuid, require_service_result
+from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import SpaceCreateRequest, SpaceUpdateRequest
 
 router = APIRouter()
@@ -9,7 +9,7 @@ router = APIRouter()
 
 @router.get("/api/spaces")
 def list_spaces():
-    return api.list_spaces()
+    return get_knowledge_base().materials.spaces.list()
 
 
 @router.get("/api/spaces/_defaults/review-prompt")
@@ -26,7 +26,7 @@ def get_default_review_prompt(purpose: str = "tabular_database"):
 
 @router.get("/api/spaces/{space_id_or_name}")
 def get_space(space_id_or_name: str):
-    space = api.get_space(space_id_or_name)
+    space = get_knowledge_base().materials.spaces.get(space_id_or_name)
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
     return space
@@ -34,7 +34,7 @@ def get_space(space_id_or_name: str):
 
 @router.post("/api/spaces")
 def create_space(body: SpaceCreateRequest):
-    result = api.create_space(
+    result = get_knowledge_base().materials.spaces.create(
         name=body.name,
         domain=body.domain,
         extraction_schema=body.extraction_schema,
@@ -57,12 +57,12 @@ def update_space(space_id: str, body: SpaceUpdateRequest):
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(status_code=400, detail="No fields to update")
-    result = api.update_space(space_id, **changes)
+    result = get_knowledge_base().materials.spaces.update(space_id, **changes)
     return require_service_result(result)
 
 
 @router.delete("/api/spaces/{space_id}")
 def delete_space(space_id: str):
     _parse_uuid(space_id, "space_id")
-    result = api.delete_space(space_id)
+    result = get_knowledge_base().materials.spaces.delete(space_id)
     return require_service_result(result, default_status=404)

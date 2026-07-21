@@ -12,7 +12,6 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from mkb import api
 from mkb.config import settings
 from mkb.logging_setup import setup_logging
 
@@ -20,7 +19,7 @@ from mkb.logging_setup import setup_logging
 # (e.g. ``uvicorn mkb.web.api_server:app``) without going through ``mkb.cli``.
 setup_logging()
 
-from mkb.web._helpers import _parse_uuid, _safe_child, require_service_result, start_web_job_action  # noqa: E402
+from mkb.web._helpers import _parse_uuid, _safe_child, require_service_result  # noqa: E402
 from mkb.web._state import (  # noqa: E402  (re-exported for back-compat tests)
     AssistantSession,
     JobManager,
@@ -84,11 +83,13 @@ def _expand_temp_dir(temp_root: Path, emit=None) -> dict[str, Any]:
 
 
 def _run_upload_ingest(payload: list[UploadProject], progress_callback=None) -> dict[str, Any]:
+    from mkb.web.dependencies import get_knowledge_base
+
     return upload_impl.run_upload_ingest(
         payload,
         upload_temp=_UPLOAD_TEMP,
         create_project_dir=_create_unique_project_dir,
-        api_module=api,
+        api_module=get_knowledge_base(),
         progress_callback=progress_callback,
     )
 
@@ -107,7 +108,8 @@ async def _lifespan(_app: FastAPI):
     for warning in settings.validate_startup(log_level=get_setting("log_level")):
         logger.warning("UNSAFE LOCAL OVERRIDE: %s", warning)
     require_schema_current()
-    interrupted = jobs.recover_interrupted()
+    knowledge_base = get_knowledge_base()
+    interrupted = knowledge_base.jobs.recover_interrupted()
     if interrupted:
         logger.warning("Marked %d background job(s) interrupted after restart", interrupted)
     logger.info(
@@ -116,7 +118,6 @@ async def _lifespan(_app: FastAPI):
         settings.api_host,
         settings.cors_origins,
     )
-    get_knowledge_base()
     try:
         yield
     finally:
@@ -232,14 +233,15 @@ def upload_expand(body: UploadExpandRequest):
 def upload_ingest(payload: list[UploadProject]):
     if not payload:
         raise HTTPException(status_code=400, detail="No projects uploaded")
-    job_id = start_web_job_action(
-        jobs,
+    from mkb.web.dependencies import get_knowledge_base
+
+    job = get_knowledge_base().jobs.submit_action(
         "upload_ingest",
         job_project_id="__upload__",
         payload=payload,
         ingest_func=_run_upload_ingest,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @app.post("/api/assets/{asset_id}/processed-upload")
@@ -289,7 +291,9 @@ def upload_processed_for_asset(
                 raise HTTPException(status_code=413, detail=str(exc)) from exc
 
         try:
-            result = api.link_manual_processed_data(
+            from mkb.web.dependencies import get_knowledge_base
+
+            result = get_knowledge_base().materials.library.link_processed(
                 processed_dir=tmp_dir,
                 asset_id=asset_id,
                 primary_file=primary_file,
@@ -328,7 +332,6 @@ __all__ = [
     "_run_upload_ingest",
     "_safe_child",
     "_safe_extract_archive",
-    "api",
     "assistant_lock",
     "assistant_session",
     "jobs",

@@ -27,6 +27,7 @@ from mkb.materials import (
     MaterialFrames,
     MaterialGraph,
     MaterialLibrary,
+    MaterialProjects,
     MaterialProjections,
     Materials,
     MaterialSpaces,
@@ -479,6 +480,7 @@ class KnowledgeBase:
                 graph=MaterialGraph(services),
                 feedback=MaterialFeedback(services),
                 library=MaterialLibrary(services),
+                projects=MaterialProjects(services),
             ),
             capabilities=capabilities,
         )

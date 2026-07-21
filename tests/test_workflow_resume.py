@@ -51,13 +51,16 @@ def test_project_workflow_extract_rejects_when_not_ready(monkeypatch):
         projects_router,
         "get_knowledge_base",
         lambda: SimpleNamespace(
-            jobs=SimpleNamespace(find_active=lambda **_kwargs: None)
+            jobs=SimpleNamespace(find_active=lambda **_kwargs: None),
+            materials=SimpleNamespace(
+                workflows=SimpleNamespace(
+                    readiness=lambda _project_id: {
+                        "ready": False,
+                        "message": "Run Process first",
+                    }
+                )
+            ),
         ),
-    )
-    monkeypatch.setattr(
-        projects_router.api,
-        "get_raw_workflow_extraction_readiness",
-        lambda _project_id: {"ready": False, "message": "Run Process first"},
     )
 
     with pytest.raises(HTTPException) as exc:

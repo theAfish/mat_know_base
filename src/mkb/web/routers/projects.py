@@ -2,8 +2,6 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
 
-from mkb import api
-from mkb.services.workflows import compatibility as canonical_compat
 from mkb.web._helpers import (
     _parse_uuid,
     require_service_result,
@@ -33,7 +31,7 @@ _inline_headers = inline_headers
 
 @router.get("/api/projects")
 def list_projects(limit: int = 5000):
-    return api.list_projects(limit=limit)
+    return get_knowledge_base().materials.projects.list(limit=limit)
 
 
 @router.get("/api/projects/{project_id}")
@@ -57,27 +55,35 @@ def get_project(project_id: str):
 @router.patch("/api/projects/{project_id}")
 def update_project(project_id: str, body: ProjectUpdateRequest):
     _parse_uuid(project_id, "project_id")
-    result = api.rename_project(project_id, body.label, user_initiated=True)
+    result = get_knowledge_base().materials.projects.rename(
+        project_id, body.label, user_initiated=True
+    )
     return require_service_result(result, default_status=404)
 
 
 @router.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, delete_s3: bool = True):
     _parse_uuid(project_id, "project_id")
-    result = api.delete_project(project_id, delete_s3_objects=delete_s3)
+    result = get_knowledge_base().materials.projects.delete(
+        project_id, delete_s3_objects=delete_s3
+    )
     return require_service_result(result, default_status=404)
 
 
 @router.get("/api/projects/{project_id}/assets")
 def list_project_assets(project_id: str):
     _parse_uuid(project_id, "project_id")
-    return api.list_assets(project_id=project_id)
+    return get_knowledge_base().materials.projects.list_assets(
+        project_id=project_id
+    )
 
 
 @router.get("/api/projects/{project_id}/processed-assets")
 def list_project_processed_assets(project_id: str):
     _parse_uuid(project_id, "project_id")
-    return api.list_processed_assets(project_id=project_id)
+    return get_knowledge_base().materials.projects.list_processed_assets(
+        project_id=project_id
+    )
 
 
 @router.get("/api/projects/{project_id}/assets/{asset_id}/content")
@@ -190,7 +196,7 @@ def project_workflow_extract(project_id: str):
             status_code=409,
             detail=f"Workflow extraction is already {active.status.lower()} for this project.",
         )
-    readiness = api.get_raw_workflow_extraction_readiness(project_id)
+    readiness = get_knowledge_base().materials.workflows.readiness(project_id)
     if not readiness.get("ready"):
         raise HTTPException(status_code=400, detail=readiness.get("message") or "Project is not ready for workflow extraction")
     job = get_knowledge_base().jobs.submit_action(
@@ -204,13 +210,15 @@ def project_workflow_extract(project_id: str):
 @router.get("/api/projects/{project_id}/workflows")
 def project_workflows(project_id: str, include_graph: bool = False):
     _parse_uuid(project_id, "project_id")
-    return api.list_raw_workflows(project_id, include_graph=include_graph)
+    return get_knowledge_base().materials.workflows.list_raw(
+        project_id, include_graph=include_graph
+    )
 
 
 @router.get("/api/projects/{project_id}/workflows/latest")
 def latest_project_workflow(project_id: str):
     _parse_uuid(project_id, "project_id")
-    result = api.get_raw_workflow(project_id)
+    result = get_knowledge_base().materials.workflows.get_raw(project_id)
     if not result:
         raise HTTPException(status_code=404, detail="No completed raw workflow found")
     return result
@@ -219,7 +227,9 @@ def latest_project_workflow(project_id: str):
 @router.get("/api/projects/{project_id}/workflows/{version}")
 def project_workflow_version(project_id: str, version: int):
     _parse_uuid(project_id, "project_id")
-    result = api.get_raw_workflow(project_id, version=version)
+    result = get_knowledge_base().materials.workflows.get_raw(
+        project_id, version=version
+    )
     if not result:
         raise HTTPException(status_code=404, detail="Raw workflow version not found")
     return result
@@ -236,20 +246,24 @@ def delete_project_workflow_version(project_id: str, version: int):
             status_code=409,
             detail="Workflow extraction is currently running for this project. Cancel or wait for it to finish before deleting a version.",
         )
-    result = api.delete_raw_workflow_version(project_id, version)
+    result = get_knowledge_base().materials.workflows.delete_raw_version(
+        project_id, version
+    )
     return require_service_result_or_not_found(result)
 
 
 @router.get("/api/projects/{project_id}/canonical-workflows")
 def project_canonical_workflows(project_id: str, include_graph: bool = False):
     _parse_uuid(project_id, "project_id")
-    return canonical_compat.list_canonical_workflows(project_id, include_graph=include_graph)
+    return get_knowledge_base().materials.workflows.list_canonical(
+        project_id, include_graph=include_graph
+    )
 
 
 @router.get("/api/projects/{project_id}/canonical-workflows/latest")
 def latest_project_canonical_workflow(project_id: str):
     _parse_uuid(project_id, "project_id")
-    result = canonical_compat.get_canonical_workflow(project_id)
+    result = get_knowledge_base().materials.workflows.get_canonical(project_id)
     if not result:
         raise HTTPException(status_code=404, detail="No completed canonical workflow found")
     return result
@@ -258,7 +272,9 @@ def latest_project_canonical_workflow(project_id: str):
 @router.get("/api/projects/{project_id}/canonical-workflows/{version}")
 def project_canonical_workflow_version(project_id: str, version: int):
     _parse_uuid(project_id, "project_id")
-    result = canonical_compat.get_canonical_workflow(project_id, version=version)
+    result = get_knowledge_base().materials.workflows.get_canonical(
+        project_id, version=version
+    )
     if not result:
         raise HTTPException(status_code=404, detail="Canonical workflow version not found")
     return result
@@ -269,7 +285,9 @@ def search_workflows(source: str | None = None, operation: str | None = None, ta
     if not any((source, operation, target)):
         raise HTTPException(status_code=400, detail="Provide source, operation, or target")
     try:
-        return api.search_canonical_workflows(source, operation, target, mode, limit)
+        return get_knowledge_base().materials.workflows.search(
+            source, operation, target, mode, limit
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -278,7 +296,7 @@ def search_workflows(source: str | None = None, operation: str | None = None, ta
 def schedule_reextraction(project_id: str, body: WorkflowReextractionRequest):
     _parse_uuid(project_id, "project_id")
     try:
-        result = api.schedule_workflow_reextraction(
+        result = get_knowledge_base().materials.workflows.schedule_reextraction(
             project_id, reason=body.reason, requested_by=body.requested_by,
             scope=body.scope, raw_extraction_id=body.raw_extraction_id,
         )
@@ -298,12 +316,14 @@ def run_maintenance_task(task_id: str):
 
 @router.get("/api/workflow-maintenance")
 def workflow_maintenance_tasks(status: str | None = None, project_id: str | None = None):
-    return api.list_workflow_maintenance_tasks(status=status, project_id=project_id)
+    return get_knowledge_base().materials.workflows.list_tasks(
+        status=status, project_id=project_id
+    )
 
 
 @router.get("/api/workflow-schema")
 def workflow_schema_status():
-    return api.get_workflow_schema_status()
+    return get_knowledge_base().materials.workflows.schema_status()
 
 
 @router.post("/api/workflow-schema/curate")
@@ -328,7 +348,9 @@ def curate_schema(body: SchemaCurateRequest):
 
 @router.get("/api/workflow-schema/proposals")
 def schema_proposals(status: str | None = "pending"):
-    return api.list_schema_proposals(status=status or None)
+    return get_knowledge_base().materials.workflows.list_schema_proposals(
+        status=status or None
+    )
 
 
 @router.post("/api/workflow-schema/proposals/{proposal_id}/review")
@@ -336,7 +358,7 @@ def review_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalReview
     _parse_uuid(proposal_id, "proposal_id")
     if not body.reviewer.strip():
         raise HTTPException(status_code=400, detail="reviewer is required")
-    result = api.review_schema_proposal(
+    result = get_knowledge_base().materials.workflows.review_schema_proposal(
         proposal_id, decision=body.decision, reviewer=body.reviewer.strip(),
         notes=body.notes,
     )
@@ -346,7 +368,7 @@ def review_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalReview
 @router.patch("/api/workflow-schema/proposals/{proposal_id}")
 def edit_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalEditRequest):
     _parse_uuid(proposal_id, "proposal_id")
-    result = api.edit_schema_proposal(
+    result = get_knowledge_base().materials.workflows.edit_schema_proposal(
         proposal_id, payload=body.payload,
         evidence_workflow_ids=body.evidence_workflow_ids,
         rationale=body.rationale, editor=body.editor,
@@ -358,7 +380,9 @@ def edit_schema_proposal_endpoint(proposal_id: str, body: SchemaProposalEditRequ
 @router.get("/api/workflow-schema/proposals/{proposal_id}/revisions")
 def schema_proposal_revisions(proposal_id: str):
     _parse_uuid(proposal_id, "proposal_id")
-    return api.get_schema_proposal_revisions(proposal_id)
+    return get_knowledge_base().materials.workflows.schema_proposal_revisions(
+        proposal_id
+    )
 
 
 @router.get("/api/projects/{project_id}/jobs")
@@ -374,12 +398,12 @@ def project_jobs(project_id: str):
 
 @router.get("/api/project-groups")
 def list_project_groups_endpoint():
-    return api.list_project_groups()
+    return get_knowledge_base().materials.projects.list_groups()
 
 
 @router.post("/api/project-groups")
 def create_project_group_endpoint(body: ProjectGroupCreate):
-    result = api.create_project_group(
+    result = get_knowledge_base().materials.projects.create_group(
         body.name,
         description=body.description,
         color=body.color,
@@ -391,7 +415,7 @@ def create_project_group_endpoint(body: ProjectGroupCreate):
 @router.patch("/api/project-groups/{group_id}")
 def update_project_group_endpoint(group_id: str, body: ProjectGroupUpdate):
     _parse_uuid(group_id, "group_id")
-    result = api.update_project_group(
+    result = get_knowledge_base().materials.projects.update_group(
         group_id,
         name=body.name,
         description=body.description,
@@ -404,7 +428,7 @@ def update_project_group_endpoint(group_id: str, body: ProjectGroupUpdate):
 @router.delete("/api/project-groups/{group_id}")
 def delete_project_group_endpoint(group_id: str):
     _parse_uuid(group_id, "group_id")
-    result = api.delete_project_group(group_id)
+    result = get_knowledge_base().materials.projects.delete_group(group_id)
     return require_service_result(result, default_status=404)
 
 
@@ -414,5 +438,7 @@ def assign_project_group_endpoint(body: ProjectGroupAssign):
         _parse_uuid(pid, "project_id")
     if body.group_id:
         _parse_uuid(body.group_id, "group_id")
-    result = api.assign_projects_to_group(body.project_ids, body.group_id)
+    result = get_knowledge_base().materials.projects.assign_group(
+        body.project_ids, body.group_id
+    )
     return require_service_result(result, default_status=404)

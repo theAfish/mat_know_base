@@ -284,7 +284,7 @@ to simplify the new architecture.
 
 ## Phase 7 — Make the CLI, FastAPI server, and materials app consume the SDK
 
-- [ ] Enforce this dependency direction:
+- [x] Enforce this dependency direction:
 
       ```text
       React -> FastAPI -> KnowledgeBase/application services -> core -> ports
@@ -301,7 +301,7 @@ to simplify the new architecture.
 - [x] Rewrite CLI commands to call the same public SDK. Keep interactive confirmation
       in the CLI while destructive SDK methods require explicit confirmation tokens or
       policies.
-- [ ] Keep current React behavior as an integration test for feature parity.
+- [x] Keep current React behavior as an integration test for feature parity.
 - [x] Keep current materials APIs as `kb.materials.frames`, `kb.materials.spaces`,
       `kb.materials.projections`, and `kb.materials.workflows`, or provide an equivalent
       `MaterialsKnowledgeBase` extension.

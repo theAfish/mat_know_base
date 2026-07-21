@@ -106,7 +106,9 @@ def test_upload_handler_removes_directory_for_reused_project(tmp_path, monkeypat
 
     monkeypatch.setattr(api_server, "_UPLOAD_TEMP", tmp_path / "_temp")
     monkeypatch.setattr(api_server, "_create_unique_project_dir", create_project_dir)
-    monkeypatch.setattr(api_server, "api", _Api)
+    monkeypatch.setattr(
+        "mkb.web.dependencies.get_knowledge_base", lambda: _Api
+    )
 
     payload = [
         api_server.UploadProject.model_validate(

@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from mkb import api
 from mkb.web._helpers import _parse_uuid, require_service_result
 from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import ProjectionReviewRequest
@@ -29,7 +28,7 @@ def list_projections(
     newest_only: bool = False,
     include_history: bool = False,
 ):
-    rows = api.list_projections(
+    rows = get_knowledge_base().materials.projections.list(
         space_id=space_id,
         project_id=project_id,
         include_data=include_data,
@@ -41,7 +40,7 @@ def list_projections(
 
 @router.get("/api/projections/{projection_id}")
 def get_projection(projection_id: str):
-    row = api.get_projection(projection_id)
+    row = get_knowledge_base().materials.projections.get(projection_id)
     if not row:
         raise HTTPException(status_code=404, detail="Projection not found")
     return row
@@ -49,7 +48,7 @@ def get_projection(projection_id: str):
 
 @router.delete("/api/projections/{projection_id}", status_code=204)
 def delete_projection(projection_id: str):
-    found = api.delete_projection(projection_id)
+    found = get_knowledge_base().materials.projections.delete(projection_id)
     if not found:
         raise HTTPException(status_code=404, detail="Projection not found")
 
@@ -68,7 +67,9 @@ def export_projection_endpoint(projection_id: str, format: str = "yaml"):
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / "export"
-        result = api.export_projection(projection_id, out_dir, format=fmt, overwrite=True)
+        result = get_knowledge_base().materials.projections.export(
+            projection_id, out_dir, format=fmt, overwrite=True
+        )
         require_service_result(result)
         files = [Path(p) for p in result.get("files", [])]
         if not files:
@@ -115,7 +116,9 @@ def export_projections_batch(body: ProjectionBatchExportRequest):
         out_dir = Path(tmp) / "export"
         out_dir.mkdir(parents=True, exist_ok=True)
         for pid in body.projection_ids:
-            api.export_projection(pid, out_dir, format=fmt, overwrite=True)
+            get_knowledge_base().materials.projections.export(
+                pid, out_dir, format=fmt, overwrite=True
+            )
 
         files = [p for p in out_dir.rglob("*") if p.is_file()]
         if not files:
@@ -151,7 +154,7 @@ def export_space_endpoint(space_id_or_name: str, format: str = "yaml"):
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / "export"
-        result = api.export_space_projections(
+        result = get_knowledge_base().materials.projections.export_all(
             space_id_or_name, out_dir, format=fmt, overwrite=True
         )
         require_service_result(result)

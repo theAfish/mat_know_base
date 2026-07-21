@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 
-from mkb import api
 from mkb.web._helpers import _parse_uuid
 from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import FeedbackResolveRequest, FeedbackReviewRequest
@@ -10,18 +9,22 @@ router = APIRouter()
 
 @router.get("/api/feedback")
 def list_feedback(limit: int = 100, status: str | None = None, project_id: str | None = None):
-    rows = api.list_feedback(project_id=project_id, status=status)
+    rows = get_knowledge_base().materials.feedback.list(
+        project_id=project_id, status=status
+    )
     return rows[:limit]
 
 
 @router.get("/api/feedback/summary/{project_id}")
 def feedback_summary(project_id: str):
-    return api.get_feedback_summary(project_id)
+    return get_knowledge_base().materials.feedback.summary(project_id)
 
 
 @router.post("/api/feedback/{feedback_id}/resolve")
 def resolve_feedback(feedback_id: str, body: FeedbackResolveRequest):
-    return api.resolve_feedback(feedback_id=feedback_id, status=body.status, notes=body.notes)
+    return get_knowledge_base().materials.feedback.resolve(
+        feedback_id=feedback_id, status=body.status, notes=body.notes
+    )
 
 
 @router.post("/api/feedback/review")
