@@ -38,7 +38,6 @@ delete current database and bucket state, so stop application processes, verify 
 target database/Compose project, and retain a current snapshot first. After restore:
 
 ```bash
-make migrate
 make doctor
 .venv/bin/python -m mkb.cli reconcile
 ```

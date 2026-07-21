@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
 
 from mkb import (
     KnowledgeBase,
@@ -13,6 +14,7 @@ from mkb import (
     ValidationError,
 )
 from mkb.adapters import InMemoryGraphStore
+from mkb.adapters import FileObjectStore, SQLAlchemyDatabase
 from mkb.registries import Parsers
 
 
@@ -25,7 +27,6 @@ def _services(calls, identity):
         return invoke
 
     return SimpleNamespace(
-        setup=operation("setup"),
         ingest=operation("ingest", {"project_id": identity}),
         sync=operation("sync", {}),
         sync_project=operation("sync_project", {}),
@@ -207,3 +208,45 @@ def test_from_url_injects_owned_resources_registries_and_capabilities(tmp_path):
     assert graph_store.closed is True
     assert model_provider.closed is True
     assert job_backend.closed is True
+
+
+def test_legacy_service_calls_use_the_owning_client_resources(tmp_path):
+    first_database = SQLAlchemyDatabase(f"sqlite:///{tmp_path / 'legacy-first.db'}")
+    second_database = SQLAlchemyDatabase(f"sqlite:///{tmp_path / 'legacy-second.db'}")
+    first_store = FileObjectStore(tmp_path / "legacy-first-objects")
+    second_store = FileObjectStore(tmp_path / "legacy-second-objects")
+    for database, value in ((first_database, "first"), (second_database, "second")):
+        with database.transaction() as session:
+            session.execute(text("create table identity (value text not null)"))
+            session.execute(text("insert into identity values (:value)"), {"value": value})
+
+    def probe():
+        from mkb.db.engine import SyncSessionLocal
+        from mkb.storage.s3 import download_bytes, upload_bytes
+
+        with SyncSessionLocal() as session:
+            identity = session.execute(text("select value from identity")).scalar_one()
+        upload_bytes(identity.encode(), "raw", "identity.txt")
+        return identity, download_bytes("raw", "identity.txt")
+
+    services = SimpleNamespace(probe=probe)
+    first = KnowledgeBase._from_legacy_resources(
+        config=MKBConfig(database_url=first_database.url),
+        database=first_database,
+        object_store=first_store,
+        services=services,
+    )
+    second = KnowledgeBase._from_legacy_resources(
+        config=MKBConfig(database_url=second_database.url),
+        database=second_database,
+        object_store=second_store,
+        services=services,
+    )
+    try:
+        assert first.service("probe")() == ("first", b"first")
+        assert second.service("probe")() == ("second", b"second")
+        assert first_store.get_bytes("raw", "identity.txt") == b"first"
+        assert second_store.get_bytes("raw", "identity.txt") == b"second"
+    finally:
+        first.close()
+        second.close()

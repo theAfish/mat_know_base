@@ -78,9 +78,6 @@ def database_inventory(session_factory=None) -> dict[str, Any]:
     tables: dict[str, Any] = {}
     with session_factory() as session:
         database_version = session.execute(text("select version()")).scalar_one()
-        alembic_revision = session.execute(
-            text("select version_num from alembic_version")
-        ).scalar_one()
         for table in Base.metadata.sorted_tables:
             primary_key = list(table.primary_key.columns)
             count = session.execute(select(func.count()).select_from(table)).scalar_one()
@@ -95,7 +92,6 @@ def database_inventory(session_factory=None) -> dict[str, Any]:
                 "primary_keys": rows,
             }
     return {
-        "alembic_revision": alembic_revision,
         "database_version": database_version,
         "tables": tables,
     }

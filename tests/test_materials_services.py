@@ -1,8 +1,3 @@
-from types import SimpleNamespace
-
-import pytest
-
-from mkb import KnowledgeBase, ValidationError
 from mkb.materials import (
     MaterialFrames,
     MaterialProjections,
@@ -48,15 +43,3 @@ def test_materials_namespaces_delegate_to_client_bound_operations():
         ("project_all", {"space_id": "space-1"}),
         ("review_raw_workflow", "workflow-1", {"author": "reviewer"}),
     ]
-
-
-def test_database_reset_requires_exact_sdk_confirmation_token():
-    calls = []
-    services = SimpleNamespace(reset_db=lambda: calls.append("reset"))
-    kb = KnowledgeBase(services=services)
-
-    with pytest.raises(ValidationError, match="RESET DATABASE"):
-        kb.reset_database(confirm="yes")
-    kb.reset_database(confirm="RESET DATABASE")
-
-    assert calls == ["reset"]

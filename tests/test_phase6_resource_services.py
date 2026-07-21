@@ -40,7 +40,7 @@ def test_collection_update_and_safe_delete(tmp_path):
 
 def test_collection_group_lifecycle_and_assignment(tmp_path):
     with _client(tmp_path) as kb:
-        assert kb.initialize() == 6
+        assert kb.initialize() == 8
         first = kb.collections.create(name="First")
         second = kb.collections.create(name="Second")
         group = kb.collections.groups.create(

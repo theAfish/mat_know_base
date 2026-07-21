@@ -12,7 +12,7 @@ This creates `.venv`, upgrades its pip, installs `.[all,dev]`, runs `npm ci` fro
 committed lockfile, and creates `.env` only if absent. Edit `.env`, then:
 
 ```bash
-make up       # waits for healthy PostgreSQL/MinIO, then migrates
+make up       # waits for healthy PostgreSQL/MinIO
 make doctor   # verifies the whole local environment
 make dev      # FastAPI and Vite; Ctrl+C stops both
 ```
@@ -41,25 +41,17 @@ dependencies are opt-in through `postgres`, `s3`, `pdf`, `server`, `materials`,
 into a separate environment, and runs `examples/portable_quickstart.py` without the
 repository on its import path.
 
-## Database changes
+## Database provisioning
 
-Start PostgreSQL, edit SQLAlchemy models, then create a revision:
-
-```bash
-make migration msg="describe the schema change"
-```
-
-Review both upgrade and downgrade operations. Test forward migration with `make
-migrate` and restoration against a disposable database. Migration changes require
-database-owner review; see [CONTRIBUTING.md](../CONTRIBUTING.md).
-
-Never rewrite a revision already shared or deployed. Add a new corrective revision.
+The historical Alembic chain was retired after the local database reached its final
+supported revision. This repository does not provision or upgrade the legacy materials
+schema. Start from a verified current database snapshot; explicit SDK clients create
+only their portable `mkb_*` tables with `kb.initialize()`.
 
 ## Runtime files and legacy surfaces
 
 Local artifacts live under `data/`, `.debug/`, `logs/`, and Docker volumes. Treat
 exports as generated unless deliberately promoted to `examples/` or `tests/fixtures/`.
 
-React (`frontend/`) is current. Streamlit (`src/mkb/ui/`) and legacy canonical
-workflow adapters are compatibility-only. Fix regressions there when necessary, but
-place new behavior in services and React.
+React (`frontend/`) is the only bundled UI. Legacy canonical-workflow adapters remain
+read-compatible while their retained records are exported or retired.

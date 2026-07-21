@@ -3,7 +3,7 @@
 Start with `make bootstrap`, review `.env`, then run `make up`, `make doctor`, and
 `make check`. Keep adapters thin: domain behavior belongs in `src/mkb/services/`, HTTP
 mapping in `src/mkb/web/`, CLI parsing in `src/mkb/cli.py`, and current UI work in
-`frontend/`. Streamlit and canonical-workflow compatibility paths are legacy.
+`frontend/`. Canonical-workflow compatibility paths are legacy.
 
 Use a focused branch and include tests for behavior changes. Before opening a pull
 request, run `make lint`, `make test`, and `make test-frontend`. Update the Python API,
@@ -18,4 +18,3 @@ owner review and a short threat/risk note in the pull request.
 Do not commit `.env`, credentials, research data, generated exports, logs, or local
 database/object-store state. Report vulnerabilities privately according to
 [SECURITY.md](SECURITY.md), not in a public issue.
-

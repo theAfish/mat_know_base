@@ -13,17 +13,19 @@ def get_knowledge_base() -> KnowledgeBase:
     from mkb.agents.orchestrator import create_orchestrator_runner
     from mkb.agents.tools.orchestrator_tools import get_pending_workflows
     from mkb.web._helpers import start_web_job_action
+    from mkb.jobs import DatabaseJobStore
     from mkb.web._state import jobs
     from mkb.web.job_actions import action_for_workflow_kind
     from mkb.web.job_backend import WebJobBackend
 
     knowledge_base = KnowledgeBase.from_environment()
+    jobs.bind_store(DatabaseJobStore(knowledge_base.database))
     backend = WebJobBackend(jobs)
     knowledge_base.job_backend = backend
     knowledge_base.jobs = Jobs(
         backend,
         action_submitter=lambda action, **kwargs: start_web_job_action(
-            jobs, action, **kwargs
+            jobs, action, services=knowledge_base, **kwargs
         ),
     )
     knowledge_base.pipelines._bind_job_backend(backend)

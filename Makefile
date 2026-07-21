@@ -1,4 +1,4 @@
-.PHONY: setup bootstrap install install-python install-frontend up down logs migrate migration doctor ingest list batches info purge test lint test-python test-frontend build dev server check ci cleanup reconcile pack unpack restore-drill
+.PHONY: setup bootstrap install install-python install-frontend up down logs doctor ingest list batches info purge test lint test-python test-frontend build dev server check ci cleanup reconcile pack unpack restore-drill
 
 PYTHON ?= .venv/bin/python
 BOOTSTRAP_PYTHON ?= python3
@@ -26,21 +26,13 @@ install-frontend:
 # ── Infrastructure ──────────────────────────────────────────────
 up:
 	docker compose up -d --wait
-	$(MAKE) migrate
-	@echo "MKB data services are healthy and migrated."
+	@echo "MKB data services are healthy."
 
 down:
 	docker compose down
 
 logs:
 	docker compose logs -f
-
-# ── Database ────────────────────────────────────────────────────
-migrate:
-	$(PYTHON) -m alembic upgrade head
-
-migration:  ## usage: make migration msg="add foo table"
-	$(PYTHON) -m alembic revision --autogenerate -m "$(msg)"
 
 doctor:
 	$(PYTHON) -m mkb.doctor

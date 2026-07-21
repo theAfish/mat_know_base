@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import time
 import uuid
 
 import pytest
@@ -234,3 +235,83 @@ def test_deterministic_cache_key_contains_all_required_identity_components():
     assert second.steps[0].attempts == 0
     assert second.steps[0].cache_key == first.steps[0].cache_key
     assert changed_schema.steps[0].cache_key != first.steps[0].cache_key
+
+
+def test_pipeline_dependencies_are_validated_and_run_in_topological_order():
+    calls = []
+    pipeline = Pipeline(
+        name="dag",
+        steps=(
+            Step(
+                name="finish",
+                depends_on=frozenset({"prepare"}),
+                handler=lambda _context, state: (
+                    calls.append("finish") or {"result": state["prepared"] + 1}
+                ),
+            ),
+            Step(
+                name="prepare",
+                handler=lambda _context, _state: (
+                    calls.append("prepare") or {"prepared": 4}
+                ),
+            ),
+        ),
+    )
+
+    run = _client().pipelines.run(pipeline)
+
+    assert calls == ["prepare", "finish"]
+    assert [step.name for step in run.steps] == ["prepare", "finish"]
+    assert run.outputs["result"] == 5
+    with pytest.raises(ValidationError, match="unknown"):
+        Pipeline(
+            name="unknown-dependency",
+            steps=(
+                Step(
+                    name="one",
+                    depends_on=frozenset({"missing"}),
+                    handler=lambda _context, _state: {},
+                ),
+            ),
+        )
+    with pytest.raises(ValidationError, match="cycle"):
+        Pipeline(
+            name="cycle",
+            steps=(
+                Step(
+                    name="one",
+                    depends_on=frozenset({"two"}),
+                    handler=lambda _context, _state: {},
+                ),
+                Step(
+                    name="two",
+                    depends_on=frozenset({"one"}),
+                    handler=lambda _context, _state: {},
+                ),
+            ),
+        )
+
+
+def test_step_timeout_fails_promptly_and_signals_cooperative_handler():
+    observed_cancellation = []
+
+    def slow(context, _state):
+        while not context.cancelled:
+            time.sleep(0.002)
+        observed_cancellation.append(True)
+        context.check_cancelled()
+
+    pipeline = Pipeline(
+        name="timeout",
+        steps=(Step(name="slow", handler=slow, timeout_seconds=0.02),),
+    )
+    started = time.monotonic()
+
+    with pytest.raises(PipelineExecutionError, match="exceeded timeout"):
+        _client().pipelines.run(pipeline)
+
+    assert time.monotonic() - started < 0.2
+    deadline = time.monotonic() + 0.2
+    while not observed_cancellation and time.monotonic() < deadline:
+        time.sleep(0.002)
+    assert observed_cancellation == [True]

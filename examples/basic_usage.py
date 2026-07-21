@@ -3,7 +3,7 @@ Basic usage of the Materials Knowledge Base Python API.
 
 Prerequisites:
   - Docker services running: `make up`
-  - Package installed: `pip install -e ".[dev,processing]"`
+  - Package installed: `pip install -e ".[dev,materials,server]"`
   - .env configured with LLM credentials (see README.md)
 
 This example walks through the full pipeline:
@@ -157,10 +157,10 @@ print(f"Space created: {space_result}")
 # Manually resolve feedback:
 # api.resolve_feedback(feedback_id="...", status="RESOLVED", notes="Fixed")
 
-# ── 8. Streamlit UI ──────────────────────────────────────────────
+# ── 8. React UI ──────────────────────────────────────────────────
 
-# Launch the web interface:
-# python -m mkb ui
+# Launch the API and current React interface, then open http://127.0.0.1:5173:
+# make dev
 
 # ── 9. Other queries ─────────────────────────────────────────────
 
@@ -172,6 +172,6 @@ for p in api.list_projects():
 # for a in api.list_assets(project_id=project_id):
 #     print(f"  {a['asset_id']}  {a['filename']}  ({a['mime_type']})")
 
-# ── 10. Reset (for development) ─────────────────────────────────
-# Uncomment to wipe everything and start fresh:
-# api.reset_db()
+# ── 10. Reset (destructive development operation) ───────────────────────
+# The CLI requires an exact interactive confirmation before dropping all tables:
+# .venv/bin/python -m mkb.cli reset-db

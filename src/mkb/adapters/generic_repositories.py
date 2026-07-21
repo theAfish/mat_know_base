@@ -22,6 +22,7 @@ from sqlalchemy import (
     func,
     delete,
     insert,
+    inspect as sa_inspect,
     select,
     update,
 )
@@ -93,6 +94,7 @@ sources_table = Table(
     Column("status", String(32), nullable=False),
     Column("bucket", String(255), nullable=False),
     Column("object_key", String(2048), nullable=False),
+    Column("uri", String),
     Column("metadata", JSON, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -162,6 +164,32 @@ schemas_table = Table(
     Column("review_search_tools", JSON, nullable=False),
     Column("post_processors", JSON, nullable=False),
     Column("version", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+schema_versions_table = Table(
+    "mkb_extraction_schema_versions",
+    generic_metadata,
+    Column(
+        "schema_id",
+        String(36),
+        ForeignKey("mkb_extraction_schemas.id"),
+        primary_key=True,
+    ),
+    Column("version", Integer, primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("description", String),
+    Column("domain", String(255), nullable=False),
+    Column("purpose", String(64), nullable=False),
+    Column("definition", JSON, nullable=False),
+    Column("system_prompt", String, nullable=False),
+    Column("field_descriptions", JSON, nullable=False),
+    Column("review_prompt", String),
+    Column("review_trackable", Boolean, nullable=False),
+    Column("review_allow_search", Boolean, nullable=False),
+    Column("review_search_tools", JSON, nullable=False),
+    Column("post_processors", JSON, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
@@ -282,7 +310,7 @@ schema_migrations_table = Table(
     Column("applied_at", DateTime(timezone=True), nullable=False),
 )
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 8
 
 
 def _now() -> datetime:
@@ -383,6 +411,98 @@ class GenericSchemaManager:
                     )
                 )
                 current = 6
+            if current < 7:
+                schema_versions_table.create(connection, checkfirst=True)
+                version_columns = (
+                    "schema_id",
+                    "version",
+                    "name",
+                    "description",
+                    "domain",
+                    "purpose",
+                    "definition",
+                    "system_prompt",
+                    "field_descriptions",
+                    "review_prompt",
+                    "review_trackable",
+                    "review_allow_search",
+                    "review_search_tools",
+                    "post_processors",
+                    "created_at",
+                    "updated_at",
+                )
+                session.execute(
+                    insert(schema_versions_table).from_select(
+                        version_columns,
+                        select(
+                            schemas_table.c.id,
+                            schemas_table.c.version,
+                            schemas_table.c.name,
+                            schemas_table.c.description,
+                            schemas_table.c.domain,
+                            schemas_table.c.purpose,
+                            schemas_table.c.definition,
+                            schemas_table.c.system_prompt,
+                            schemas_table.c.field_descriptions,
+                            schemas_table.c.review_prompt,
+                            schemas_table.c.review_trackable,
+                            schemas_table.c.review_allow_search,
+                            schemas_table.c.review_search_tools,
+                            schemas_table.c.post_processors,
+                            schemas_table.c.created_at,
+                            schemas_table.c.updated_at,
+                        ).where(
+                            ~select(schema_versions_table.c.schema_id)
+                            .where(
+                                schema_versions_table.c.schema_id
+                                == schemas_table.c.id,
+                                schema_versions_table.c.version
+                                == schemas_table.c.version,
+                            )
+                            .exists()
+                        ),
+                    )
+                )
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=7,
+                        name="historical_extraction_schemas",
+                        applied_at=_now(),
+                    )
+                )
+                current = 7
+            if current < 8:
+                source_columns = {
+                    column["name"]
+                    for column in sa_inspect(connection).get_columns("mkb_sources")
+                }
+                if "uri" not in source_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE mkb_sources ADD COLUMN uri VARCHAR"
+                    )
+                legacy_sources = session.execute(
+                    select(sources_table.c.id, sources_table.c.metadata)
+                ).all()
+                for source_id, metadata in legacy_sources:
+                    external_uri = (
+                        metadata.get("_mkb_external_uri")
+                        if isinstance(metadata, dict)
+                        else None
+                    )
+                    if isinstance(external_uri, str):
+                        session.execute(
+                            update(sources_table)
+                            .where(sources_table.c.id == source_id)
+                            .values(uri=external_uri)
+                        )
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=8,
+                        name="source_external_uri",
+                        applied_at=_now(),
+                    )
+                )
+                current = 8
             return int(current)
 
     def version(self) -> int | None:
@@ -703,7 +823,6 @@ class GenericSourceRepository(_Repository):
     def _model(row, collection_ids: tuple[uuid.UUID, ...]) -> Source:
         values = row._mapping
         metadata = dict(values["metadata"] or {})
-        uri = metadata.pop("_mkb_external_uri", None)
         return Source(
             id=uuid.UUID(values["id"]),
             filename=values["filename"],
@@ -716,7 +835,7 @@ class GenericSourceRepository(_Repository):
                 if values["bucket"] and values["object_key"]
                 else None
             ),
-            uri=uri,
+            uri=values["uri"],
             collection_ids=collection_ids,
             metadata=metadata,
             created_at=_utc(values["created_at"]),
@@ -731,9 +850,6 @@ class GenericSourceRepository(_Repository):
 
     def create(self, source: Source, *, collection_id: uuid.UUID) -> Source:
         now = source.created_at or _now()
-        metadata = dict(source.metadata)
-        if source.uri is not None:
-            metadata["_mkb_external_uri"] = source.uri
         values = {
             "id": str(source.id),
             "filename": source.filename,
@@ -743,7 +859,8 @@ class GenericSourceRepository(_Repository):
             "status": source.status,
             "bucket": source.storage.bucket if source.storage is not None else "",
             "object_key": source.storage.key if source.storage is not None else "",
-            "metadata": _json_value(metadata, "metadata"),
+            "uri": source.uri,
+            "metadata": _json_value(dict(source.metadata), "metadata"),
             "created_at": now,
             "updated_at": source.updated_at or now,
         }
@@ -1027,7 +1144,9 @@ class GenericExtractionSchemaRepository(_Repository):
     def _model(row) -> ExtractionSchema:
         values = row._mapping
         return ExtractionSchema(
-            id=uuid.UUID(values["id"]),
+            id=uuid.UUID(
+                values["id"] if "id" in values else values["schema_id"]
+            ),
             name=values["name"],
             description=values["description"],
             domain=values["domain"],
@@ -1082,20 +1201,15 @@ class GenericExtractionSchemaRepository(_Repository):
         try:
             with self._session(write=True) as session:
                 session.execute(insert(schemas_table).values(**values))
+                session.execute(
+                    insert(schema_versions_table).values(
+                        schema_id=values["id"],
+                        **{key: value for key, value in values.items() if key != "id"},
+                    )
+                )
         except IntegrityError as exc:
             raise ConflictError(f"Extraction schema already exists: {name}") from exc
-        return ExtractionSchema(
-            id=identifier,
-            name=name,
-            description=description,
-            domain=domain,
-            purpose=purpose,
-            definition=definition,
-            system_prompt=system_prompt,
-            field_descriptions=values["field_descriptions"],
-            created_at=now,
-            updated_at=now,
-        )
+        return self.get(identifier)
 
     def get(self, schema_id: str | uuid.UUID) -> ExtractionSchema | None:
         statement = select(schemas_table).where(schemas_table.c.id == str(schema_id))
@@ -1109,27 +1223,69 @@ class GenericExtractionSchemaRepository(_Repository):
             row = session.execute(statement).one_or_none()
             return self._model(row) if row else None
 
+    def get_version(
+        self, schema_id: str | uuid.UUID, version: int
+    ) -> ExtractionSchema | None:
+        statement = select(schema_versions_table).where(
+            schema_versions_table.c.schema_id == str(schema_id),
+            schema_versions_table.c.version == version,
+        )
+        with self._session() as session:
+            row = session.execute(statement).one_or_none()
+            return self._model(row) if row else None
+
+    def list_versions(
+        self, schema_id: str | uuid.UUID, *, limit: int = 100, offset: int = 0
+    ) -> list[ExtractionSchema]:
+        statement = (
+            select(schema_versions_table)
+            .where(schema_versions_table.c.schema_id == str(schema_id))
+            .order_by(schema_versions_table.c.version.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        with self._session() as session:
+            return [self._model(row) for row in session.execute(statement)]
+
     def list(self, *, limit: int = 100, offset: int = 0) -> list[ExtractionSchema]:
         statement = select(schemas_table).order_by(schemas_table.c.name).limit(limit).offset(offset)
         with self._session() as session:
             return [self._model(row) for row in session.execute(statement)]
 
     def update(self, schema_id: uuid.UUID, **changes: Any) -> ExtractionSchema:
-        current = self.get(schema_id)
-        if current is None:
-            raise NotFoundError(f"Extraction schema not found: {schema_id}")
         values = {key: value for key, value in changes.items() if value is not None}
         for field in ("definition", "field_descriptions"):
             if field in values:
                 values[field] = _json_value(dict(values[field]), field)
-        values["version"] = current.version + 1
-        values["updated_at"] = _now()
         try:
             with self._session(write=True) as session:
+                current_row = session.execute(
+                    select(schemas_table)
+                    .where(schemas_table.c.id == str(schema_id))
+                    .with_for_update()
+                ).one_or_none()
+                if current_row is None:
+                    raise NotFoundError(
+                        f"Extraction schema not found: {schema_id}"
+                    )
+                current = dict(current_row._mapping)
+                values["version"] = int(current["version"]) + 1
+                values["updated_at"] = _now()
                 session.execute(
                     update(schemas_table)
                     .where(schemas_table.c.id == str(schema_id))
                     .values(**values)
+                )
+                version_values = {**current, **values}
+                session.execute(
+                    insert(schema_versions_table).values(
+                        schema_id=version_values["id"],
+                        **{
+                            key: value
+                            for key, value in version_values.items()
+                            if key != "id"
+                        },
+                    )
                 )
         except IntegrityError as exc:
             raise ConflictError(
@@ -1153,6 +1309,11 @@ class GenericExtractionSchemaRepository(_Repository):
                 raise ConflictError(
                     "Extraction schema is in use; referenced schemas cannot be deleted"
                 )
+            session.execute(
+                delete(schema_versions_table).where(
+                    schema_versions_table.c.schema_id == str(schema_id)
+                )
+            )
             session.execute(
                 delete(schemas_table).where(schemas_table.c.id == str(schema_id))
             )
@@ -1683,13 +1844,17 @@ class GenericJobBackend(_Repository):
         if current is None:
             raise NotFoundError(f"Job not found: {job_id}")
         updated = current.model_copy(update=changes)
-        values = self._values(updated)
-        values.pop("id")
+        serialized = self._values(updated)
+        values = {name: serialized[name] for name in changes if name in serialized}
+        if not values:
+            return current
         with self._session(write=True) as session:
-            session.execute(
+            result = session.execute(
                 update(jobs_table).where(jobs_table.c.id == str(current.id)).values(**values)
             )
-        return updated
+            if result.rowcount == 0:
+                raise NotFoundError(f"Job not found: {job_id}")
+        return self.get(job_id)
 
     def get(self, job_id: str) -> Job | None:
         try:

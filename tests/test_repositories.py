@@ -180,6 +180,14 @@ class _SchemaRepository:
     def get_by_name(self, name):
         return self.row if name == self.row.name else None
 
+    def get_version(self, identifier, version):
+        if str(identifier) == str(self.row.id) and version == self.row.version:
+            return self.row
+        return None
+
+    def list_versions(self, identifier, **_kwargs):
+        return [self.row] if str(identifier) == str(self.row.id) else []
+
     def list(self, **_kwargs):
         return [self.row]
 
@@ -198,6 +206,8 @@ def test_extraction_schemas_resolve_by_id_or_name_and_serialize():
 
     assert schemas.get(row.id) == row
     assert schemas.get(row.name) == row
+    assert schemas.get_version(row.id, 1) == row
+    assert schemas.history(row.id) == [row]
     assert schemas.list()[0].model_dump(mode="json")["definition"] == row.definition
     with pytest.raises(ValidationError, match="must not be empty"):
         schemas.get(" ")

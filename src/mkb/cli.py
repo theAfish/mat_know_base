@@ -39,24 +39,6 @@ def _knowledge_base():
 # ── Commands ─────────────────────────────────────────────────────
 
 
-def cmd_setup(args):
-    with _knowledge_base() as kb:
-        kb.setup()
-    print("Database migrated to the Alembic head.")
-
-
-def cmd_reset_db(args):
-    confirm = input(
-        "This will DROP all tables. Type 'RESET DATABASE' to confirm: "
-    )
-    if confirm.strip() != "RESET DATABASE":
-        print("Aborted.")
-        return
-    with _knowledge_base() as kb:
-        kb.reset_database(confirm=confirm.strip())
-    print("Database reset complete.")
-
-
 def cmd_ingest(args):
     with _knowledge_base() as kb:
         result = kb.ingest(args.directory, label=args.label)
@@ -709,12 +691,6 @@ def main():
     parser = argparse.ArgumentParser(prog="mkb", description="Materials Knowledge Base")
     sub = parser.add_subparsers(dest="command")
 
-    # setup
-    sub.add_parser("setup", help="Create database tables")
-
-    # reset-db
-    sub.add_parser("reset-db", help="Drop and recreate all tables")
-
     # ingest
     p = sub.add_parser("ingest", help="Ingest a single project directory")
     p.add_argument("directory")
@@ -991,8 +967,6 @@ def main():
         sys.exit(1)
 
     cmd_map = {
-        "setup": cmd_setup,
-        "reset-db": cmd_reset_db,
         "ingest": cmd_ingest,
         "sync": cmd_sync,
         "process": cmd_process,

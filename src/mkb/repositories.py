@@ -84,6 +84,16 @@ class RecordRepository(Protocol):
 class ExtractionSchemaRepository(Protocol):
     def get(self, schema_id: str | uuid.UUID) -> ExtractionSchema | None: ...
     def get_by_name(self, name: str) -> ExtractionSchema | None: ...
+    def get_version(
+        self, schema_id: str | uuid.UUID, version: int
+    ) -> ExtractionSchema | None: ...
+    def list_versions(
+        self,
+        schema_id: str | uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ExtractionSchema]: ...
     def list(self, *, limit: int = 100, offset: int = 0) -> list[ExtractionSchema]: ...
 @runtime_checkable
 class ProjectionRepository(Protocol):
@@ -964,6 +974,41 @@ class ExtractionSchemas:
         if schema is None:
             raise NotFoundError(f"Extraction schema not found: {schema_id_or_name}")
         return schema
+
+    def get_version(
+        self, schema_id_or_name: str | uuid.UUID, version: int
+    ) -> ExtractionSchema | None:
+        """Return one immutable schema revision by stable identity and version."""
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ValidationError("schema version must be a positive integer")
+        current = self.get(schema_id_or_name)
+        if current is None:
+            return None
+        return self._repository.get_version(current.id, version)
+
+    def require_version(
+        self, schema_id_or_name: str | uuid.UUID, version: int
+    ) -> ExtractionSchema:
+        schema = self.get_version(schema_id_or_name, version)
+        if schema is None:
+            raise NotFoundError(
+                f"Extraction schema version not found: {schema_id_or_name}@{version}"
+            )
+        return schema
+
+    def history(
+        self,
+        schema_id_or_name: str | uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ExtractionSchema]:
+        """List immutable revisions, newest first."""
+        _validate_page(limit, offset)
+        current = self.require(schema_id_or_name)
+        return self._repository.list_versions(
+            current.id, limit=limit, offset=offset
+        )
 
     def list(self, *, limit: int = 100, offset: int = 0) -> list[ExtractionSchema]:
         _validate_page(limit, offset)

@@ -656,6 +656,14 @@ Typed access to versioned extraction-space definitions.
 
 
 
+#### `get_version(schema_id_or_name: 'str | uuid.UUID', version: 'int') -> 'ExtractionSchema | None'`
+
+Return one immutable schema revision by stable identity and version.
+
+#### `history(schema_id_or_name: 'str | uuid.UUID', *, limit: 'int' = 100, offset: 'int' = 0) -> 'list[ExtractionSchema]'`
+
+List immutable revisions, newest first.
+
 #### `list(*, limit: 'int' = 100, offset: 'int' = 0) -> 'list[ExtractionSchema]'`
 
 
@@ -665,6 +673,10 @@ Typed access to versioned extraction-space definitions.
 Register and persist a consumer schema for this client.
 
 #### `require(schema_id_or_name: 'str | uuid.UUID') -> 'ExtractionSchema'`
+
+
+
+#### `require_version(schema_id_or_name: 'str | uuid.UUID', version: 'int') -> 'ExtractionSchema'`
 
 
 

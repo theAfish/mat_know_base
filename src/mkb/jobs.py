@@ -104,7 +104,12 @@ def _serialize(model) -> dict[str, Any]:
 class DatabaseJobStore:
     """PostgreSQL-backed store; unique active keys coordinate API processes."""
 
+    def __init__(self, database=None):
+        self._database = database
+
     def _session(self):
+        if self._database is not None:
+            return self._database.session()
         from mkb.db.engine import SyncSessionLocal
         return SyncSessionLocal()
 

@@ -13,7 +13,7 @@ Choose the guide for the work you are doing.
 
 ## Contributors
 
-- [Developer setup](development.md): clean-clone setup, commands, tests, and migrations
+- [Developer setup](development.md): clean-clone setup, commands, tests, and database provisioning
 - [Architecture and ownership](architecture-map.md): boundaries and review ownership
 - [Workflow card architecture](workflow-card-architecture.md)
 - [Transaction boundaries](transactions.md)
@@ -28,6 +28,5 @@ Choose the guide for the work you are doing.
 - [Security reporting policy](../SECURITY.md)
 - [Supported versions](../SUPPORT.md)
 
-The React frontend under `frontend/` is current. `src/mkb/ui/` (Streamlit) and
-legacy canonical-workflow compatibility paths are maintained only to avoid breaking
-existing callers; new product and API work targets React and the service layer.
+The React frontend under `frontend/` is the only bundled UI. Legacy
+canonical-workflow compatibility paths remain only for retained records and callers.

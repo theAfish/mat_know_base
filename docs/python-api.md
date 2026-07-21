@@ -37,9 +37,10 @@ modules. The old port aliases remain explicitly importable from `mkb` for tempor
 compatibility, but are intentionally absent from `mkb.__all__`.
 
 The explicit client is preferable for new code because its configuration and service
-bindings belong to one object rather than module globals. The initial environment
-adapter still uses the existing application services; independently configured SQLite,
-PostgreSQL, filesystem, S3, and graph adapters will be added incrementally.
+bindings belong to one object rather than module globals. The environment adapter keeps
+the compatibility application services, but binds their database and object-store access
+to the owning client for each call. Explicit SQLite, PostgreSQL, filesystem, S3, and graph
+adapters are independently configurable and do not share client registries or workers.
 
 The supported client is intentionally synchronous. The current SQLAlchemy repositories,
 S3/filesystem adapters, model-provider boundary, and graph adapters expose synchronous
@@ -92,7 +93,26 @@ stored version afterward. Revisions are recorded in `mkb_schema_migrations`. Rev
 1 contains collections, sources, records, and schemas; revision 2 adds artifacts and
 projections; revision 3 adds generic evidence links; revision 4 adds durable local
 pipeline jobs; revision 5 adds portable feedback, skills, and post-processor metadata;
-revision 6 adds portable collection groups and memberships.
+revision 6 adds portable collection groups and memberships; revision 7 adds immutable
+extraction-schema revisions; revision 8 gives external source URIs dedicated storage so
+URI state cannot collide with consumer metadata. Schema creation and every update write
+a complete snapshot in the same relational transaction as the current schema row. This
+lets a stored projection resolve the exact definition that produced it:
+
+```python
+projection = kb.projections.require(projection_id)
+schema_at_extraction = kb.schemas.require_version(
+    projection.schema_id,
+    projection.schema_version,
+)
+
+# Revisions are returned newest first.
+schema_history = kb.schemas.history(projection.schema_id)
+```
+
+When upgrading an older portable database, revision 7 snapshots each schema definition
+that is current at migration time. Definitions overwritten before revision 7 did not
+exist independently and therefore cannot be reconstructed by the migration.
 
 ## PostgreSQL and MinIO/S3
 
@@ -307,15 +327,13 @@ contracts, and capability composition.
 
 The API performs real database, object-storage, filesystem, processor, and LLM work.
 It is not an in-memory SDK. Configure `.env`, start infrastructure with `make up`, and
-run calls from the repository root so `config.yaml` and `alembic.ini` are found.
+run calls from the repository root so configuration and local data paths resolve.
 
 ## End-to-end lifecycle
 
 ```python
 from pathlib import Path
 from mkb import api
-
-api.setup()  # idempotently upgrades the configured database to Alembic head
 
 created = api.ingest(Path("data/papers/smith2024"), label="Smith 2024")
 project_id = created["project_id"]
@@ -350,8 +368,9 @@ print(api.get_projection(projection["projection_id"]))
 ## Custom local pipelines
 
 Pipeline definitions and registries belong to one `KnowledgeBase` instance. Steps run
-sequentially and merge their output mappings into the accumulated state. Optional
-Pydantic models validate step inputs, parameters, and outputs.
+in stable dependency order and merge their output mappings into the accumulated state;
+independent steps retain declaration order. Optional Pydantic models validate step
+inputs, parameters, and outputs.
 
 ```python
 from pydantic import BaseModel
@@ -386,8 +405,11 @@ with KnowledgeBase.from_url(database_url="sqlite:///:memory:") as kb:
 
 Steps may declare `required_capabilities`, `RetryPolicy`, `cacheable`,
 `timeout_seconds`, and `side_effects`. Capability requirements are checked before
-execution. Timeout and side-effect fields are currently provenance declarations;
-timeout enforcement remains a future milestone.
+execution. `depends_on` declares DAG edges, and cycles or unknown dependencies are
+rejected at definition time. A timeout stops the pipeline from waiting, marks the
+attempt failed, and signals `context.cancelled`; long-running handlers, especially
+those with side effects, should call `context.check_cancelled()` at safe boundaries so
+their worker can unwind promptly.
 Failures raise `PipelineExecutionError`; its `run` attribute contains the failed typed
 run and completed step history. A progress callback receives typed `ProgressEvent`
 objects. Existing `Record` instances can be supplied directly in pipeline inputs, so
@@ -467,8 +489,6 @@ job or request boundary rather than infer success from partial output.
 
 | Call | Purpose and important arguments |
 | --- | --- |
-| `setup()` | Upgrade the configured database through Alembic. Safe to repeat. |
-| `reset_db()` | Drop and recreate all tables. Destructive; the Python call has no interactive confirmation. |
 | `ingest(directory, label=None, *, user_named=False)` | Create or update one project from a directory and upload source assets. The directory must exist. |
 | `sync(root_dir)` | Treat each immediate project folder below a root as a project and rescan it. |
 | `sync_project(project_id)` | Rescan the source directory recorded for one project. |

@@ -118,8 +118,7 @@ done
 
 # ── 4. Manifest ───────────────────────────────────────────────────────────────
 info "Writing checksummed manifest…"
-SCHEMA_REVISION=$(docker compose exec -T postgres psql --username="$PG_USER" --dbname="$PG_DATABASE" --tuples-only --no-align --command="SELECT version_num FROM alembic_version")
-python3 scripts/snapshot_manifest.py create "$STAGING" --revision "$SCHEMA_REVISION"
+python3 scripts/snapshot_manifest.py create "$STAGING" --revision "legacy-schema-retired"
 
 # ── 5. Create archive ─────────────────────────────────────────────────────────
 info "Creating archive: $ARCHIVE_NAME"

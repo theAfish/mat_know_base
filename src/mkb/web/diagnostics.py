@@ -10,9 +10,7 @@ from mkb.web.dependencies import get_knowledge_base
 def check_database() -> dict[str, Any]:
     kb = get_knowledge_base()
     kb.database.check()
-    revision_reader = getattr(kb.database, "migration_revision", None)
-    revision = revision_reader() if callable(revision_reader) else kb.schema_version()
-    return {"ok": True, "revision": revision}
+    return {"ok": True}
 
 
 def check_object_storage() -> dict[str, Any]:

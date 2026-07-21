@@ -14,11 +14,11 @@ from mkb.services.workflows.indexing import (
     rebuild_workflow_indexes,
     search_canonical_workflows,
 )
-from mkb.services.workflows.legacy_canonicalization import (
-    _serialize_canonical_workflow,
+from mkb.services.workflows.compatibility import (
     get_canonical_workflow,
     list_canonical_workflows,
 )
+from mkb.services.workflows.legacy_canonicalization import _serialize_canonical_workflow
 from mkb.services.workflows.maintenance import (
     list_workflow_maintenance_tasks,
     run_workflow_maintenance_task,

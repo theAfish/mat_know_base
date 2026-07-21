@@ -130,16 +130,14 @@ def main() -> int:
     def database() -> str:
         result = check_database()
         if not result.get("ok"):
-            raise RuntimeError(
-                f"revision {result.get('current_revision')} != {result.get('expected_revision')}"
-            )
-        return f"revision {result.get('revision')} is current"
+            raise RuntimeError("database health check failed")
+        return "connection is healthy"
 
     def buckets() -> str:
         result = check_object_storage()
         return f"{result['bucket_count']} required buckets are accessible"
 
-    report.check("Database revision", database)
+    report.check("Database", database)
     report.check("Object storage", buckets)
 
     usage = shutil.disk_usage(ROOT)

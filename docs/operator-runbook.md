@@ -1,7 +1,7 @@
 # MKB operator runbook
 
-MKB defaults to loopback-only operation. Before startup, run `make up`, `make
-migrate`, and `curl http://127.0.0.1:8503/health/ready`. Liveness only confirms
+MKB defaults to loopback-only operation. Before startup, run `make up` and
+`curl http://127.0.0.1:8503/health/ready`. Liveness only confirms
 the API process; readiness categorizes database, schema, object-storage, and
 worker failures without returning credentials.
 
@@ -35,7 +35,7 @@ Restore is deliberately two-step:
 2. Re-run with `--confirm-replace`, then type the database name when prompted.
 
 The restore mirrors bucket contents with removal, replaces the database from the
-validated dump, and restores local files. Run `make migrate`, `mkb reconcile`,
+validated dump, and restores local files. Run `mkb reconcile`,
 and the readiness probe afterward. Practice this against a disposable Compose
 project before depending on a backup. `make restore-drill` performs checksum/path
 validation; restores a disposable database, MinIO instance, and local root; then runs
@@ -44,4 +44,4 @@ content verification. It is suitable for a scheduled job or integration CI runne
 with Docker services and never enables the live replacement path.
 
 Before an application upgrade, create and verify a snapshot, stop job starts,
-upgrade the code, run `make migrate`, then verify readiness and reconciliation.
+upgrade the code, then verify readiness and reconciliation.

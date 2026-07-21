@@ -1,9 +1,7 @@
 # Default review owner.
 * @theAfish
 
-# Schema history and migration tooling require database review.
-/alembic/ @theAfish
-/alembic.ini @theAfish
+# Database access requires database review.
 /src/mkb/db/ @theAfish
 
 # Authentication, uploads, executable content, and deployment boundaries require security review.

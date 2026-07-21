@@ -101,13 +101,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    from mkb.db.engine import require_schema_current
     from mkb.runtime_settings import get_setting
     from mkb.web.dependencies import close_knowledge_base, get_knowledge_base
 
     for warning in settings.validate_startup(log_level=get_setting("log_level")):
         logger.warning("UNSAFE LOCAL OVERRIDE: %s", warning)
-    require_schema_current()
     knowledge_base = get_knowledge_base()
     interrupted = knowledge_base.jobs.recover_interrupted()
     if interrupted:

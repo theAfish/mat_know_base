@@ -10,6 +10,11 @@ from typing import Any, BinaryIO, Callable, Protocol
 
 from pydantic import BaseModel
 
+from mkb.services.project_names import (
+    create_unique_project_dir as _create_unique_project_dir,
+    next_available_path,
+    normalize_project_name as _normalize_project_name,
+)
 from mkb.web._helpers import _safe_child
 
 
@@ -142,39 +147,13 @@ _ARCHIVE_SUFFIXES = (
 
 
 def normalize_project_name(name: str, fallback: str = "project") -> str:
-    import re
-
-    candidate = (name or "").strip()
-    if not candidate:
-        candidate = fallback
-    candidate = re.sub(r"[^A-Za-z0-9._ -]+", "_", candidate)
-    candidate = candidate.strip(" ._")
-    return candidate or fallback
+    """Retain the upload module's compatibility export."""
+    return _normalize_project_name(name, fallback)
 
 
 def create_unique_project_dir(project_name: str, upload_root: Path) -> Path:
-    upload_root.mkdir(parents=True, exist_ok=True)
-    base_name = normalize_project_name(project_name)
-    candidate = upload_root / base_name
-    suffix = 2
-    while candidate.exists():
-        candidate = upload_root / f"{base_name}_{suffix}"
-        suffix += 1
-    candidate.mkdir(parents=True, exist_ok=False)
-    return candidate
-
-
-def next_available_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    idx = 2
-    while True:
-        candidate = path.with_name(f"{stem}_{idx}{suffix}")
-        if not candidate.exists():
-            return candidate
-        idx += 1
+    """Preserve the web helper's historical argument order."""
+    return _create_unique_project_dir(upload_root, project_name)
 
 
 def is_archive(name: str) -> bool:

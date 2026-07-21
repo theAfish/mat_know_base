@@ -7,8 +7,7 @@ A conversational agent that helps users manage their knowledge base:
 - Answer questions about the system state
 
 Session persistence: the AgentRunner instance is kept alive between chat
-messages (stored in Streamlit session state) so conversation history is
-preserved across Streamlit reruns.
+messages by the web job manager so conversation history is preserved.
 """
 
 from __future__ import annotations
@@ -43,8 +42,8 @@ def create_orchestrator_runner(model: str | None = None) -> tuple[AgentRunner, s
     """Create an AgentRunner + session for a new orchestrator conversation.
 
     Returns:
-        (runner, session_id) — store both in Streamlit session state to
-        preserve conversation history across reruns.
+        (runner, session_id) — retain both in the web session manager to preserve
+        conversation history.
     """
     agent = build_orchestrator_agent(model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)

@@ -203,6 +203,9 @@ to simplify the new architecture.
 - [x] Preserve raw JSON payloads, schema versions, timestamps, status fields, source
       paths, S3 locations, evidence, review annotations, and agent notes losslessly.
       SQLite timestamp rehydration restores UTC metadata lost by its datetime storage.
+      Portable extraction schemas persist immutable revision snapshots, so a
+      projection's `schema_id` and `schema_version` resolve the definition used when
+      it was created.
 - [x] Add round-trip tests using a sanitized copy of representative current records:
       legacy row -> new typed model -> serialized form -> model, with no meaningful
       field loss.
@@ -340,9 +343,8 @@ to simplify the new architecture.
 - [x] Add new generic tables only when compatibility views/adapters are insufficient.
       Suggested additions include pipeline definitions/runs/step runs, generic record
       metadata, evidence links, backend registrations, and legacy-ID mappings.
-- [x] Add Alembic upgrades only. During the preservation window, downgrades for new
-      migrations must not drop old tables or old columns containing user data; a safe
-      downgrade may instead remove only demonstrably empty new structures or refuse.
+- [x] Historical database updates were additive-only. During the preservation window,
+      no update could drop old tables or columns containing user data.
       Migration `0023_durable_jobs` now refuses to drop its table when job history exists
       and permits removal only when the newly added table is empty.
 - [x] Backfill in bounded batches with stable ordering and commits. Store the last
@@ -426,9 +428,9 @@ to simplify the new architecture.
   - `mat-know-base[all]`
 - [x] Ensure `pip install mat-know-base` supports a minimal SQLite + filesystem example
       without Docker, PostgreSQL, MinIO, FastAPI, React, or MinerU.
-- [x] Keep Alembic resources and built-in pipeline/schema assets inside the wheel and
-      resolve them with `importlib.resources`, not the current working directory.
-- [x] Remove assumptions that `config.yaml`, `.env`, `alembic.ini`, `data/`, or the repo
+- [x] Retire the historical Alembic resources after the local database reached its final
+      supported revision; portable SDK schema initialization remains self-contained.
+- [x] Remove assumptions that `config.yaml`, `.env`, `data/`, or the repo
       root exists beside the installed package.
 - [x] Add versioned database compatibility metadata and refuse to open a database newer
       than the installed library understands.

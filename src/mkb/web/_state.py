@@ -62,6 +62,13 @@ class JobManager:
         limit = max_concurrent if max_concurrent is not None else settings.max_concurrent_jobs
         self._semaphore = threading.Semaphore(max(1, limit))
 
+    def bind_store(self, store: JobStore) -> None:
+        """Bind persistence before the server begins accepting jobs."""
+        with self._lock:
+            if self._queues:
+                raise RuntimeError("Cannot replace the job store while jobs are active")
+            self._store = store
+
     def start_job(
         self,
         *,

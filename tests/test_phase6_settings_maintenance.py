@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 from mkb import EffectiveSettings, KnowledgeBase, MaintenanceReport
+from mkb.application_services import MaintenanceService
 
 
 def test_effective_settings_and_backup_metadata_never_expose_secrets(tmp_path):
@@ -45,3 +48,30 @@ def test_inventory_reconciliation_and_cleanup_plan_are_read_only(tmp_path):
         broken = kb.maintenance.reconcile()
         assert broken.ok is False
         assert broken.data["missing_objects"][0]["resource_id"] == str(source.id)
+
+
+def test_inventory_counts_every_page():
+    class PagedService:
+        def __init__(self):
+            self.calls = []
+
+        def list(self, *, limit, offset):
+            self.calls.append((limit, offset))
+            remaining = max(0, 1001 - offset)
+            return [object()] * min(limit, remaining)
+
+    collections = PagedService()
+    kb = SimpleNamespace(
+        object_store=None,
+        collections=collections,
+        sources=None,
+        artifacts=None,
+        records=None,
+        schemas=None,
+        schema_version=lambda: 6,
+    )
+
+    report = MaintenanceService(kb).inventory()
+
+    assert report.data["resource_counts"]["collections"] == 1001
+    assert collections.calls == [(1000, 0), (1000, 1000)]

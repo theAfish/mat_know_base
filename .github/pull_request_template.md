@@ -14,9 +14,8 @@ Describe the user-visible change and why it is needed.
 - [ ] No database migration, or migration owner requested
 - [ ] No security-sensitive change, or security owner requested with threat/risk notes
 - [ ] No new secret, generated data, logs, or local environment files committed
-- [ ] Current React path used; legacy Streamlit/canonical compatibility impact noted
+- [ ] Current React path used; legacy canonical compatibility impact noted
 
 ## Migration / rollback
 
 Describe data migration, compatibility, and rollback/restore steps, or write “none”.
-

@@ -9,10 +9,7 @@ code toward clearer boundaries without changing behavior accidentally.
   routers, and legacy UI code.
 - `src/mkb/web/` owns the FastAPI app, REST routers, request/response models,
   upload handling, and background job state.
-- `frontend/src/` owns the React application that replaced the primary
-  Streamlit workflow.
-- `src/mkb/ui/` is the legacy Streamlit surface. It remains compatibility-only
-  while tests and a few helper paths still import it.
+- `frontend/src/` owns the React application.
 - `src/mkb/agents/` owns agent construction, prompts, tool adapters, and runner
   integration.
 - `src/mkb/cli.py` owns command-line entry points and should call service/API
@@ -35,8 +32,7 @@ code toward clearer boundaries without changing behavior accidentally.
   tools, graph router, and graph frontend page.
 - Feedback: `src/mkb/feedback/`, feedback agent/tools, feedback router, and
   frontend feedback page.
-- Jobs: `src/mkb/web/_state.py`, job routers, job polling hooks/stores, and
-  legacy Streamlit background job helpers.
+- Jobs: `src/mkb/web/_state.py`, job routers, and job polling hooks/stores.
 
 ## Boundary Direction
 
@@ -52,8 +48,8 @@ by routers, CLI commands, agent tools, and legacy compatibility surfaces.
 
 ## Review ownership
 
-`CODEOWNERS` records the enforceable GitHub review routing. Changes under `alembic/`,
-`src/mkb/db/`, or `alembic.ini` need migration/database review. Authentication,
+`CODEOWNERS` records the enforceable GitHub review routing. Changes under
+`src/mkb/db/` need database review. Authentication,
 uploads, executable post-processors, deployment configuration, Compose exposure, and
 security documentation need security review. Until dedicated teams exist, the
 repository owner fills both roles; split these entries into teams as maintainership

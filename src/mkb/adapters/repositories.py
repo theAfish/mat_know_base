@@ -722,6 +722,27 @@ class SQLAlchemyExtractionSchemaRepository:
             row = session.scalar(statement)
             return self._model(row) if row else None
 
+    def get_version(
+        self, schema_id: str | uuid.UUID, version: int
+    ) -> ExtractionSchema | None:
+        """Resolve the current legacy space revision when its version matches."""
+        schema = self.get(schema_id)
+        if schema is None or schema.version != version:
+            return None
+        return schema
+
+    def list_versions(
+        self,
+        schema_id: str | uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ExtractionSchema]:
+        schema = self.get(schema_id)
+        if schema is None or offset > 0 or limit < 1:
+            return []
+        return [schema]
+
     def list(self, *, limit: int = 100, offset: int = 0) -> list[ExtractionSchema]:
         from mkb.db.models import Space
 

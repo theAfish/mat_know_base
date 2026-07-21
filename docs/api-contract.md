@@ -29,6 +29,4 @@ additive response fields and should not depend on error prose.
 Route families cover projects/assets, frames, spaces, projections, graph, feedback,
 jobs, skills, settings, assistant, post-processors, workflow extraction/maintenance,
 and project groups. The TypeScript modules under `frontend/src/api/` are useful current
-examples, but OpenAPI is the external contract. React is current; Streamlit is not an
-HTTP contract surface.
-
+examples, but OpenAPI is the external contract. React is the bundled client.

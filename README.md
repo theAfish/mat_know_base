@@ -4,9 +4,8 @@ Materials Knowledge Base (MKB) is a local-first application for ingesting scient
 papers and supplementary files, processing them into LLM-readable artifacts, and
 building structured knowledge frames, domain projections, workflows, and graphs.
 
-The React application is the current user interface. Streamlit and the older
-canonical-workflow paths are legacy compatibility surfaces; do not use them for new
-features. See the [workflow lifecycle policy](docs/workflow-lifecycle-policy.md).
+The React application is the user interface. Canonical-workflow paths remain a limited
+compatibility surface; see the [workflow lifecycle policy](docs/workflow-lifecycle-policy.md).
 
 ## Local quickstart
 
@@ -85,7 +84,6 @@ Install backend features explicitly, such as `mat-know-base[postgres,s3]`, or us
 
 ```bash
 make doctor       # read-only environment and dependency diagnostics
-make migrate      # upgrade PostgreSQL to the Alembic head
 make lint         # Ruff and TypeScript checks
 make test         # Python tests
 make build        # Python wheel and production React bundle

@@ -42,18 +42,6 @@ def test_sqlalchemy_transaction_rolls_back(tmp_path: Path):
         database.close()
 
 
-def test_database_adapter_reports_optional_migration_revision(tmp_path: Path):
-    database = SQLAlchemyDatabase(f"sqlite:///{tmp_path / 'revision.db'}")
-    try:
-        assert database.migration_revision() is None
-        with database.transaction() as session:
-            session.execute(text("create table alembic_version (version_num varchar(32))"))
-            session.execute(text("insert into alembic_version values ('0023')"))
-        assert database.migration_revision() == "0023"
-    finally:
-        database.close()
-
-
 def test_file_object_stores_are_isolated_and_reject_unsafe_keys(tmp_path: Path):
     first = FileObjectStore(tmp_path / "first")
     second = FileObjectStore(tmp_path / "second")

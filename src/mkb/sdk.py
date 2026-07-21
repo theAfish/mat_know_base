@@ -65,7 +65,6 @@ class ServiceBindings(Protocol):
     provide isolated namespaces without mutating module globals.
     """
 
-    def setup(self) -> None: ...
     def ingest(self, directory, label=None, *, user_named=False) -> dict: ...
     def sync(self, root_dir) -> dict: ...
     def sync_project(self, project_id) -> dict: ...
@@ -95,6 +94,28 @@ class _UnavailableServiceBindings:
             f"Compatibility operation {name!r} is unavailable on an explicitly "
             "configured client; use a grouped SDK service"
         )
+
+
+class _ResourceBoundServiceBindings:
+    """Run retained facade operations against one client's injected resources."""
+
+    def __init__(self, services, database: Database | None, object_store: ObjectStore | None):
+        self._services = services
+        self._database = database
+        self._object_store = object_store
+
+    def __getattr__(self, name: str):
+        operation = getattr(self._services, name)
+        if not callable(operation):
+            return operation
+
+        def invoke(*args, **kwargs):
+            from mkb.legacy_context import bind_legacy_resources
+
+            with bind_legacy_resources(self._database, self._object_store):
+                return operation(*args, **kwargs)
+
+        return invoke
 
 
 @dataclass(frozen=True)
@@ -429,8 +450,13 @@ class KnowledgeBase:
                 )
             return result
 
+        bound_services = (
+            _ResourceBoundServiceBindings(services, database, object_store)
+            if services is not None
+            else None
+        )
         knowledge_base = cls(
-            services=services,
+            services=bound_services,
             config=config,
             database=database,
             object_store=object_store,
@@ -467,30 +493,30 @@ class KnowledgeBase:
             migration_inventory_reader=migration_inventory,
             cleanup_executor=execute_cleanup,
             materials=Materials(
-                frames=MaterialFrames(services),
-                spaces=MaterialSpaces(services, file_loader=load_space_from_file),
+                frames=MaterialFrames(bound_services),
+                spaces=MaterialSpaces(bound_services, file_loader=load_space_from_file),
                 projections=MaterialProjections(
-                    services,
+                    bound_services,
                     projection_exporter=export_projection_to_yaml,
                     space_exporter=export_space_to_yaml,
                 ),
                 workflows=MaterialWorkflows(
                     Workflows(SQLAlchemyWorkflowRepository(database)),
-                    services,
+                    bound_services,
                     schema_curator=run_ontology_induction,
                 ),
-                graph=MaterialGraph(services),
-                feedback=MaterialFeedback(services),
-                library=MaterialLibrary(services),
-                projects=MaterialProjects(services),
+                graph=MaterialGraph(bound_services),
+                feedback=MaterialFeedback(bound_services),
+                library=MaterialLibrary(bound_services),
+                projects=MaterialProjects(bound_services),
             ),
             capabilities=capabilities,
         )
-        if services is not None and knowledge_base.graph is not None:
+        if bound_services is not None and knowledge_base.graph is not None:
             knowledge_base.graph._bind_compatibility(
-                loader=getattr(services, "get_knowledge_graph", None),
-                extractor=getattr(services, "extract_knowledge_graph", None),
-                reviewer=getattr(services, "review_knowledge_graph", None),
+                loader=getattr(bound_services, "get_knowledge_graph", None),
+                extractor=getattr(bound_services, "extract_knowledge_graph", None),
+                reviewer=getattr(bound_services, "review_knowledge_graph", None),
             )
         from mkb.builtin_pipelines import register_materials_builtin_pipelines
 
@@ -650,6 +676,7 @@ class KnowledgeBase:
     def close(self) -> None:
         if self._closed:
             return
+        self.pipelines._close()
         close = getattr(self._services, "close", None)
         if callable(close):
             close()
@@ -705,17 +732,6 @@ class KnowledgeBase:
         self._ensure_open()
         operation = getattr(self._services, name)
         return operation(*args, **kwargs)
-
-    # Current end-to-end lifecycle. These explicit methods are intentionally small;
-    # domain-specific grouped APIs will be added without relying on __getattr__.
-    def setup(self) -> None:
-        return self._call("setup")
-
-    def reset_database(self, *, confirm: str) -> None:
-        """Reset legacy application tables only with an exact confirmation token."""
-        if confirm != "RESET DATABASE":
-            raise ValidationError("reset_database requires confirm='RESET DATABASE'")
-        return self._call("reset_db")
 
     def ingest(self, directory, label=None, *, user_named=False) -> dict:
         return self._call("ingest", directory, label=label, user_named=user_named)

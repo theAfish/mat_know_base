@@ -27,6 +27,20 @@ def test_workflow_kind_maps_to_registry_action():
     assert job_actions.action_for_workflow_kind("projection_review") == "review_projection"
 
 
+def test_job_action_prefers_injected_application_service_target():
+    target = object()
+    services = SimpleNamespace(service=lambda name: target if name == "process" else None)
+
+    params = job_actions.job_action_start_params(
+        "process_project",
+        job_project_id="project-1",
+        project_id="project-1",
+        services=services,
+    )
+
+    assert params["target"] is target
+
+
 def test_start_job_action_applies_project_conflict_policy(monkeypatch):
     def fake_process(**_kwargs):
         return {"ok": True}

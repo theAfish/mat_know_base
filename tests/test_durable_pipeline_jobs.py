@@ -2,7 +2,9 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from mkb import Job, KnowledgeBase, Pipeline, Step
+import pytest
+
+from mkb import Job, KnowledgeBase, NotFoundError, Pipeline, Step
 
 
 def _client(tmp_path, name="jobs.db"):
@@ -181,3 +183,24 @@ def test_direct_job_submission_is_idempotent_and_events_are_streamable(tmp_path)
             {"event": "completed", "sequence": 1}
         ]
         assert list(kb.jobs.events(submitted.id, after=1, follow=True)) == []
+
+
+def test_resume_without_registered_definition_does_not_requeue_job(tmp_path):
+    database = tmp_path / "missing-definition.db"
+    with KnowledgeBase.from_url(database_url=f"sqlite:///{database}") as kb:
+        kb.initialize()
+        failed = Job(
+            id=uuid.uuid4(),
+            kind="pipeline",
+            status="FAILED",
+            pipeline_name="consumer-pipeline",
+            pipeline_version="1",
+            run_id=uuid.uuid4(),
+            created_at=datetime.now(timezone.utc),
+        )
+        kb.job_backend.create(failed)
+
+        with pytest.raises(NotFoundError, match="Pipeline"):
+            kb.pipelines.resume(failed.id)
+
+        assert kb.jobs.require(failed.id).status == "FAILED"

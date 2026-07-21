@@ -44,18 +44,6 @@ class SQLAlchemyDatabase:
         with self.engine.connect() as connection:
             connection.execute(text("select 1"))
 
-    def migration_revision(self) -> str | None:
-        """Return the Alembic revision recorded by this database, when present."""
-        self._ensure_open()
-        from sqlalchemy import inspect
-
-        with self.engine.connect() as connection:
-            if "alembic_version" not in inspect(connection).get_table_names():
-                return None
-            return connection.execute(
-                text("select version_num from alembic_version")
-            ).scalar_one_or_none()
-
     def close(self) -> None:
         if self._closed:
             return

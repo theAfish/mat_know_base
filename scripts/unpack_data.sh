@@ -115,7 +115,6 @@ if $DO_PG; then
     info "Restoring PostgreSQL dump into disposable staging database…"
     docker compose exec -T postgres createdb --username="$PG_USER" "$RESTORE_TEST_DB"
     docker compose exec -T postgres psql --username="$PG_USER" --dbname="$RESTORE_TEST_DB" --set=ON_ERROR_STOP=1 --quiet < "$DUMP_FILE"
-    docker compose exec -T postgres psql --username="$PG_USER" --dbname="$RESTORE_TEST_DB" --tuples-only --no-align --command="SELECT version_num FROM alembic_version" >/dev/null
     docker compose exec -T postgres dropdb --username="$PG_USER" "$RESTORE_TEST_DB"
     RESTORE_TEST_DB=""
     info "Disposable database restore validation passed."
@@ -208,6 +207,3 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 info ""
 info "Unpack complete."
-if $DO_PG; then
-    info "  Run 'alembic upgrade head' if the schema migration level differs."
-fi

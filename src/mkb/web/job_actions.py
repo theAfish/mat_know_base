@@ -325,6 +325,7 @@ def job_action_start_params(
     *,
     job_project_id: str | None = None,
     label: str | None = None,
+    services=None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     spec = JOB_ACTIONS[action]
@@ -332,7 +333,14 @@ def job_action_start_params(
         spec.validate(kwargs)
     job_kwargs = spec.build_kwargs(**kwargs)
     project_id = job_project_id if spec.project_arg else None
-    target = getattr(_api_module(), spec.target) if isinstance(spec.target, str) else spec.target
+    if isinstance(spec.target, str):
+        target = (
+            services.service(spec.target)
+            if services is not None
+            else getattr(_api_module(), spec.target)
+        )
+    else:
+        target = spec.target
     return {
         "kind": spec.kind,
         "label": label or spec.label,
@@ -361,10 +369,17 @@ def start_job_action(
     job_project_id: str | None = None,
     label: str | None = None,
     idempotency_key: str | None = None,
+    services=None,
     **kwargs: Any,
 ) -> str:
     spec = JOB_ACTIONS[action]
-    params = job_action_start_params(action, job_project_id=job_project_id, label=label, **kwargs)
+    params = job_action_start_params(
+        action,
+        job_project_id=job_project_id,
+        label=label,
+        services=services,
+        **kwargs,
+    )
     active = _find_conflict(manager, spec, params["project_id"])
     if active:
         raise JobActionConflict(spec, active)

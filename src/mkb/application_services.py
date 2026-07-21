@@ -145,6 +145,17 @@ class MaintenanceService:
 
     def inventory(self) -> MaintenanceReport:
         kb = self._knowledge_base
+
+        def count_all(service: Any, *, page_size: int = 1000) -> int:
+            count = 0
+            offset = 0
+            while True:
+                page = service.list(limit=page_size, offset=offset)
+                count += len(page)
+                if len(page) < page_size:
+                    return count
+                offset += len(page)
+
         object_counts = {}
         if kb.object_store is not None:
             for bucket in (
@@ -163,7 +174,7 @@ class MaintenanceService:
         for name in ("collections", "sources", "artifacts", "records", "schemas"):
             service = getattr(kb, name, None)
             if service is not None:
-                counts[name] = len(service.list(limit=1000))
+                counts[name] = count_all(service)
         return MaintenanceReport(
             kind="inventory",
             ok=True,

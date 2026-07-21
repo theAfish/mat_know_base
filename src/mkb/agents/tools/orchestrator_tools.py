@@ -5,8 +5,8 @@ Provides two categories:
 - Status/inspection tools: read-only DB queries via mkb.api
 - Action tools: queue background workflow jobs for the assistant UI to dispatch
 
-The workflow queue is a module-level thread-safe Queue. The assistant page
-drains it on each Streamlit rerun and starts proper start_job background jobs.
+The workflow queue is a module-level thread-safe Queue. The web job manager drains it
+and starts durable background jobs.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ _workflow_queue: _queue.Queue = _queue.Queue()
 
 
 def get_pending_workflows() -> list[dict]:
-    """Drain and return all pending workflow requests (called by the UI page)."""
+    """Drain and return all pending workflow requests for the web job manager."""
     pending: list[dict] = []
     while True:
         try:

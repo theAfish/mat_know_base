@@ -14,7 +14,6 @@ from mkb.services import (
     ingest as _ingest,
     projects as _projects,
     projections as _projections,
-    runtime as _runtime,
     spaces as _spaces,
     workflows as _workflows,
 )
@@ -25,11 +24,6 @@ from mkb.services.workflows import (
     maintenance as _workflow_maintenance,
     schema_review as _workflow_schema_review,
     serialization as _workflow_serialization,
-)
-
-from mkb.services.runtime import (
-    setup,
-    reset_db,
 )
 
 from mkb.services.ingest import (
@@ -202,7 +196,6 @@ __all__ = [
     "project_all",
     "rebuild_workflow_indexes",
     "rename_project",
-    "reset_db",
     "resolve_feedback",
     "review_feedback",
     "review_knowledge_graph",
@@ -220,7 +213,6 @@ __all__ = [
     "serialize_group",
     "serialize_projection_payload",
     "serialize_raw_workflow",
-    "setup",
     "sync",
     "sync_project",
     "update_project_group",
@@ -236,7 +228,6 @@ _MIRRORED_MODULES = (
     _ingest,
     _projects,
     _projections,
-    _runtime,
     _spaces,
     _workflows,
     _workflow_extraction,
