@@ -393,7 +393,14 @@ class GenericSchemaManager:
                 ).scalar_one()
             except Exception:
                 return None
-            return int(value) if value is not None else None
+            if value is None:
+                return None
+            version = int(value)
+            if version > CURRENT_SCHEMA_VERSION:
+                raise ConflictError(
+                    f"Database schema version {version} is newer than this SDK supports"
+                )
+            return version
 
 
 class _Repository:

@@ -8,7 +8,7 @@ Install Python 3.10+, Node.js 20+, npm, Docker Compose, and `libmagic`, then run
 make bootstrap
 ```
 
-This creates `.venv`, upgrades its pip, installs `.[dev]`, runs `npm ci` from the
+This creates `.venv`, upgrades its pip, installs `.[all,dev]`, runs `npm ci` from the
 committed lockfile, and creates `.env` only if absent. Edit `.env`, then:
 
 ```bash
@@ -35,6 +35,12 @@ make build
 React bundle. CI should begin with `make bootstrap` (or reproduce its pinned npm
 install and editable dev install) before invoking these targets.
 
+The base wheel depends only on Pydantic and SQLAlchemy. Backend and application
+dependencies are opt-in through `postgres`, `s3`, `pdf`, `server`, `materials`,
+`neo4j`, or `all`. Distribution CI builds both wheel and sdist, installs the wheel
+into a separate environment, and runs `examples/portable_quickstart.py` without the
+repository on its import path.
+
 ## Database changes
 
 Start PostgreSQL, edit SQLAlchemy models, then create a revision:
@@ -57,4 +63,3 @@ exports as generated unless deliberately promoted to `examples/` or `tests/fixtu
 React (`frontend/`) is current. Streamlit (`src/mkb/ui/`) and legacy canonical
 workflow adapters are compatibility-only. Fix regressions there when necessary, but
 place new behavior in services and React.
-

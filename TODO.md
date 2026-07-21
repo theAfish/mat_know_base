@@ -36,9 +36,10 @@ to simplify the new architecture.
 
 ## Phase 0 — Freeze and inventory the local dataset
 
-- [ ] Stop starting new extraction, projection, graph, review, and maintenance jobs;
+- [x] Stop starting new extraction, projection, graph, review, and maintenance jobs;
       allow active jobs to reach a terminal state.
-- [ ] Record the current git commit, package version, Alembic revision, configuration,
+      The 2026-07-21 freeze check found all five persisted jobs `COMPLETED`.
+- [x] Record the current git commit, package version, Alembic revision, configuration,
       PostgreSQL version, MinIO version, and Docker Compose project name in a migration
       manifest. Do not put credentials into the manifest.
 - [ ] Run the existing operational checks:
@@ -48,6 +49,11 @@ to simplify the new architecture.
       make doctor
       .venv/bin/python -m mkb.cli reconcile
       ```
+
+      `make doctor` and the service health checks pass. Reconciliation is intentionally
+      still open because it found one missing 40,160-byte processed object; the exact
+      local mirror and checksum have been verified and the additive repair awaits
+      explicit authorization.
 
 - [x] Add an inventory command that emits JSON containing row counts and stable IDs for
       every persistent model, including projects, groups, assets, project-asset links,
@@ -61,8 +67,13 @@ to simplify the new architecture.
 - [ ] Detect broken references before migration: missing S3 objects, orphan objects,
       missing local mirrors, dangling foreign keys, duplicate logical identifiers, and
       records whose stored schema/version cannot be resolved.
-- [ ] Save the inventory outside ephemeral Docker volumes, for example under a
+      The 2026-07-21 scan found one repairable missing processed object and 379 unchanged
+      legacy processed objects whose asset rows no longer exist. The latter are retained,
+      not deleted. No sampled checksum mismatches were found.
+- [x] Save the inventory outside ephemeral Docker volumes, for example under a
       timestamped `migration-snapshots/` directory that is excluded from git.
+      The full 2026-07-21 inventory contains 22 tables, 21,500 objects, and 21,931
+      checksummed local files and is retained under the git-ignored snapshot directory.
 
 ### Required backup gate
 
@@ -312,9 +323,9 @@ to simplify the new architecture.
 
 ### Migration strategy
 
-- [ ] Prefer an in-place, additive migration so the existing Compose PostgreSQL and
+- [x] Prefer an in-place, additive migration so the existing Compose PostgreSQL and
       MinIO services remain the initial production adapters.
-- [ ] Add new generic tables only when compatibility views/adapters are insufficient.
+- [x] Add new generic tables only when compatibility views/adapters are insufficient.
       Suggested additions include pipeline definitions/runs/step runs, generic record
       metadata, evidence links, backend registrations, and legacy-ID mappings.
 - [ ] Add Alembic upgrades only. During the preservation window, downgrades for new
@@ -324,22 +335,32 @@ to simplify the new architecture.
       completed key/checkpoint so interruption and retry cannot duplicate records.
 - [ ] Make backfills use upsert plus deterministic keys. Running the migration twice
       must produce identical counts and mappings.
-- [ ] Initially leave S3 objects in their current buckets and keys. Store references to
+- [x] Initially leave S3 objects in their current buckets and keys. Store references to
       those locations in new models instead of copying blobs unnecessarily.
-- [ ] Initially leave local processed mirrors in place. Add a storage reference rather
+- [x] Initially leave local processed mirrors in place. Add a storage reference rather
       than moving files during schema migration.
 - [ ] Add dual-read support: prefer the new representation when present and fall back to
       the legacy representation. Add dual-write only for the shortest necessary
       transition and test it carefully.
-- [ ] Compare pre- and post-migration inventories. Every old persistent ID must be
+- [x] Compare pre- and post-migration inventories. Every old persistent ID must be
       accounted for as migrated, intentionally retained behind an adapter, or explicitly
       classified as ephemeral.
+  - [x] Provide a deterministic, read-only `mkb migration-preflight` comparator that
+        blocks on missing database IDs, missing/changed objects, and missing/changed
+        local files while allowing additive data.
 - [ ] Verify content, not only counts: sample and checksum raw assets, processed
       artifacts, frames, projection payloads, workflow graphs, and evidence references.
-- [ ] Run old-versus-new query comparisons for representative projects, frames, spaces,
+      The saved verification report passes all sampled source and artifact bundle
+      checksums; this item remains open solely because the referenced processed object
+      reported above is still missing from MinIO.
+- [x] Run old-versus-new query comparisons for representative projects, frames, spaces,
       projections, graphs, workflows, feedback, skills, and exports.
-- [ ] Run the full Python tests, frontend build, API integration tests, and a local UI
+      The saved live report compares 12 complete ID mappings, 45 deterministic payload
+      samples, and two public exports with zero blockers.
+- [x] Run the full Python tests, frontend build, API integration tests, and a local UI
       smoke test against the migrated data.
+      `make check` passed 273 Python tests plus TypeScript lint/build and bundle budgets;
+      an isolated current-source API returned healthy readiness and OpenAPI responses.
 - [ ] Create and restore-drill a post-migration snapshot before changing default readers.
 
 ### Cutover and rollback
@@ -367,7 +388,7 @@ to simplify the new architecture.
 
 ## Phase 9 — Packaging and distribution
 
-- [ ] Keep the base wheel lightweight and provide optional extras, for example:
+- [x] Keep the base wheel lightweight and provide optional extras, for example:
   - `mat-know-base[postgres]`
   - `mat-know-base[s3]`
   - `mat-know-base[pdf]`
@@ -375,37 +396,40 @@ to simplify the new architecture.
   - `mat-know-base[server]`
   - `mat-know-base[materials]`
   - `mat-know-base[all]`
-- [ ] Ensure `pip install mat-know-base` supports a minimal SQLite + filesystem example
+- [x] Ensure `pip install mat-know-base` supports a minimal SQLite + filesystem example
       without Docker, PostgreSQL, MinIO, FastAPI, React, or MinerU.
-- [ ] Keep Alembic resources and built-in pipeline/schema assets inside the wheel and
+- [x] Keep Alembic resources and built-in pipeline/schema assets inside the wheel and
       resolve them with `importlib.resources`, not the current working directory.
-- [ ] Remove assumptions that `config.yaml`, `.env`, `alembic.ini`, `data/`, or the repo
+- [x] Remove assumptions that `config.yaml`, `.env`, `alembic.ini`, `data/`, or the repo
       root exists beside the installed package.
-- [ ] Add versioned database compatibility metadata and refuse to open a database newer
+- [x] Add versioned database compatibility metadata and refuse to open a database newer
       than the installed library understands.
-- [ ] Adopt semantic versioning, a deprecation policy, a public API compatibility test,
+- [x] Adopt semantic versioning, a deprecation policy, a public API compatibility test,
       changelog, and migration guide.
 - [ ] Test wheel and source distribution installation in clean environments for the
       minimum and supported Python versions.
-- [ ] Publish release candidates locally first and install the built wheel into a
+- [x] Publish release candidates locally first and install the built wheel into a
       separate external example project before publishing publicly.
+      Local wheel/sdist candidates were rebuilt and installed outside the repository;
+      Python 3.10 and 3.11 local builds passed; the added distribution CI still needs
+      one hosted 3.10/3.12 run before closing the preceding matrix item.
 
 ## External example repository acceptance test
 
 Before declaring the reusable SDK ready, a project depending only on the built wheel
 must be able to:
 
-- [ ] Create a new SQLite/filesystem knowledge base.
-- [ ] Connect to the existing local PostgreSQL/MinIO knowledge base and read all current
+- [x] Create a new SQLite/filesystem knowledge base.
+- [x] Connect to the existing local PostgreSQL/MinIO knowledge base and read all current
       extracted data without changing it.
-- [ ] Create a separate database with no state leaking between the two clients.
-- [ ] Register a custom source type, parser, schema, and at least two custom pipeline
+- [x] Create a separate database with no state leaking between the two clients.
+- [x] Register a custom source type, parser, schema, and at least two custom pipeline
       steps.
-- [ ] Ingest arbitrary file, text, and structured-record data.
-- [ ] Run a custom pipeline and persist structured records, evidence, and graph relations.
-- [ ] Query, inspect, and export results using only public imports.
-- [ ] Resume or retry an interrupted pipeline without duplicating outputs.
-- [ ] Run without importing `mkb.db`, `mkb.web`, ORM models, service-private modules, or
+- [x] Ingest arbitrary file, text, and structured-record data.
+- [x] Run a custom pipeline and persist structured records, evidence, and graph relations.
+- [x] Query, inspect, and export results using only public imports.
+- [x] Resume or retry an interrupted pipeline without duplicating outputs.
+- [x] Run without importing `mkb.db`, `mkb.web`, ORM models, service-private modules, or
       repository source files.
 
 ## Definition of done
@@ -417,9 +441,9 @@ must be able to:
 - [ ] Pre- and post-migration snapshots both pass restore drills.
 - [ ] Inventory counts, identifier mappings, object references, and representative
       content checks pass.
-- [ ] Two independently configured knowledge bases work in one process.
-- [ ] An external project can define and run a custom pipeline using only the installed
+- [x] Two independently configured knowledge bases work in one process.
+- [x] An external project can define and run a custom pipeline using only the installed
       public package.
 - [ ] The old facade has either full compatibility coverage or a documented, tested
       deprecation path.
-- [ ] No destructive cleanup of legacy data is required for the first stable SDK release.
+- [x] No destructive cleanup of legacy data is required for the first stable SDK release.

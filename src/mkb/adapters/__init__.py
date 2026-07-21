@@ -2,6 +2,7 @@
 
 from mkb.adapters.database import SQLAlchemyDatabase
 from mkb.adapters.graph import InMemoryGraphStore
+from mkb.adapters.legacy_jobs import SQLAlchemyLegacyJobBackend
 from mkb.adapters.generic_repositories import (
     GenericArtifactRepository,
     GenericCollectionGroupRepository,
@@ -53,6 +54,7 @@ __all__ = [
     "SQLAlchemyCollectionGroupRepository",
     "SQLAlchemyCollectionRepository",
     "SQLAlchemyDatabase",
+    "SQLAlchemyLegacyJobBackend",
     "SQLAlchemyExtractionSchemaRepository",
     "SQLAlchemyFeedbackRepository",
     "SQLAlchemyPostProcessorRepository",

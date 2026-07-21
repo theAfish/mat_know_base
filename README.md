@@ -70,6 +70,17 @@ The same workflow is available in the React UI. For library use, start with the
 [detailed Python API guide](docs/python-api.md) and
 [examples/basic_usage.py](examples/basic_usage.py).
 
+For a Docker-free library project, install the lightweight base package and use
+SQLite plus filesystem storage:
+
+```bash
+pip install mat-know-base
+python examples/portable_quickstart.py
+```
+
+Install backend features explicitly, such as `mat-know-base[postgres,s3]`, or use
+`mat-know-base[materials,server]` for the complete materials application and API.
+
 ## Common development commands
 
 ```bash

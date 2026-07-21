@@ -73,7 +73,12 @@ class SchemaRevisionError(RuntimeError):
 
 
 def alembic_config() -> Config:
-    return Config("alembic.ini")
+    from mkb.resources import alembic_paths
+
+    config_path, script_path = alembic_paths()
+    config = Config(str(config_path))
+    config.set_main_option("script_location", str(script_path))
+    return config
 
 
 def expected_schema_revision() -> str:

@@ -1028,6 +1028,10 @@ Plan or apply retention through an explicitly bound application adapter.
 
 
 
+#### `compare_inventories(before: 'dict[str, Any] | str | Path', after: 'dict[str, Any] | str | Path') -> 'MaintenanceReport'`
+
+Compare two preservation inventories without reading live backends.
+
 #### `inventory() -> 'MaintenanceReport'`
 
 
@@ -1037,3 +1041,13 @@ Plan or apply retention through an explicitly bound application adapter.
 Return the application-wide preservation inventory when configured.
 
 #### `reconcile() -> 'MaintenanceReport'`
+
+
+
+#### `restore_missing_artifact(artifact_id: 'str', local_file: 'str | Path', *, apply: 'bool' = False, confirm: 'str | None' = None) -> 'MaintenanceReport'`
+
+Checksum-gate restoration of one missing artifact object.
+
+#### `verify_content(*, sample_size: 'int' = 10) -> 'MaintenanceReport'`
+
+Verify every storage reference and checksum deterministic content samples.

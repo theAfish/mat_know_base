@@ -8,6 +8,8 @@ Choose the guide for the work you are doing.
 - [Generated Python API reference](api-reference.md): typed models and grouped methods
 - [HTTP API contract](api-contract.md): routes, authentication, jobs, errors, and compatibility
 - [Workflow lifecycle policy](workflow-lifecycle-policy.md): current and legacy workflow surfaces
+- [Versioning and deprecation policy](deprecation-policy.md)
+- [Changelog](../CHANGELOG.md)
 
 ## Contributors
 

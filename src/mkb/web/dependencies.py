@@ -26,6 +26,7 @@ def get_knowledge_base() -> KnowledgeBase:
             jobs, action, **kwargs
         ),
     )
+    knowledge_base.pipelines._bind_job_backend(backend)
     knowledge_base.assistant = AssistantService(
         knowledge_base,
         session_factory=create_orchestrator_runner,

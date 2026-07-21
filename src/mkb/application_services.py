@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -178,17 +179,35 @@ class MaintenanceService:
         kb = self._knowledge_base
         missing = []
         references: set[tuple[str, str]] = set()
+        namespaces: set[tuple[str, str]] = set()
+        artifact_source_ids: set[str] = set()
         objects: set[tuple[str, str]] = set()
+
+        def all_items(service):
+            offset = 0
+            while True:
+                page = service.list(limit=1000, offset=offset)
+                yield from page
+                if len(page) < 1000:
+                    return
+                offset += len(page)
+
         if kb.object_store is not None:
             for service_name in ("sources", "artifacts"):
                 service = getattr(kb, service_name, None)
                 if service is None:
                     continue
-                for item in service.list(limit=1000):
+                for item in all_items(service):
+                    if service_name == "artifacts":
+                        artifact_source_ids.add(str(item.source_id))
                     storage = item.storage
                     if storage is None:
                         continue
                     references.add((storage.bucket, storage.key))
+                    if "/" in storage.key:
+                        namespaces.add(
+                            (storage.bucket, storage.key.rsplit("/", 1)[0] + "/")
+                        )
                     if not kb.object_store.exists(storage.bucket, storage.key):
                         missing.append(
                             {
@@ -198,11 +217,32 @@ class MaintenanceService:
                                 "key": storage.key,
                             }
                         )
-            for bucket in (kb.config.raw_bucket, kb.config.processed_bucket):
+            for bucket in (
+                kb.config.raw_bucket,
+                kb.config.processed_bucket,
+                kb.config.archive_bucket,
+                kb.config.temp_bucket,
+            ):
                 objects.update(
                     (item.bucket, item.key) for item in kb.object_store.list(bucket)
                 )
-        orphaned = sorted(objects - references)
+        unreferenced = objects - references
+        related = sorted(
+            (bucket, key)
+            for bucket, key in unreferenced
+            if (
+                any(
+                    bucket == ref_bucket and key.startswith(prefix)
+                    for ref_bucket, prefix in namespaces
+                )
+                or (
+                    bucket == kb.config.processed_bucket
+                    and len(key.split("/")) > 1
+                    and key.split("/")[1] in artifact_source_ids
+                )
+            )
+        )
+        orphaned = sorted(unreferenced - set(related))
         return MaintenanceReport(
             kind="reconcile",
             ok=not missing,
@@ -211,10 +251,136 @@ class MaintenanceService:
                 "storage_objects": len(objects),
                 "missing_objects": missing,
                 "missing_count": len(missing),
+                "related_objects": [
+                    {"bucket": bucket, "key": key} for bucket, key in related
+                ],
+                "related_count": len(related),
                 "orphaned_objects": [
                     {"bucket": bucket, "key": key} for bucket, key in orphaned
                 ],
                 "orphaned_count": len(orphaned),
+            },
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def verify_content(self, *, sample_size: int = 10) -> MaintenanceReport:
+        """Verify every storage reference and checksum deterministic content samples."""
+        if sample_size < 1 or sample_size > 100:
+            raise ValidationError("sample_size must be between 1 and 100")
+        kb = self._knowledge_base
+        if kb.object_store is None:
+            raise ConflictError("Object storage is unavailable for this client")
+
+        def all_items(service):
+            items = []
+            offset = 0
+            while True:
+                page = service.list(limit=1000, offset=offset)
+                items.extend(page)
+                if len(page) < 1000:
+                    return sorted(items, key=lambda item: str(item.id))
+                offset += len(page)
+
+        def sample(items):
+            if len(items) <= sample_size:
+                return items
+            if sample_size == 1:
+                return [items[0]]
+            return [
+                items[index * (len(items) - 1) // (sample_size - 1)]
+                for index in range(sample_size)
+            ]
+
+        missing = []
+        mismatches = []
+        sampled = []
+        for resource_type in ("source", "artifact"):
+            service = getattr(kb, resource_type + "s", None)
+            if service is None:
+                continue
+            items = [item for item in all_items(service) if item.storage is not None]
+            for item in items:
+                storage = item.storage
+                if not kb.object_store.exists(storage.bucket, storage.key):
+                    missing.append({
+                        "resource_type": resource_type,
+                        "resource_id": str(item.id),
+                        "bucket": storage.bucket,
+                        "key": storage.key,
+                    })
+            missing_ids = {item["resource_id"] for item in missing}
+            for item in sample(items):
+                if str(item.id) in missing_ids:
+                    continue
+                storage = item.storage
+                content_checksum = hashlib.sha256()
+                verified_checksum = hashlib.sha256()
+                size = 0
+                with kb.object_store.open(storage.bucket, storage.key) as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        size += len(chunk)
+                        content_checksum.update(chunk)
+                        verified_checksum.update(chunk)
+                content_sha256 = content_checksum.hexdigest()
+                artifact_files = (
+                    sorted(item.metadata.get("artifact_files") or [])
+                    if resource_type == "artifact"
+                    else []
+                )
+                bundle_complete = True
+                prefix = storage.key.rsplit("/", 1)[0] if "/" in storage.key else ""
+                for relative_path in artifact_files:
+                    artifact_key = f"{prefix}/{relative_path}" if prefix else relative_path
+                    if not kb.object_store.exists(storage.bucket, artifact_key):
+                        missing.append({
+                            "resource_type": "artifact_file",
+                            "resource_id": str(item.id),
+                            "bucket": storage.bucket,
+                            "key": artifact_key,
+                        })
+                        bundle_complete = False
+                        continue
+                    artifact_checksum = hashlib.sha256()
+                    with kb.object_store.open(storage.bucket, artifact_key) as stream:
+                        while chunk := stream.read(1024 * 1024):
+                            artifact_checksum.update(chunk)
+                    verified_checksum.update(relative_path.encode("utf-8"))
+                    verified_checksum.update(artifact_checksum.digest())
+                actual_sha256 = verified_checksum.hexdigest()
+                expected_sha256 = str(item.sha256)
+                if (
+                    size != int(item.size)
+                    or (bundle_complete and actual_sha256 != expected_sha256)
+                ):
+                    mismatches.append({
+                        "resource_type": resource_type,
+                        "resource_id": str(item.id),
+                        "expected_bytes": int(item.size),
+                        "actual_bytes": size,
+                        "expected_sha256": expected_sha256,
+                        "actual_sha256": actual_sha256,
+                        "checksum_scope": "bundle" if artifact_files else "content",
+                    })
+                sampled.append({
+                    "resource_type": resource_type,
+                    "resource_id": str(item.id),
+                    "bytes": size,
+                    "content_sha256": content_sha256,
+                    "verified_sha256": actual_sha256,
+                    "checksum_scope": "bundle" if artifact_files else "content",
+                })
+
+        return MaintenanceReport(
+            kind="content_verification",
+            ok=not missing and not mismatches,
+            data={
+                "sample_size_per_resource": sample_size,
+                "sampled": sampled,
+                "sampled_count": len(sampled),
+                "missing_objects": missing,
+                "missing_count": len(missing),
+                "mismatches": mismatches,
+                "mismatch_count": len(mismatches),
             },
             created_at=datetime.now(timezone.utc),
         )
@@ -255,6 +421,115 @@ class MaintenanceService:
             kind="migration_inventory",
             ok=True,
             data=self._migration_inventory_reader(),
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def compare_inventories(
+        self,
+        before: dict[str, Any] | str | Path,
+        after: dict[str, Any] | str | Path,
+    ) -> MaintenanceReport:
+        """Compare two preservation inventories without reading live backends."""
+        from mkb.migration_preflight import (
+            compare_migration_inventories,
+            load_inventory,
+        )
+
+        old = before if isinstance(before, dict) else load_inventory(before)
+        new = after if isinstance(after, dict) else load_inventory(after)
+        data = compare_migration_inventories(old, new)
+        return MaintenanceReport(
+            kind="migration_preflight",
+            ok=bool(data["ok"]),
+            data=data,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    def restore_missing_artifact(
+        self,
+        artifact_id: str,
+        local_file: str | Path,
+        *,
+        apply: bool = False,
+        confirm: str | None = None,
+    ) -> MaintenanceReport:
+        """Checksum-gate restoration of one missing artifact object.
+
+        The default is a read-only dry run. Applying is additive and idempotent,
+        and is permitted only when the local file exactly matches the immutable
+        size and SHA-256 stored with the artifact.
+        """
+        kb = self._knowledge_base
+        if kb.artifacts is None or kb.object_store is None:
+            raise ConflictError("Artifact storage is unavailable for this client")
+        if apply and confirm != "RESTORE MISSING OBJECT":
+            raise ValidationError(
+                "restore apply requires confirm='RESTORE MISSING OBJECT'"
+            )
+        artifact = kb.artifacts.require(artifact_id)
+        if artifact.storage is None:
+            raise ConflictError(f"Artifact {artifact.id} has no object-store reference")
+        path = Path(local_file)
+        if not path.is_file():
+            raise ValidationError(f"Local recovery file does not exist: {path}")
+
+        def digest(stream) -> str:
+            checksum = hashlib.sha256()
+            while chunk := stream.read(1024 * 1024):
+                checksum.update(chunk)
+            return checksum.hexdigest()
+
+        local_size = path.stat().st_size
+        with path.open("rb") as stream:
+            local_sha256 = digest(stream)
+        expected_size = int(artifact.size)
+        expected_sha256 = str(artifact.sha256)
+        if local_size != expected_size or local_sha256 != expected_sha256:
+            raise ConflictError(
+                "Local recovery file does not match artifact metadata: "
+                f"size={local_size}/{expected_size}, "
+                f"sha256={local_sha256}/{expected_sha256}"
+            )
+
+        bucket = artifact.storage.bucket
+        key = artifact.storage.key
+        if kb.object_store.exists(bucket, key):
+            with kb.object_store.open(bucket, key) as stream:
+                stored_sha256 = digest(stream)
+            if stored_sha256 != expected_sha256:
+                raise ConflictError(
+                    f"Refusing to overwrite mismatched existing object {bucket}/{key}"
+                )
+            status = "already_present"
+            applied = False
+        elif apply:
+            kb.object_store.put_bytes(bucket, key, path.read_bytes())
+            with kb.object_store.open(bucket, key) as stream:
+                stored_sha256 = digest(stream)
+            if stored_sha256 != expected_sha256:
+                raise ConflictError(
+                    f"Restored object failed verification for {bucket}/{key}"
+                )
+            status = "restored"
+            applied = True
+        else:
+            status = "ready"
+            applied = False
+
+        return MaintenanceReport(
+            kind="migration_repair",
+            ok=True,
+            data={
+                "status": status,
+                "dry_run": not apply,
+                "applied": applied,
+                "artifact_id": str(artifact.id),
+                "bucket": bucket,
+                "key": key,
+                "local_file": str(path.resolve()),
+                "bytes": expected_size,
+                "sha256": expected_sha256,
+            },
             created_at=datetime.now(timezone.utc),
         )
 

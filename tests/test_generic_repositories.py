@@ -54,6 +54,20 @@ def test_explicit_initialization_is_idempotent_and_enables_typed_writes(tmp_path
         assert kb.records.export_json(indent=None).startswith("[")
 
 
+def test_client_refuses_portable_schema_newer_than_supported(tmp_path):
+    with _client(tmp_path) as kb:
+        kb.initialize()
+        with kb.database.transaction() as session:
+            session.execute(
+                text(
+                    "insert into mkb_schema_migrations "
+                    "(version, name, applied_at) values (999, 'future', CURRENT_TIMESTAMP)"
+                )
+            )
+        with pytest.raises(ConflictError, match="newer than this SDK supports"):
+            kb.schema_version()
+
+
 def test_transaction_commits_all_relational_writes_together(tmp_path):
     with _client(tmp_path) as kb:
         kb.initialize()

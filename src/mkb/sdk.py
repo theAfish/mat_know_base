@@ -383,6 +383,7 @@ class KnowledgeBase:
             SQLAlchemyCollectionRepository,
             SQLAlchemyExtractionSchemaRepository,
             SQLAlchemyFeedbackRepository,
+            SQLAlchemyLegacyJobBackend,
             SQLAlchemyPostProcessorRepository,
             SQLAlchemyProjectionRepository,
             SQLAlchemyRecordRepository,
@@ -433,6 +434,7 @@ class KnowledgeBase:
             config=config,
             database=database,
             object_store=object_store,
+            job_backend=SQLAlchemyLegacyJobBackend(database),
             graph_store=InMemoryGraphStore(),
             collections=Collections(
                 SQLAlchemyCollectionRepository(database),

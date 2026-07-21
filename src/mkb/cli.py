@@ -14,6 +14,22 @@ def _json_dump(obj):
     print(json.dumps(obj, indent=2, default=str))
 
 
+def _json_report(obj, output_path, label):
+    if not output_path:
+        _json_dump(obj)
+        return
+    from pathlib import Path
+
+    output = Path(output_path)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite {label}: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(json.dumps(obj, indent=2, default=str) + "\n")
+    temporary.replace(output)
+    print(f"Wrote {label} to {output}")
+
+
 def _knowledge_base():
     from mkb import KnowledgeBase
 
@@ -576,11 +592,35 @@ def cmd_cleanup(args):
     _json_dump(report.data)
 
 
-def cmd_reconcile(_args):
+def cmd_reconcile(args):
     with _knowledge_base() as kb:
         report = kb.maintenance.reconcile()
     result = {"ok": report.ok, **report.data}
-    _json_dump(result)
+    if args.summary:
+        result = {
+            key: result[key]
+            for key in (
+                "ok",
+                "database_references",
+                "storage_objects",
+                "missing_count",
+                "related_count",
+                "orphaned_count",
+            )
+        }
+    _json_report(result, args.out, "reconciliation report")
+    if not report.ok:
+        raise SystemExit(1)
+
+
+def cmd_verify_content(args):
+    with _knowledge_base() as kb:
+        report = kb.maintenance.verify_content(sample_size=args.sample_size)
+    _json_report(
+        {"ok": report.ok, **report.data},
+        args.out,
+        "content verification report",
+    )
     if not report.ok:
         raise SystemExit(1)
 
@@ -604,6 +644,57 @@ def cmd_inventory(args):
     temporary.write_text(json.dumps(result, indent=2, default=str) + "\n")
     temporary.replace(output)
     print(f"Wrote read-only migration inventory to {output}")
+
+
+def cmd_migration_preflight(args):
+    from pathlib import Path
+
+    with _knowledge_base() as kb:
+        report = kb.maintenance.compare_inventories(args.before, args.after)
+    result = report.data
+    if not args.out:
+        _json_dump(result)
+    else:
+        output = Path(args.out)
+        if output.exists() and not args.overwrite:
+            raise FileExistsError(
+                f"Refusing to overwrite existing preflight report: {output}; "
+                "pass --overwrite explicitly"
+            )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(f".{output.name}.tmp")
+        temporary.write_text(json.dumps(result, indent=2, default=str) + "\n")
+        temporary.replace(output)
+        print(f"Wrote read-only migration preflight report to {output}")
+    if not report.ok:
+        raise SystemExit(1)
+
+
+def cmd_restore_missing_artifact(args):
+    from pathlib import Path
+
+    output = Path(args.ledger) if args.ledger else None
+    if args.apply and output is None:
+        raise ValueError("--ledger is required when --apply is used")
+    if output is not None and output.exists():
+        raise FileExistsError(f"Refusing to overwrite migration ledger entry: {output}")
+    with _knowledge_base() as kb:
+        report = kb.maintenance.restore_missing_artifact(
+            args.artifact_id,
+            args.local_file,
+            apply=args.apply,
+            confirm=args.confirm,
+        )
+    result = {"ok": report.ok, **report.data}
+    _json_dump(result)
+    if not args.apply:
+        return
+    assert output is not None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(json.dumps(result, indent=2, default=str) + "\n")
+    temporary.replace(output)
+    print(f"Wrote migration repair ledger to {output}")
 
 
 # ── Argument Parsing ─────────────────────────────────────────────
@@ -853,11 +944,39 @@ def main():
     p.add_argument("--apply", action="store_true")
     p.add_argument("--confirm", help="Required exact value DELETE when applying")
 
-    sub.add_parser("reconcile", help="Read-only PostgreSQL/MinIO consistency check")
+    p = sub.add_parser("reconcile", help="Read-only PostgreSQL/MinIO consistency check")
+    p.add_argument("--summary", action="store_true", help="Omit individual object keys")
+    p.add_argument("--out", help="Write a new JSON report instead of printing")
+
+    p = sub.add_parser(
+        "verify-content",
+        help="Verify references and checksum deterministic source/artifact samples",
+    )
+    p.add_argument("--sample-size", type=int, default=10)
+    p.add_argument("--out", help="Write a new JSON report instead of printing")
 
     p = sub.add_parser("inventory", help="Write a read-only local data migration inventory")
     p.add_argument("--out", help="JSON output path; prints to stdout when omitted")
     p.add_argument("--overwrite", action="store_true", help="Replace an existing output file")
+
+    p = sub.add_parser(
+        "migration-preflight",
+        help="Compare pre/post inventories and fail on missing or changed data",
+    )
+    p.add_argument("before", help="Pre-migration inventory JSON")
+    p.add_argument("after", help="Post-migration inventory JSON")
+    p.add_argument("--out", help="JSON output path; prints to stdout when omitted")
+    p.add_argument("--overwrite", action="store_true", help="Replace an existing report")
+
+    p = sub.add_parser(
+        "restore-missing-artifact",
+        help="Checksum-gate restoration of one missing object from a local mirror",
+    )
+    p.add_argument("artifact_id")
+    p.add_argument("local_file")
+    p.add_argument("--apply", action="store_true", help="Upload after all checks pass")
+    p.add_argument("--confirm", help="Required exact value RESTORE MISSING OBJECT")
+    p.add_argument("--ledger", help="New JSON ledger path; required with --apply")
 
     args = parser.parse_args()
     if not args.command:
@@ -890,7 +1009,10 @@ def main():
         "workflow-search": cmd_workflow_search,
         "cleanup": cmd_cleanup,
         "reconcile": cmd_reconcile,
+        "verify-content": cmd_verify_content,
         "inventory": cmd_inventory,
+        "migration-preflight": cmd_migration_preflight,
+        "restore-missing-artifact": cmd_restore_missing_artifact,
         "extraction-history": cmd_extraction_history,
         "project-run": cmd_project_run,
         "projections": cmd_projections,

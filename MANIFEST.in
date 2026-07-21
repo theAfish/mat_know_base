@@ -1,0 +1,4 @@
+include alembic.ini
+recursive-include alembic *.py *.mako
+prune src/mkb/ui
+global-exclude *.pyc *.pyo

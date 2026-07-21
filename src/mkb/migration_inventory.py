@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import json
 import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -158,6 +159,44 @@ def _package_version() -> str:
         return "unknown"
 
 
+def compose_manifest(root: Path) -> dict[str, Any]:
+    """Return non-secret Compose identity/version metadata when Docker is available."""
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "ps", "--format", "json"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"available": False}
+    if result.returncode != 0:
+        return {"available": False}
+    rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    projects = sorted({str(row.get("Project")) for row in rows if row.get("Project")})
+    services = {}
+    for row in rows:
+        name = str(row.get("Service") or "unknown")
+        labels = {
+            token.split("=", 1)[0]: token.split("=", 1)[1]
+            for token in str(row.get("Labels") or "").split(",")
+            if "=" in token
+        }
+        services[name] = {
+            "image": row.get("Image"),
+            "version": labels.get("version") or labels.get("release"),
+            "state": row.get("State"),
+            "health": row.get("Health"),
+        }
+    return {
+        "available": True,
+        "project": projects[0] if len(projects) == 1 else projects,
+        "services": services,
+    }
+
+
 def safe_configuration() -> dict[str, Any]:
     """Return storage topology needed for restoration, excluding credentials."""
     from mkb.config import settings
@@ -203,6 +242,7 @@ def migration_inventory(
             "git_commit": _git_commit(project_root),
         },
         "configuration": safe_configuration(),
+        "infrastructure": compose_manifest(project_root),
         "database": database,
         "object_storage": storage,
         "local_files": local_inventory(local_paths),

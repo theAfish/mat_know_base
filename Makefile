@@ -18,7 +18,7 @@ bootstrap:
 install: install-python install-frontend
 
 install-python:
-	$(PYTHON) -m pip install -e ".[dev]"
+	$(PYTHON) -m pip install -e ".[all,dev]"
 
 install-frontend:
 	cd frontend && $(NPM) ci
