@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from mkb.web import diagnostics
 from mkb.web.diagnostics import readiness_report
 
 
@@ -28,3 +31,15 @@ def test_readiness_categorizes_dependency_errors_without_exposing_details():
             }
         },
     }
+
+
+def test_worker_readiness_uses_grouped_job_service(monkeypatch):
+    monkeypatch.setattr(
+        diagnostics,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(available=lambda: True)
+        ),
+    )
+
+    assert diagnostics.check_worker() == {"ok": True}

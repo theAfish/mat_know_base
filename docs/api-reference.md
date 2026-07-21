@@ -188,6 +188,9 @@ Fields:
 - `kind` — `<class 'str'>` (required)
 - `status` — `<class 'str'>` (required)
 - `label` — `str | None` (optional/defaulted)
+- `project_id` — `str | None` (optional/defaulted)
+- `request_id` — `str | None` (optional/defaulted)
+- `active_key` — `str | None` (optional/defaulted)
 - `pipeline_name` — `str | None` (optional/defaulted)
 - `pipeline_version` — `str | None` (optional/defaulted)
 - `run_id` — `uuid.UUID | None` (optional/defaulted)
@@ -197,13 +200,19 @@ Fields:
 - `checkpoint` — `dict[str, typing.Any]` (optional/defaulted)
 - `events` — `tuple[dict[str, typing.Any], ...]` (optional/defaulted)
 - `attempt_count` — `<class 'int'>` (optional/defaulted)
+- `max_attempts` — `<class 'int'>` (optional/defaulted)
+- `retryable` — `<class 'bool'>` (optional/defaulted)
+- `cancel_requested` — `<class 'bool'>` (optional/defaulted)
 - `progress` — `float | None` (optional/defaulted)
 - `message` — `str | None` (optional/defaulted)
 - `result` — `typing.Any` (optional/defaulted)
 - `error` — `str | None` (optional/defaulted)
+- `error_category` — `str | None` (optional/defaulted)
 - `created_at` — `<class 'datetime.datetime'>` (required)
+- `queued_at` — `datetime.datetime | None` (optional/defaulted)
 - `started_at` — `datetime.datetime | None` (optional/defaulted)
 - `completed_at` — `datetime.datetime | None` (optional/defaulted)
+- `updated_at` — `datetime.datetime | None` (optional/defaulted)
 
 ### `MaintenanceReport`
 
@@ -803,7 +812,15 @@ Persist and asynchronously execute one registered pipeline definition.
 
 Query, wait for, and cooperatively cancel durable jobs.
 
+#### `available() -> 'bool'`
+
+Return whether this client has a configured durable-job backend.
+
 #### `cancel(job_id: 'str | uuid.UUID') -> 'Job'`
+
+
+
+#### `cancel_all(*, project_id: 'str | None' = None) -> 'list[Job]'`
 
 
 
@@ -811,11 +828,15 @@ Query, wait for, and cooperatively cancel durable jobs.
 
 Yield persisted events, optionally following until the job is terminal.
 
+#### `find_active(*, project_id: 'str | None' = None, kind: 'str | None' = None) -> 'Job | None'`
+
+
+
 #### `get(job_id: 'str | uuid.UUID') -> 'Job | None'`
 
 
 
-#### `list(*, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Job]'`
+#### `list(*, project_id: 'str | None' = None, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Job]'`
 
 
 
@@ -830,6 +851,10 @@ Explicitly release jobs abandoned by a stopped worker process.
 #### `submit(*, kind: 'str', inputs: 'dict[str, Any] | None' = None, parameters: 'dict[str, Any] | None' = None, label: 'str | None' = None, idempotency_key: 'str | None' = None, job_id: 'str | uuid.UUID | None' = None) -> 'Job'`
 
 Persist a queued application job for an external or custom worker.
+
+#### `submit_action(action: 'str', **kwargs: 'Any') -> 'Job'`
+
+Start an application-owned action through the configured job adapter.
 
 #### `wait(job_id: 'str | uuid.UUID', *, timeout: 'float | None' = None) -> 'Job'`
 
@@ -878,6 +903,10 @@ Register instruction documents without relying on a module-global registry.
 #### `get(skill_id_or_slug: 'str | uuid.UUID') -> 'Skill | None'`
 
 
+
+#### `import_files(files: 'list[tuple[str, BinaryIO]]') -> 'Skill'`
+
+Import a SKILL.md file, folder upload, or zip through the bound adapter.
 
 #### `list(*, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Skill]'`
 
@@ -971,6 +1000,18 @@ Inspect effective non-secret configuration.
 
 
 
+#### `runtime() -> 'dict[str, Any]'`
+
+Return mutable application settings with secrets already masked.
+
+#### `update(updates: 'dict[str, Any]') -> 'dict[str, Any]'`
+
+Validate and persist supported runtime-setting overrides.
+
+#### `validate_startup(*, host: 'str | None' = None, log_level: 'str | None' = None) -> 'list[str]'`
+
+Return deployment-safety warnings from the configured application.
+
 ### `kb.maintenance`
 
 Read-only inventory, reconciliation, and cleanup planning.
@@ -979,6 +1020,10 @@ Read-only inventory, reconciliation, and cleanup planning.
 
 
 
+#### `cleanup(*, older_than_days: 'int' = 7, job_days: 'int' = 30, apply: 'bool' = False, confirm: 'str | None' = None) -> 'MaintenanceReport'`
+
+Plan or apply retention through an explicitly bound application adapter.
+
 #### `cleanup_plan(*, older_than_days: 'int' = 7, roots: 'list[str | Path] | None' = None) -> 'MaintenanceReport'`
 
 
@@ -986,5 +1031,9 @@ Read-only inventory, reconciliation, and cleanup planning.
 #### `inventory() -> 'MaintenanceReport'`
 
 
+
+#### `migration_inventory() -> 'MaintenanceReport'`
+
+Return the application-wide preservation inventory when configured.
 
 #### `reconcile() -> 'MaintenanceReport'`

@@ -13,9 +13,18 @@ from mkb import (
     ValidationError,
 )
 from mkb.graph import Graph
-from mkb.application_services import MaintenanceService, SettingsService
+from mkb.application_services import AssistantService, MaintenanceService, SettingsService
 from mkb.job_service import Jobs
 from mkb.managed_services import Feedback, PostProcessors, Skills
+from mkb.materials import (
+    MaterialFeedback,
+    MaterialFrames,
+    MaterialGraph,
+    MaterialLibrary,
+    MaterialProjections,
+    MaterialSpaces,
+    MaterialWorkflows,
+)
 from mkb.pipelines import Pipelines
 from mkb.registries import Parsers, Steps
 from mkb.repositories import (
@@ -124,20 +133,62 @@ SUPPORTED_METHODS = {
     },
     Steps: {"get", "list", "register", "require"},
     Jobs: {
+        "available",
         "cancel",
+        "cancel_all",
         "events",
+        "find_active",
         "get",
         "list",
         "recover_interrupted",
         "require",
         "submit",
+        "submit_action",
         "wait",
     },
-    SettingsService: {"inspect"},
-    MaintenanceService: {"backup_metadata", "cleanup_plan", "inventory", "reconcile"},
+    SettingsService: {"inspect", "runtime", "update", "validate_startup"},
+    AssistantService: {"chat"},
+    MaintenanceService: {
+        "backup_metadata",
+        "cleanup",
+        "cleanup_plan",
+        "inventory",
+        "migration_inventory",
+        "reconcile",
+    },
     Feedback: {"create", "get", "list", "require", "resolve", "review"},
-    Skills: {"create", "delete", "get", "list", "require"},
+    Skills: {"create", "delete", "get", "import_files", "list", "require"},
     PostProcessors: {"delete", "get", "list", "register", "require"},
+    MaterialFrames: {"get", "history", "list"},
+    MaterialSpaces: {"create", "get", "import_file", "list"},
+    MaterialProjections: {
+        "export_projection",
+        "export_space",
+        "get",
+        "list",
+        "review",
+        "review_all",
+        "run",
+        "run_all",
+    },
+    MaterialGraph: {"clear", "extract", "get", "review", "review_counts"},
+    MaterialFeedback: {"list", "resolve", "review", "summary"},
+    MaterialLibrary: {"link_processed", "search"},
+    MaterialWorkflows: {
+        "correct",
+        "curate_schema",
+        "get",
+        "list",
+        "list_schema_proposals",
+        "list_tasks",
+        "rebuild_indexes",
+        "require",
+        "review",
+        "review_schema_proposal",
+        "run_task",
+        "schedule_reextraction",
+        "search",
+    },
 }
 
 

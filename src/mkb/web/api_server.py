@@ -102,6 +102,7 @@ logger = logging.getLogger(__name__)
 async def _lifespan(_app: FastAPI):
     from mkb.db.engine import require_schema_current
     from mkb.runtime_settings import get_setting
+    from mkb.web.dependencies import close_knowledge_base, get_knowledge_base
 
     for warning in settings.validate_startup(log_level=get_setting("log_level")):
         logger.warning("UNSAFE LOCAL OVERRIDE: %s", warning)
@@ -115,7 +116,11 @@ async def _lifespan(_app: FastAPI):
         settings.api_host,
         settings.cors_origins,
     )
-    yield
+    get_knowledge_base()
+    try:
+        yield
+    finally:
+        close_knowledge_base()
 
 
 app = FastAPI(title="MKB API", version="0.1.0", lifespan=_lifespan)

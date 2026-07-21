@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,13 +23,22 @@ def _job_id(value: str | uuid.UUID) -> str:
 class Jobs:
     """Query, wait for, and cooperatively cancel durable jobs."""
 
-    def __init__(self, backend: JobBackend | None):
+    def __init__(
+        self,
+        backend: JobBackend | None,
+        action_submitter: Callable[..., str] | None = None,
+    ):
         self._backend = backend
+        self._action_submitter = action_submitter
 
     def _require_backend(self) -> JobBackend:
         if self._backend is None:
             raise ConflictError("Durable jobs are unavailable for this client")
         return self._backend
+
+    def available(self) -> bool:
+        """Return whether this client has a configured durable-job backend."""
+        return self._backend is not None
 
     def get(self, job_id: str | uuid.UUID) -> Job | None:
         return self._require_backend().get(_job_id(job_id))
@@ -61,18 +70,42 @@ class Jobs:
             )
         )
 
+    def submit_action(self, action: str, **kwargs: Any) -> Job:
+        """Start an application-owned action through the configured job adapter."""
+        if not action.strip():
+            raise ValidationError("job action must not be empty")
+        if self._action_submitter is None:
+            raise ConflictError("Application job actions are unavailable for this client")
+        return self.require(self._action_submitter(action.strip(), **kwargs))
+
     def require(self, job_id: str | uuid.UUID) -> Job:
         job = self.get(job_id)
         if job is None:
             raise NotFoundError(f"Job not found: {job_id}")
         return job
 
-    def list(self, *, limit: int = 100, offset: int = 0) -> list[Job]:
+    def list(
+        self,
+        *,
+        project_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Job]:
         if limit < 1 or limit > 1000:
             raise ValidationError("limit must be between 1 and 1000")
         if offset < 0:
             raise ValidationError("offset must be non-negative")
-        return self._require_backend().list(limit=limit, offset=offset)
+        backend = self._require_backend()
+        if project_id is not None:
+            operation = getattr(backend, "list_for_project", None)
+            if callable(operation):
+                return operation(project_id=project_id, limit=limit, offset=offset)
+            return [
+                job
+                for job in backend.list(limit=1000, offset=0)
+                if job.project_id == project_id
+            ][offset : offset + limit]
+        return backend.list(limit=limit, offset=offset)
 
     def wait(
         self,
@@ -86,6 +119,39 @@ class Jobs:
 
     def cancel(self, job_id: str | uuid.UUID) -> Job:
         return self._require_backend().cancel(_job_id(job_id))
+
+    def cancel_all(self, *, project_id: str | None = None) -> list[Job]:
+        backend = self._require_backend()
+        operation = getattr(backend, "cancel_all", None)
+        if callable(operation):
+            return operation(project_id=project_id)
+        cancelled = []
+        for job in self.list(limit=1000):
+            if project_id is not None and job.project_id != project_id:
+                continue
+            if job.status in {"QUEUED", "RUNNING", "CANCELLING"}:
+                cancelled.append(backend.cancel(str(job.id)))
+        return cancelled
+
+    def find_active(
+        self,
+        *,
+        project_id: str | None = None,
+        kind: str | None = None,
+    ) -> Job | None:
+        backend = self._require_backend()
+        operation = getattr(backend, "find_active", None)
+        if callable(operation):
+            return operation(project_id=project_id, kind=kind)
+        for job in self.list(limit=1000):
+            if job.status not in {"QUEUED", "RUNNING", "CANCELLING"}:
+                continue
+            if project_id is not None and job.project_id != project_id:
+                continue
+            if kind is not None and job.kind != kind:
+                continue
+            return job
+        return None
 
     def events(
         self,

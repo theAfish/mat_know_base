@@ -3,17 +3,15 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Response
 
 from mkb import api
-from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import Asset, ProcessedAsset, ProjectAsset
-from mkb.storage.s3 import download_bytes
 from mkb.services.workflows import compatibility as canonical_compat
 from mkb.web._helpers import (
     _parse_uuid,
     require_service_result,
     require_service_result_or_not_found,
-    start_web_job_action,
 )
 from mkb.web.content import asset_media_type, inline_headers
+from mkb.web.dependencies import get_knowledge_base
+from mkb.web.job_backend import serialize_web_job
 from mkb.web._models import (
     ProjectGroupAssign,
     ProjectGroupCreate,
@@ -25,7 +23,6 @@ from mkb.web._models import (
     SchemaProposalReviewRequest,
     WorkflowReextractionRequest,
 )
-from mkb.web._state import jobs
 
 router = APIRouter()
 
@@ -41,11 +38,20 @@ def list_projects(limit: int = 5000):
 
 @router.get("/api/projects/{project_id}")
 def get_project(project_id: str):
-    rows = api.list_projects(limit=500)
-    for row in rows:
-        if row["project_id"] == project_id:
-            return row
-    raise HTTPException(status_code=404, detail="Project not found")
+    identifier = _parse_uuid(project_id, "project_id")
+    collection = get_knowledge_base().collections.get(identifier)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {
+        "project_id": str(collection.id),
+        "label": collection.name,
+        "source_path": collection.source_path,
+        "file_count": collection.source_count,
+        "group_id": str(collection.group_id) if collection.group_id else None,
+        "metadata": collection.metadata,
+        "created_at": collection.created_at,
+        "updated_at": collection.updated_at,
+    }
 
 
 @router.patch("/api/projects/{project_id}")
@@ -78,78 +84,69 @@ def list_project_processed_assets(project_id: str):
 def get_project_asset_content(project_id: str, asset_id: str):
     pid = _parse_uuid(project_id, "project_id")
     aid = _parse_uuid(asset_id, "asset_id")
-    with SyncSessionLocal() as session:
-        asset = (
-            session.query(Asset)
-            .join(ProjectAsset, ProjectAsset.asset_id == Asset.asset_id)
-            .filter(ProjectAsset.project_id == pid, Asset.asset_id == aid)
-            .first()
+    kb = get_knowledge_base()
+    source = kb.sources.get(aid)
+    if source is None or pid not in source.collection_ids:
+        raise HTTPException(status_code=404, detail="Asset not found in this project")
+    media_type = _asset_media_type(source.filename, source.media_type)
+    if not media_type:
+        raise HTTPException(
+            status_code=415,
+            detail="Preview is only available for PDF and Markdown files",
         )
-        if not asset:
-            raise HTTPException(status_code=404, detail="Asset not found in this project")
-        media_type = _asset_media_type(asset.filename, asset.mime_type)
-        if not media_type:
-            raise HTTPException(status_code=415, detail="Preview is only available for PDF and Markdown files")
-        data = download_bytes(asset.s3_bucket, asset.s3_key)
-        return Response(
-            content=data,
-            media_type=media_type,
-            headers=_inline_headers(asset.filename),
-        )
+    return Response(
+        content=kb.sources.read_bytes(source.id),
+        media_type=media_type,
+        headers=_inline_headers(source.filename),
+    )
 
 
 @router.get("/api/projects/{project_id}/processed-assets/{processed_asset_id}/content")
 def get_project_processed_asset_content(project_id: str, processed_asset_id: str):
     pid = _parse_uuid(project_id, "project_id")
     paid = _parse_uuid(processed_asset_id, "processed_asset_id")
-    with SyncSessionLocal() as session:
-        row = (
-            session.query(ProcessedAsset)
-            .join(ProjectAsset, ProjectAsset.asset_id == ProcessedAsset.asset_id)
-            .filter(
-                ProjectAsset.project_id == pid,
-                ProcessedAsset.processed_asset_id == paid,
-            )
-            .first()
+    kb = get_knowledge_base()
+    artifact = kb.artifacts.get(paid)
+    source = kb.sources.get(artifact.source_id) if artifact is not None else None
+    if artifact is None or source is None or pid not in source.collection_ids:
+        raise HTTPException(
+            status_code=404,
+            detail="Processed asset not found in this project",
         )
-        if not row:
-            raise HTTPException(status_code=404, detail="Processed asset not found in this project")
-
-        metadata = row.conversion_metadata or {}
-        filename = metadata.get("primary_relpath") or f"processed.{row.output_format}"
-        media_type = _asset_media_type(filename)
-        if not media_type:
-            raise HTTPException(status_code=415, detail="Preview is only available for PDF and Markdown files")
-        data = download_bytes(row.s3_bucket, row.s3_key)
-        return Response(
-            content=data,
-            media_type=media_type,
-            headers=_inline_headers(Path(filename).name),
+    filename = artifact.primary_path or f"processed.{artifact.format}"
+    media_type = _asset_media_type(filename)
+    if not media_type:
+        raise HTTPException(
+            status_code=415,
+            detail="Preview is only available for PDF and Markdown files",
         )
+    return Response(
+        content=kb.artifacts.read_bytes(artifact.id),
+        media_type=media_type,
+        headers=_inline_headers(Path(filename).name),
+    )
 
 
 @router.post("/api/projects/{project_id}/process")
 def process_project(project_id: str):
     _parse_uuid(project_id, "project_id")
-    job_id = start_web_job_action(
-        jobs,
+    job = get_knowledge_base().jobs.submit_action(
         "process_project",
         job_project_id=project_id,
         project_id=project_id,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.post("/api/projects/{project_id}/extract")
 def extract_project(project_id: str):
     _parse_uuid(project_id, "project_id")
-    job_id = start_web_job_action(
-        jobs,
+    job = get_knowledge_base().jobs.submit_action(
         "extract_project",
         job_project_id=project_id,
         project_id=project_id,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.post("/api/projects/{project_id}/project")
@@ -160,8 +157,7 @@ def project_project(project_id: str, body: ProjectionRunRequest):
     if source_type not in {"frame", "markdown"}:
         raise HTTPException(status_code=400, detail=f"Invalid source_type: {body.source_type}")
     label = "Project" if source_type == "frame" else "Project (markdown)"
-    job_id = start_web_job_action(
-        jobs,
+    job = get_knowledge_base().jobs.submit_action(
         "project_to_space",
         job_project_id=project_id,
         label=label,
@@ -169,40 +165,40 @@ def project_project(project_id: str, body: ProjectionRunRequest):
         project_id=project_id,
         source_type=source_type,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.post("/api/projects/{project_id}/kg-extract")
 def project_kg_extract(project_id: str):
     _parse_uuid(project_id, "project_id")
-    job_id = start_web_job_action(
-        jobs,
+    job = get_knowledge_base().jobs.submit_action(
         "extract_knowledge_graph",
         job_project_id=project_id,
         project_id=project_id,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.post("/api/projects/{project_id}/workflow-extract")
 def project_workflow_extract(project_id: str):
     _parse_uuid(project_id, "project_id")
-    active = jobs.find_active_job(project_id=project_id, kind="raw_workflow")
+    active = get_knowledge_base().jobs.find_active(
+        project_id=project_id, kind="raw_workflow"
+    )
     if active:
         raise HTTPException(
             status_code=409,
-            detail=f"Workflow extraction is already {active['status'].lower()} for this project.",
+            detail=f"Workflow extraction is already {active.status.lower()} for this project.",
         )
     readiness = api.get_raw_workflow_extraction_readiness(project_id)
     if not readiness.get("ready"):
         raise HTTPException(status_code=400, detail=readiness.get("message") or "Project is not ready for workflow extraction")
-    job_id = start_web_job_action(
-        jobs,
+    job = get_knowledge_base().jobs.submit_action(
         "extract_raw_workflow",
         job_project_id=project_id,
         project_id=project_id,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.get("/api/projects/{project_id}/workflows")
@@ -232,7 +228,9 @@ def project_workflow_version(project_id: str, version: int):
 @router.delete("/api/projects/{project_id}/workflows/{version}")
 def delete_project_workflow_version(project_id: str, version: int):
     _parse_uuid(project_id, "project_id")
-    active = jobs.find_active_job(project_id=project_id, kind="raw_workflow")
+    active = get_knowledge_base().jobs.find_active(
+        project_id=project_id, kind="raw_workflow"
+    )
     if active:
         raise HTTPException(
             status_code=409,
@@ -292,8 +290,10 @@ def schedule_reextraction(project_id: str, body: WorkflowReextractionRequest):
 @router.post("/api/workflow-maintenance/{task_id}/run")
 def run_maintenance_task(task_id: str):
     _parse_uuid(task_id, "task_id")
-    job_id = start_web_job_action(jobs, "workflow_maintenance", task_id=task_id)
-    return {"job_id": job_id, "task_id": task_id}
+    job = get_knowledge_base().jobs.submit_action(
+        "workflow_maintenance", task_id=task_id
+    )
+    return {"job_id": str(job.id), "task_id": task_id}
 
 
 @router.get("/api/workflow-maintenance")
@@ -314,8 +314,7 @@ def curate_schema(body: SchemaCurateRequest):
         raise HTTPException(status_code=400, detail="sample_size must be at least 1")
     if body.mode not in {"global", "local", "auto"}:
         raise HTTPException(status_code=400, detail="mode must be global, local, or auto")
-    job_id = start_web_job_action(
-        jobs,
+    job = get_knowledge_base().jobs.submit_action(
         "curate_workflow_schema",
         min_support=body.min_support,
         author=body.author.strip() or "workflow-review/ui",
@@ -324,7 +323,7 @@ def curate_schema(body: SchemaCurateRequest):
         model=body.model,
         verbose=body.verbose,
     )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.get("/api/workflow-schema/proposals")
@@ -364,7 +363,10 @@ def schema_proposal_revisions(proposal_id: str):
 
 @router.get("/api/projects/{project_id}/jobs")
 def project_jobs(project_id: str):
-    return jobs.list_jobs(project_id=project_id, limit=100)
+    return [
+        serialize_web_job(job)
+        for job in get_knowledge_base().jobs.list(project_id=project_id, limit=100)
+    ]
 
 
 # ── Project groups ─────────────────────────────────────────────

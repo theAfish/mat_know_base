@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Protocol, runtime_checkable
+from pathlib import Path
+from typing import Any, BinaryIO, Protocol, runtime_checkable
 
 from mkb.exceptions import ConflictError, NotFoundError, ValidationError
 from mkb.models import FeedbackItem, OperationReceipt, PostProcessor, Skill
@@ -160,8 +162,13 @@ class Feedback:
 class Skills:
     """Register instruction documents without relying on a module-global registry."""
 
-    def __init__(self, repository: SkillRepository | None):
+    def __init__(
+        self,
+        repository: SkillRepository | None,
+        importer: Callable[[list[tuple[str, BinaryIO]]], dict[str, Any]] | None = None,
+    ):
         self._repository = repository
+        self._importer = importer
 
     def _repo(self) -> SkillRepository:
         if self._repository is None:
@@ -193,6 +200,36 @@ class Skills:
                 updated_at=now,
             )
         )
+
+    def import_files(self, files: list[tuple[str, BinaryIO]]) -> Skill:
+        """Import a SKILL.md file, folder upload, or zip through the bound adapter."""
+        if not files:
+            raise ValidationError("skill import must include at least one file")
+        if self._importer is not None:
+            result = self._importer(files)
+            if result.get("error"):
+                raise ValidationError(str(result["error"]))
+            identifier = result.get("skill_id")
+            if not identifier:
+                raise ConflictError("skill importer did not return a skill_id")
+            return self.require(str(identifier))
+        if len(files) != 1 or Path(files[0][0]).name.lower() != "skill.md":
+            raise ConflictError(
+                "This skill adapter supports only a single SKILL.md import"
+            )
+        try:
+            content = files[0][1].read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValidationError("SKILL.md must be UTF-8 text") from exc
+        title = next(
+            (
+                line[2:].strip()
+                for line in content.splitlines()
+                if line.strip().startswith("# ") and line[2:].strip()
+            ),
+            "Imported skill",
+        )
+        return self.create(name=title, content=content)
 
     def get(self, skill_id_or_slug: str | uuid.UUID) -> Skill | None:
         return self._repo().get(str(skill_id_or_slug))

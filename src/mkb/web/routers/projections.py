@@ -8,9 +8,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from mkb import api
-from mkb.web._helpers import _parse_uuid, require_service_result, start_web_job_action
+from mkb.web._helpers import _parse_uuid, require_service_result
+from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import ProjectionReviewRequest
-from mkb.web._state import jobs
 
 router = APIRouter()
 
@@ -198,18 +198,16 @@ def review_projections(body: ProjectionReviewRequest):
                 status_code=400,
                 detail="Session-mode review requires explicit project_ids (or project_id).",
             )
-        job_id = start_web_job_action(
-            jobs,
+        job = get_knowledge_base().jobs.submit_action(
             "review_projection_session",
             space_id=body.space_id,
             project_ids=project_ids,
             reviewer_id=body.reviewer_id,
         )
-        return {"job_id": job_id}
+        return {"job_id": str(job.id)}
 
     if len(project_ids) == 1:
-        job_id = start_web_job_action(
-            jobs,
+        job = get_knowledge_base().jobs.submit_action(
             "review_projection",
             job_project_id=project_ids[0],
             space_id=body.space_id,
@@ -217,25 +215,25 @@ def review_projections(body: ProjectionReviewRequest):
             reviewer_id=body.reviewer_id,
         )
     elif project_ids:
-        job_ids = []
+        job_ids: list[str] = []
         for project_id in project_ids:
             job_ids.append(
-                start_web_job_action(
-                    jobs,
-                    "review_projection",
-                    job_project_id=project_id,
-                    space_id=body.space_id,
-                    project_id=project_id,
-                    reviewer_id=body.reviewer_id,
+                str(
+                    get_knowledge_base().jobs.submit_action(
+                        "review_projection",
+                        job_project_id=project_id,
+                        space_id=body.space_id,
+                        project_id=project_id,
+                        reviewer_id=body.reviewer_id,
+                    ).id
                 )
             )
         return {"job_id": job_ids[0], "job_ids": job_ids}
     else:
-        job_id = start_web_job_action(
-            jobs,
+        job = get_knowledge_base().jobs.submit_action(
             "review_projection_all",
             space_id=body.space_id,
             project_ids=project_ids or None,
             reviewer_id=body.reviewer_id,
         )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}

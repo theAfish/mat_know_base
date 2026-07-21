@@ -10,7 +10,17 @@ from mkb.exceptions import (
     ValidationError,
 )
 from mkb.sdk import KnowledgeBase, MKBConfig
-from mkb.materials import Materials
+from mkb.application_services import AssistantService
+from mkb.materials import (
+    MaterialFeedback,
+    MaterialFrames,
+    MaterialGraph,
+    MaterialLibrary,
+    MaterialProjections,
+    Materials,
+    MaterialSpaces,
+    MaterialWorkflows,
+)
 from mkb.job_service import Jobs
 from mkb.transactions import Transaction
 from mkb.ports import (
@@ -60,6 +70,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Artifact",
+    "AssistantService",
     "BackendUnavailableError",
     "CacheKeyComponents",
     "Collection",
@@ -77,7 +88,14 @@ __all__ = [
     "KnowledgeBase",
     "MKBError",
     "MKBConfig",
+    "MaterialFeedback",
+    "MaterialFrames",
+    "MaterialGraph",
+    "MaterialLibrary",
+    "MaterialProjections",
     "Materials",
+    "MaterialSpaces",
+    "MaterialWorkflows",
     "MaintenanceReport",
     "OperationReceipt",
     "NotFoundError",

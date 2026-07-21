@@ -14,11 +14,24 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
 
 from mkb.exceptions import ConflictError, MKBError, ValidationError
-from mkb.application_services import MaintenanceService, SettingsService
+from mkb.application_services import (
+    AssistantService,
+    MaintenanceService,
+    SettingsService,
+)
 from mkb.graph import Graph
 from mkb.job_service import Jobs
 from mkb.managed_services import Feedback, PostProcessors, Skills
-from mkb.materials import Materials
+from mkb.materials import (
+    MaterialFeedback,
+    MaterialFrames,
+    MaterialGraph,
+    MaterialLibrary,
+    MaterialProjections,
+    Materials,
+    MaterialSpaces,
+    MaterialWorkflows,
+)
 from mkb.pipelines import Pipelines
 from mkb.ports import (
     Capabilities,
@@ -100,6 +113,10 @@ class MKBConfig:
     processed_bucket: str = "processed"
     archive_bucket: str = "archive"
     temp_bucket: str = "temp"
+    allow_uploaded_python: bool = False
+    upload_max_file_mb: int = 100
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
 
     @classmethod
     def from_environment(cls) -> "MKBConfig":
@@ -115,6 +132,10 @@ class MKBConfig:
             processed_bucket=settings.s3_bucket_processed,
             archive_bucket=settings.s3_bucket_archive,
             temp_bucket=settings.s3_bucket_temp,
+            allow_uploaded_python=settings.allow_uploaded_python,
+            upload_max_file_mb=settings.upload_max_file_mb,
+            api_host=settings.api_host,
+            api_port=settings.api_port,
         )
 
 
@@ -157,6 +178,13 @@ class KnowledgeBase:
         feedback: Feedback | None = None,
         skills: Skills | None = None,
         post_processors: PostProcessors | None = None,
+        runtime_settings_reader: Callable[[], dict[str, Any]] | None = None,
+        runtime_settings_updater: (
+            Callable[[dict[str, Any]], dict[str, Any]] | None
+        ) = None,
+        startup_validator: Callable[..., list[str]] | None = None,
+        migration_inventory_reader: Callable[[], dict[str, Any]] | None = None,
+        cleanup_executor: Callable[..., dict[str, Any]] | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()
         self.config = config or MKBConfig()
@@ -185,8 +213,18 @@ class KnowledgeBase:
         self.post_processors = (
             post_processors if post_processors is not None else PostProcessors(None)
         )
-        self.settings = SettingsService(self)
-        self.maintenance = MaintenanceService(self)
+        self.settings = SettingsService(
+            self,
+            runtime_reader=runtime_settings_reader,
+            runtime_updater=runtime_settings_updater,
+            startup_validator=startup_validator,
+        )
+        self.assistant = AssistantService(self)
+        self.maintenance = MaintenanceService(
+            self,
+            migration_inventory_reader=migration_inventory_reader,
+            cleanup_executor=cleanup_executor,
+        )
         self._schema_manager = schema_manager
         self._transaction_factory = transaction_factory
         detected_capabilities = set(capabilities or ())
@@ -351,6 +389,43 @@ class KnowledgeBase:
             SQLAlchemySkillRepository,
             SQLAlchemyWorkflowRepository,
         )
+        from mkb import runtime_settings
+        from mkb.agents.ontology_induction import run_ontology_induction
+        from mkb.skills import registry as skill_registry
+        from mkb.spaces.export_qa_bench import (
+            export_projection_to_yaml,
+            export_space_to_yaml,
+        )
+        from mkb.spaces.registry import load_space_from_file
+        from mkb.config import settings as application_settings
+        from mkb.maintenance import apply_retention, prune_job_history, retention_plan
+        from mkb.migration_inventory import migration_inventory
+
+        def import_skill_files(files):
+            if len(files) == 1:
+                filename, stream = files[0]
+                if filename.lower().endswith(".zip"):
+                    return skill_registry.create_skill_from_zip(filename, stream)
+                return skill_registry.create_skill_from_single_file(filename, stream)
+            return skill_registry.create_skill_from_files(files)
+
+        def update_runtime_settings(updates):
+            return runtime_settings.public_view(
+                runtime_settings.update_settings(updates)
+            )
+
+        def execute_cleanup(*, older_than_days, job_days, apply, confirm):
+            plan = retention_plan(older_than_days=older_than_days)
+            result = {
+                "local": plan,
+                "jobs": prune_job_history(older_than_days=job_days),
+            }
+            if apply:
+                result["local"] = apply_retention(plan, confirm=confirm)
+                result["jobs"] = prune_job_history(
+                    older_than_days=job_days, apply=True
+                )
+            return result
 
         knowledge_base = cls(
             services=services,
@@ -376,12 +451,34 @@ class KnowledgeBase:
             schemas=ExtractionSchemas(SQLAlchemyExtractionSchemaRepository(database)),
             projections=Projections(SQLAlchemyProjectionRepository(database)),
             feedback=Feedback(SQLAlchemyFeedbackRepository(database)),
-            skills=Skills(SQLAlchemySkillRepository(database)),
+            skills=Skills(
+                SQLAlchemySkillRepository(database),
+                importer=import_skill_files,
+            ),
             post_processors=PostProcessors(
                 SQLAlchemyPostProcessorRepository(database)
             ),
+            runtime_settings_reader=runtime_settings.public_view,
+            runtime_settings_updater=update_runtime_settings,
+            startup_validator=application_settings.validate_startup,
+            migration_inventory_reader=migration_inventory,
+            cleanup_executor=execute_cleanup,
             materials=Materials(
-                workflows=Workflows(SQLAlchemyWorkflowRepository(database))
+                frames=MaterialFrames(services),
+                spaces=MaterialSpaces(services, file_loader=load_space_from_file),
+                projections=MaterialProjections(
+                    services,
+                    projection_exporter=export_projection_to_yaml,
+                    space_exporter=export_space_to_yaml,
+                ),
+                workflows=MaterialWorkflows(
+                    Workflows(SQLAlchemyWorkflowRepository(database)),
+                    services,
+                    schema_curator=run_ontology_induction,
+                ),
+                graph=MaterialGraph(services),
+                feedback=MaterialFeedback(services),
+                library=MaterialLibrary(services),
             ),
             capabilities=capabilities,
         )
@@ -609,6 +706,12 @@ class KnowledgeBase:
     # domain-specific grouped APIs will be added without relying on __getattr__.
     def setup(self) -> None:
         return self._call("setup")
+
+    def reset_database(self, *, confirm: str) -> None:
+        """Reset legacy application tables only with an exact confirmation token."""
+        if confirm != "RESET DATABASE":
+            raise ValidationError("reset_database requires confirm='RESET DATABASE'")
+        return self._call("reset_db")
 
     def ingest(self, directory, label=None, *, user_named=False) -> dict:
         return self._call("ingest", directory, label=label, user_named=user_named)

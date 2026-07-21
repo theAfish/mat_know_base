@@ -292,17 +292,17 @@ to simplify the new architecture.
       Python user -----> KnowledgeBase/application services -> core -> ports
       ```
 
-- [ ] Move direct ORM/S3 access out of web routes, including raw and processed asset
+- [x] Move direct ORM/S3 access out of web routes, including raw and processed asset
       preview/download paths.
-- [ ] Move web-only job management behind `kb.jobs` so notebooks and other applications
+- [x] Move web-only job management behind `kb.jobs` so notebooks and other applications
       can use the same durable job behavior.
-- [ ] Move settings, skills, assistant sessions, post-processor scripts, diagnostics,
+- [x] Move settings, skills, assistant sessions, post-processor scripts, diagnostics,
       and maintenance behind supported application services where appropriate.
-- [ ] Rewrite CLI commands to call the same public SDK. Keep interactive confirmation
+- [x] Rewrite CLI commands to call the same public SDK. Keep interactive confirmation
       in the CLI while destructive SDK methods require explicit confirmation tokens or
       policies.
 - [ ] Keep current React behavior as an integration test for feature parity.
-- [ ] Keep current materials APIs as `kb.materials.frames`, `kb.materials.spaces`,
+- [x] Keep current materials APIs as `kb.materials.frames`, `kb.materials.spaces`,
       `kb.materials.projections`, and `kb.materials.workflows`, or provide an equivalent
       `MaterialsKnowledgeBase` extension.
 - [ ] Do not remove the legacy facade until the CLI, HTTP API, UI, examples, and local

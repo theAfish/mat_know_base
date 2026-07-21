@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from mkb.logging_setup import setup_logging
+from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import SettingsUpdateRequest
 
 router = APIRouter()
@@ -8,18 +9,14 @@ router = APIRouter()
 
 @router.get("/api/settings")
 def get_settings_endpoint():
-    from mkb import runtime_settings
-
-    return runtime_settings.public_view()
+    return get_knowledge_base().settings.runtime()
 
 
 @router.put("/api/settings")
 def update_settings_endpoint(body: SettingsUpdateRequest):
-    from mkb import runtime_settings
-
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     try:
-        result = runtime_settings.update_settings(updates)
+        result = get_knowledge_base().settings.update(updates)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -27,4 +24,4 @@ def update_settings_endpoint(body: SettingsUpdateRequest):
     if "log_level" in updates:
         setup_logging(level=result.get("log_level"), force=True)
 
-    return runtime_settings.public_view(result)
+    return result

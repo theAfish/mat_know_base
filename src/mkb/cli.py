@@ -1,4 +1,4 @@
-"""CLI entry point — thin wrapper around mkb.api."""
+"""CLI entry point backed by an explicit :class:`mkb.KnowledgeBase` client."""
 
 import argparse
 import json
@@ -14,81 +14,88 @@ def _json_dump(obj):
     print(json.dumps(obj, indent=2, default=str))
 
 
+def _knowledge_base():
+    from mkb import KnowledgeBase
+
+    return KnowledgeBase.from_environment()
+
+
 # ── Commands ─────────────────────────────────────────────────────
 
 
 def cmd_setup(args):
-    from mkb.api import setup
-    setup()
+    with _knowledge_base() as kb:
+        kb.setup()
     print("Database migrated to the Alembic head.")
 
 
 def cmd_reset_db(args):
-    from mkb.api import reset_db
-    confirm = input("This will DROP all tables. Type 'yes' to confirm: ")
-    if confirm.strip().lower() != "yes":
+    confirm = input(
+        "This will DROP all tables. Type 'RESET DATABASE' to confirm: "
+    )
+    if confirm.strip() != "RESET DATABASE":
         print("Aborted.")
         return
-    reset_db()
+    with _knowledge_base() as kb:
+        kb.reset_database(confirm=confirm.strip())
     print("Database reset complete.")
 
 
 def cmd_ingest(args):
-    from mkb.api import ingest
-    result = ingest(args.directory, label=args.label)
+    with _knowledge_base() as kb:
+        result = kb.ingest(args.directory, label=args.label)
     _json_dump(result)
 
 
 def cmd_sync(args):
-    from mkb.api import sync, sync_project
-    if args.project_id:
-        result = sync_project(args.project_id)
-    else:
-        result = sync(args.root_dir)
+    with _knowledge_base() as kb:
+        if args.project_id:
+            result = kb.sync_project(args.project_id)
+        else:
+            result = kb.sync(args.root_dir)
     _json_dump(result)
 
 
 def cmd_process(args):
-    from mkb.api import process
-    result = process(project_id=args.project_id)
+    with _knowledge_base() as kb:
+        result = kb.process(project_id=args.project_id)
     _json_dump(result)
 
 
 def cmd_extract(args):
-    from mkb.api import extract
-    result = extract(
-        project_id=args.project_id,
-        model=args.model,
-        verbose=args.verbose,
-        max_passes=args.max_passes,
-    )
+    with _knowledge_base() as kb:
+        result = kb.extract(
+            project_id=args.project_id,
+            model=args.model,
+            verbose=args.verbose,
+            max_passes=args.max_passes,
+        )
     _json_dump(result)
 
 
 def cmd_projects(args):
-    from mkb.api import list_projects
-    projects = list_projects(limit=args.limit)
+    with _knowledge_base() as kb:
+        projects = kb.list_projects(limit=args.limit)
     for p in projects:
         print(f"  {p['project_id']}  {p['frame_status']:<12}  {p['asset_count']} files  {p['label'] or p['source_path'] or ''}")
     print(f"\n{len(projects)} project(s).")
 
 
 def cmd_assets(args):
-    from mkb.api import list_assets
-    assets = list_assets(project_id=args.project_id, limit=args.limit)
+    with _knowledge_base() as kb:
+        assets = kb.list_assets(project_id=args.project_id, limit=args.limit)
     for a in assets:
         print(f"  {a['asset_id']}  {a['status']:<10}  {a['mime_type']:<30}  {a['filename']}")
     print(f"\n{len(assets)} asset(s).")
 
 
 def cmd_search(args):
-    from mkb.api import search_library
-
-    result = search_library(
-        query=args.query,
-        limit=args.limit,
-        project_id=args.project_id,
-    )
+    with _knowledge_base() as kb:
+        result = kb.materials.library.search(
+            query=args.query,
+            limit=args.limit,
+            project_id=args.project_id,
+        )
 
     projects = result["projects"]
     assets = result["assets"]
@@ -118,16 +125,16 @@ def cmd_search(args):
 
 
 def cmd_frames(args):
-    from mkb.api import list_frames
-    frames = list_frames()
+    with _knowledge_base() as kb:
+        frames = kb.materials.frames.list()
     for f in frames:
         print(f"  {f['project_id']}  {f['status']:<12}  v{f.get('extraction_version', 0)}  checked={f['times_checked']}  {f['extraction_summary'] or '':.60s}")
     print(f"\n{len(frames)} frame(s).")
 
 
 def cmd_frame(args):
-    from mkb.api import get_frame
-    frame = get_frame(args.project_id)
+    with _knowledge_base() as kb:
+        frame = kb.materials.frames.get(args.project_id)
     if not frame:
         print(f"No frame found for project {args.project_id}.")
         sys.exit(1)
@@ -135,8 +142,8 @@ def cmd_frame(args):
 
 
 def cmd_extraction_history(args):
-    from mkb.api import get_extraction_history
-    history = get_extraction_history(args.project_id)
+    with _knowledge_base() as kb:
+        history = kb.materials.frames.history(args.project_id)
     if not history:
         print(f"No extraction history for project {args.project_id}.")
         return
@@ -154,39 +161,39 @@ def cmd_extraction_history(args):
 
 def cmd_space_create(args):
     import json as _json
-    from mkb.api import create_space
 
     schema = _json.loads(args.schema_file.read()) if args.schema_file else {}
     field_descs = _json.loads(args.field_descriptions.read()) if args.field_descriptions else {}
 
-    result = create_space(
-        name=args.name,
-        domain=args.domain,
-        extraction_schema=schema,
-        system_prompt=args.system_prompt or "",
-        field_descriptions=field_descs,
-        description=args.description,
-    )
+    with _knowledge_base() as kb:
+        result = kb.materials.spaces.create(
+            name=args.name,
+            domain=args.domain,
+            extraction_schema=schema,
+            system_prompt=args.system_prompt or "",
+            field_descriptions=field_descs,
+            description=args.description,
+        )
     _json_dump(result)
 
 
 def cmd_space_create_from_file(args):
-    from mkb.spaces.registry import load_space_from_file
-    result = load_space_from_file(args.file)
+    with _knowledge_base() as kb:
+        result = kb.materials.spaces.import_file(args.file)
     _json_dump(result)
 
 
 def cmd_space_list(args):
-    from mkb.api import list_spaces
-    spaces = list_spaces()
+    with _knowledge_base() as kb:
+        spaces = kb.materials.spaces.list()
     for s in spaces:
         print(f"  {s['space_id']}  {s['name']:<20}  v{s['version']}  {s['domain']}")
     print(f"\n{len(spaces)} space(s).")
 
 
 def cmd_space_show(args):
-    from mkb.api import get_space
-    space = get_space(args.space)
+    with _knowledge_base() as kb:
+        space = kb.materials.spaces.get(args.space)
     if not space:
         print(f"Space '{args.space}' not found.")
         sys.exit(1)
@@ -197,27 +204,27 @@ def cmd_space_show(args):
 
 
 def cmd_project_run(args):
-    from mkb.api import project, project_all
-    if args.all:
-        result = project_all(
-            space_id=args.space,
-            model=args.model,
-            verbose=args.verbose,
-        )
-    else:
-        result = project(
-            space_id=args.space,
-            project_id=args.project_id,
-            frame_id=args.frame_id,
-            model=args.model,
-            verbose=args.verbose,
-        )
+    with _knowledge_base() as kb:
+        if args.all:
+            result = kb.materials.projections.run_all(
+                space_id=args.space,
+                model=args.model,
+                verbose=args.verbose,
+            )
+        else:
+            result = kb.materials.projections.run(
+                space_id=args.space,
+                project_id=args.project_id,
+                frame_id=args.frame_id,
+                model=args.model,
+                verbose=args.verbose,
+            )
     _json_dump(result)
 
 
 def cmd_projections(args):
-    from mkb.api import list_projections
-    projections = list_projections(space_id=args.space_id)
+    with _knowledge_base() as kb:
+        projections = kb.materials.projections.list(space_id=args.space_id)
     for p in projections:
         reviewed = f"  reviewed={p['times_reviewed']}" if p.get('times_reviewed') else ""
         print(f"  {p['projection_id']}  {p['status']:<16}  space={p['space_id'][:8]}  frame={p['frame_id'][:8]}  v{p['space_version']}{reviewed}")
@@ -225,8 +232,8 @@ def cmd_projections(args):
 
 
 def cmd_projection_show(args):
-    from mkb.api import get_projection
-    proj = get_projection(args.projection_id)
+    with _knowledge_base() as kb:
+        proj = kb.materials.projections.get(args.projection_id)
     if not proj:
         print(f"Projection {args.projection_id} not found.")
         sys.exit(1)
@@ -234,11 +241,7 @@ def cmd_projection_show(args):
 
 
 def cmd_export_qa_bench(args):
-    from mkb.spaces.export_qa_bench import (
-        export_projection_to_yaml,
-        export_space_to_yaml,
-        QABenchExportError,
-    )
+    from mkb import MKBError
 
     if not args.projection_id and not args.space:
         print("error: provide --projection-id or --space", file=sys.stderr)
@@ -246,12 +249,16 @@ def cmd_export_qa_bench(args):
 
     try:
         if args.projection_id:
-            result = export_projection_to_yaml(
-                args.projection_id, args.out, overwrite=args.overwrite
-            )
+            with _knowledge_base() as kb:
+                result = kb.materials.projections.export_projection(
+                    args.projection_id, args.out, overwrite=args.overwrite
+                )
         else:
-            result = export_space_to_yaml(args.space, args.out, overwrite=args.overwrite)
-    except QABenchExportError as exc:
+            with _knowledge_base() as kb:
+                result = kb.materials.projections.export_space(
+                    args.space, args.out, overwrite=args.overwrite
+                )
+    except MKBError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -265,52 +272,47 @@ def cmd_export_qa_bench(args):
 
 
 def cmd_kg_extract(args):
-    from mkb.api import extract_knowledge_graph
-
-    result = extract_knowledge_graph(
-        project_id=args.project_id,
-        frame_id=args.frame_id,
-        model=args.model,
-        verbose=args.verbose,
-        clear_existing=not args.no_clear_existing,
-        clear_legacy_frame_sections=not args.keep_legacy_frame_graphs,
-    )
+    with _knowledge_base() as kb:
+        result = kb.materials.graph.extract(
+            project_id=args.project_id,
+            frame_id=args.frame_id,
+            model=args.model,
+            verbose=args.verbose,
+            clear_existing=not args.no_clear_existing,
+            clear_legacy_frame_sections=not args.keep_legacy_frame_graphs,
+        )
     _json_dump(result)
 
 
 def cmd_kg_clear(args):
-    from mkb.api import clear_knowledge_graphs
-
-    result = clear_knowledge_graphs(
-        project_id=args.project_id,
-        remove_legacy_frame_sections=not args.keep_legacy_frame_graphs,
-    )
+    with _knowledge_base() as kb:
+        result = kb.materials.graph.clear(
+            project_id=args.project_id,
+            remove_legacy_frame_sections=not args.keep_legacy_frame_graphs,
+        )
     _json_dump(result)
 
 
 def cmd_kg_show(args):
-    from mkb.api import get_knowledge_graph
-
-    result = get_knowledge_graph(project_id=args.project_id)
+    with _knowledge_base() as kb:
+        result = kb.materials.graph.get(project_id=args.project_id)
     _json_dump(result)
 
 
 def cmd_kg_review(args):
-    from mkb.api import review_knowledge_graph
-
-    result = review_knowledge_graph(
-        mode=args.mode,
-        model=args.model,
-        verbose=args.verbose,
-        seed_count=args.seed_count,
-    )
+    with _knowledge_base() as kb:
+        result = kb.materials.graph.review(
+            mode=args.mode,
+            model=args.model,
+            verbose=args.verbose,
+            seed_count=args.seed_count,
+        )
     _json_dump(result)
 
 
 def cmd_kg_review_counts(args):
-    from mkb.api import get_graph_review_counts
-
-    result = get_graph_review_counts()
+    with _knowledge_base() as kb:
+        result = kb.materials.graph.review_counts()
     concepts = result.get("concepts", {})
     relations = result.get("relations", {})
     print(f"Concepts reviewed: {len(concepts)}")
@@ -329,12 +331,22 @@ def cmd_kg_review_counts(args):
 
 
 def cmd_feedback(args):
-    from mkb.api import list_feedback, list_projects, get_feedback_summary
+    with _knowledge_base() as kb:
+        if args.summary:
+            projects = kb.list_projects(limit=200)
+            summaries = {
+                p["project_id"]: kb.materials.feedback.summary(p["project_id"])
+                for p in projects
+            }
+        else:
+            items = kb.materials.feedback.list(
+                project_id=args.project_id, status=args.status
+            )
+            projects = kb.list_projects(limit=200) if not args.project_id else []
 
     if args.summary:
-        projects = list_projects(limit=200)
         for p in projects:
-            summary = get_feedback_summary(p["project_id"])
+            summary = summaries[p["project_id"]]
             if summary["total"] == 0:
                 continue
             pid = str(p["project_id"])
@@ -346,11 +358,8 @@ def cmd_feedback(args):
             print(f"  {pid}  {label:<43}  ({summary['total']} items)  status: {by_status}  cat: {by_category}")
         return
 
-    items = list_feedback(project_id=args.project_id, status=args.status)
-
     project_labels = {}
     if not args.project_id:
-        projects = list_projects(limit=200)
         project_labels = {
             p["project_id"]: p["label"] or p["source_path"] or p["project_id"][:12]
             for p in projects
@@ -369,42 +378,8 @@ def cmd_feedback(args):
 
 
 def cmd_review_feedback(args):
-    from mkb.api import review_feedback
-    result = review_feedback(
-        project_id=args.project_id,
-        model=args.model,
-        verbose=args.verbose,
-    )
-    _json_dump(result)
-
-
-def cmd_resolve_feedback(args):
-    from mkb.api import resolve_feedback
-    result = resolve_feedback(
-        feedback_id=args.feedback_id,
-        status=args.status,
-        notes=args.notes,
-    )
-    _json_dump(result)
-
-
-# ── Projection review commands ──────────────────────────────────
-
-
-def cmd_review_projections(args):
-    from mkb.api import review_projections, review_projections_all
-    if args.all:
-        result = review_projections_all(
-            space_id=args.space,
-            model=args.model,
-            verbose=args.verbose,
-        )
-    else:
-        if not args.project_id:
-            print("Error: --project-id is required unless --all is specified.")
-            sys.exit(1)
-        result = review_projections(
-            space_id=args.space,
+    with _knowledge_base() as kb:
+        result = kb.materials.feedback.review(
             project_id=args.project_id,
             model=args.model,
             verbose=args.verbose,
@@ -412,14 +387,52 @@ def cmd_review_projections(args):
     _json_dump(result)
 
 
+def cmd_resolve_feedback(args):
+    with _knowledge_base() as kb:
+        result = kb.materials.feedback.resolve(
+            feedback_id=args.feedback_id,
+            status=args.status,
+            notes=args.notes,
+        )
+    _json_dump(result)
+
+
+# ── Projection review commands ──────────────────────────────────
+
+
+def cmd_review_projections(args):
+    if not args.all and not args.project_id:
+        print("Error: --project-id is required unless --all is specified.")
+        sys.exit(1)
+    with _knowledge_base() as kb:
+        kwargs = {
+            "model": args.model,
+            "verbose": args.verbose,
+        }
+        if args.all:
+            result = kb.materials.projections.review_all(
+                space_id=args.space, **kwargs
+            )
+        else:
+            result = kb.materials.projections.review(
+                space_id=args.space,
+                project_id=args.project_id,
+                **kwargs,
+            )
+    _json_dump(result)
+
+
 
 def cmd_api(args):
     import logging
     import uvicorn
-    from mkb.config import settings
-    from mkb.runtime_settings import get_setting
 
-    for warning in settings.validate_startup(host=args.host, log_level=get_setting("log_level")):
+    with _knowledge_base() as kb:
+        runtime = kb.settings.runtime()
+        warnings = kb.settings.validate_startup(
+            host=args.host, log_level=runtime.get("log_level")
+        )
+    for warning in warnings:
         logging.getLogger("mkb.cli").warning("UNSAFE LOCAL OVERRIDE: %s", warning)
 
     uvicorn.run(
@@ -431,8 +444,10 @@ def cmd_api(args):
 
 
 def cmd_processed(args):
-    from mkb.api import list_processed_assets
-    processed = list_processed_assets(project_id=args.project_id, limit=args.limit)
+    with _knowledge_base() as kb:
+        processed = kb.list_processed_assets(
+            project_id=args.project_id, limit=args.limit
+        )
     for p in processed:
         target = p["primary_relpath"] or p["s3_key"]
         print(
@@ -443,112 +458,138 @@ def cmd_processed(args):
 
 
 def cmd_debug_link_processed(args):
-    from mkb.api import link_manual_processed_data
-
-    result = link_manual_processed_data(
-        processed_dir=args.processed_dir,
-        paper_dir=args.paper_dir,
-        project_id=args.project_id,
-        asset_id=args.asset_id,
-        primary_file=args.primary_file,
-        processing_type=args.processing_type,
-        output_format=args.output_format,
-    )
+    with _knowledge_base() as kb:
+        result = kb.materials.library.link_processed(
+            processed_dir=args.processed_dir,
+            paper_dir=args.paper_dir,
+            project_id=args.project_id,
+            asset_id=args.asset_id,
+            primary_file=args.primary_file,
+            processing_type=args.processing_type,
+            output_format=args.output_format,
+        )
     _json_dump(result)
 
 
 def cmd_workflow_review(args):
-    from mkb.api import review_raw_workflow
-    _json_dump(review_raw_workflow(args.extraction_id, status=args.status, author=args.author))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.review(
+            args.extraction_id, status=args.status, author=args.author
+        )
+    _json_dump(result)
 
 
 def cmd_workflow_correct(args):
-    from mkb.api import correct_raw_workflow
     graph = json.loads(args.graph_file.read())
-    _json_dump(correct_raw_workflow(
-        args.extraction_id, graph, reason=args.reason, author=args.author,
-        affected_nodes=args.affected_node, affected_edges=args.affected_edge,
-        evidence=args.evidence,
-    ))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.correct(
+            args.extraction_id,
+            graph,
+            reason=args.reason,
+            author=args.author,
+            affected_nodes=args.affected_node,
+            affected_edges=args.affected_edge,
+            evidence=args.evidence,
+        )
+    _json_dump(result)
 
 
 def cmd_schema_curate(args):
-    from mkb.agents.ontology_induction import run_ontology_induction
-    _json_dump(run_ontology_induction(min_support=args.min_support, author=args.author))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.curate_schema(
+            min_support=args.min_support, author=args.author
+        )
+    _json_dump(result)
 
 
 def cmd_schema_proposals(args):
-    from mkb.api import list_schema_proposals
-    _json_dump(list_schema_proposals(status=args.status))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.list_schema_proposals(status=args.status)
+    _json_dump(result)
 
 
 def cmd_schema_review(args):
-    from mkb.api import review_schema_proposal
-    _json_dump(review_schema_proposal(args.proposal_id, approve=args.approve, reviewer=args.reviewer))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.review_schema_proposal(
+            args.proposal_id, approve=args.approve, reviewer=args.reviewer
+        )
+    _json_dump(result)
 
 
 def cmd_workflow_reextract(args):
-    from mkb.api import run_workflow_maintenance_task, schedule_workflow_reextraction
     scope = {"type": args.scope}
     if args.selector:
         scope["selector"] = args.selector
-    result = schedule_workflow_reextraction(
-        args.project_id, reason=args.reason, requested_by=args.requested_by,
-        scope=scope, raw_extraction_id=args.raw_extraction_id,
-    )
-    if args.run and result.get("task_id"):
-        result = run_workflow_maintenance_task(result["task_id"], model=args.model, verbose=args.verbose)
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.schedule_reextraction(
+            args.project_id,
+            reason=args.reason,
+            requested_by=args.requested_by,
+            scope=scope,
+            raw_extraction_id=args.raw_extraction_id,
+        )
+        if args.run and result.get("task_id"):
+            result = kb.materials.workflows.run_task(
+                result["task_id"], model=args.model, verbose=args.verbose
+            )
     _json_dump(result)
 
 
 def cmd_workflow_tasks(args):
-    from mkb.api import list_workflow_maintenance_tasks
-    _json_dump(list_workflow_maintenance_tasks(status=args.status, project_id=args.project_id))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.list_tasks(
+            status=args.status, project_id=args.project_id
+        )
+    _json_dump(result)
 
 
 def cmd_workflow_task_run(args):
-    from mkb.api import run_workflow_maintenance_task
-    _json_dump(run_workflow_maintenance_task(args.task_id, model=args.model, verbose=args.verbose))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.run_task(
+            args.task_id, model=args.model, verbose=args.verbose
+        )
+    _json_dump(result)
 
 
 def cmd_workflow_index(args):
-    from mkb.api import rebuild_workflow_indexes
-    _json_dump(rebuild_workflow_indexes(args.project_id))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.rebuild_indexes(args.project_id)
+    _json_dump(result)
 
 
 def cmd_workflow_search(args):
-    from mkb.api import search_canonical_workflows
-    _json_dump(search_canonical_workflows(
-        args.source, args.operation, args.target, args.mode, args.limit,
-    ))
+    with _knowledge_base() as kb:
+        result = kb.materials.workflows.search(
+            args.source, args.operation, args.target, args.mode, args.limit
+        )
+    _json_dump(result)
 
 
 def cmd_cleanup(args):
-    from mkb.maintenance import apply_retention, prune_job_history, retention_plan
-    plan = retention_plan(older_than_days=args.older_than_days)
-    result = {"local": plan, "jobs": prune_job_history(older_than_days=args.job_days)}
-    if args.apply:
-        if args.confirm != "DELETE":
-            raise ValueError("--apply requires --confirm DELETE")
-        result["local"] = apply_retention(plan, confirm=args.confirm)
-        result["jobs"] = prune_job_history(older_than_days=args.job_days, apply=True)
-    _json_dump(result)
+    with _knowledge_base() as kb:
+        report = kb.maintenance.cleanup(
+            older_than_days=args.older_than_days,
+            job_days=args.job_days,
+            apply=args.apply,
+            confirm=args.confirm,
+        )
+    _json_dump(report.data)
 
 
 def cmd_reconcile(_args):
-    from mkb.maintenance import consistency_report
-    result = consistency_report()
+    with _knowledge_base() as kb:
+        report = kb.maintenance.reconcile()
+    result = {"ok": report.ok, **report.data}
     _json_dump(result)
-    if not result["ok"]:
+    if not report.ok:
         raise SystemExit(1)
 
 
 def cmd_inventory(args):
     from pathlib import Path
 
-    from mkb.migration_inventory import migration_inventory
-
-    result = migration_inventory()
+    with _knowledge_base() as kb:
+        result = kb.maintenance.migration_inventory().data
     if not args.out:
         _json_dump(result)
         return
@@ -569,6 +610,9 @@ def cmd_inventory(args):
 
 
 def main():
+    from mkb import MKBConfig
+
+    application_config = MKBConfig.from_environment()
     parser = argparse.ArgumentParser(prog="mkb", description="Materials Knowledge Base")
     sub = parser.add_subparsers(dest="command")
 
@@ -723,9 +767,8 @@ def main():
 
     # ── API ──
     p = sub.add_parser("api", help="Launch the FastAPI backend for the React UI")
-    from mkb.config import settings as app_settings
-    p.add_argument("--host", default=app_settings.api_host)
-    p.add_argument("--port", type=int, default=app_settings.api_port)
+    p.add_argument("--host", default=application_config.api_host)
+    p.add_argument("--port", type=int, default=application_config.api_port)
     p.add_argument("--reload", action="store_true")
 
     # processed

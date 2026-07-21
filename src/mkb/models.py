@@ -311,6 +311,9 @@ class Job(BaseModel):
     kind: str
     status: str
     label: str | None = None
+    project_id: str | None = None
+    request_id: str | None = None
+    active_key: str | None = None
     pipeline_name: str | None = None
     pipeline_version: str | None = None
     run_id: uuid.UUID | None = None
@@ -320,13 +323,19 @@ class Job(BaseModel):
     checkpoint: dict[str, Any] = Field(default_factory=dict)
     events: tuple[dict[str, Any], ...] = ()
     attempt_count: int = 0
+    max_attempts: int = 1
+    retryable: bool = False
+    cancel_requested: bool = False
     progress: float | None = Field(default=None, ge=0.0, le=1.0)
     message: str | None = None
     result: Any = None
     error: str | None = None
+    error_category: str | None = None
     created_at: datetime
+    queued_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class Page(BaseModel, Generic[PageItem]):

@@ -27,11 +27,14 @@ def test_extract_raw_workflow_returns_preflight_error_when_no_markdown(monkeypat
 
 def test_project_workflow_extract_rejects_active_job(monkeypatch):
     project_id = str(uuid.uuid4())
-
     monkeypatch.setattr(
-        projects_router.jobs,
-        "find_active_job",
-        lambda **_kwargs: {"job_id": "j1", "status": "RUNNING"},
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(
+                find_active=lambda **_kwargs: SimpleNamespace(status="RUNNING")
+            )
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -44,7 +47,13 @@ def test_project_workflow_extract_rejects_active_job(monkeypatch):
 def test_project_workflow_extract_rejects_when_not_ready(monkeypatch):
     project_id = str(uuid.uuid4())
 
-    monkeypatch.setattr(projects_router.jobs, "find_active_job", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(find_active=lambda **_kwargs: None)
+        ),
+    )
     monkeypatch.setattr(
         projects_router.api,
         "get_raw_workflow_extraction_readiness",
@@ -62,9 +71,13 @@ def test_delete_raw_workflow_version_rejects_active_job(monkeypatch):
     project_id = str(uuid.uuid4())
 
     monkeypatch.setattr(
-        projects_router.jobs,
-        "find_active_job",
-        lambda **_kwargs: {"job_id": "j1", "status": "RUNNING"},
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(
+                find_active=lambda **_kwargs: SimpleNamespace(status="RUNNING")
+            )
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -179,12 +192,19 @@ def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):
 
 def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
     captured = {}
+    job_id = uuid.uuid4()
 
-    def _start_job(**kwargs):
-        captured.update(kwargs)
-        return "job-123"
+    def _submit_action(action, **kwargs):
+        captured.update(action=action, **kwargs)
+        return SimpleNamespace(id=job_id)
 
-    monkeypatch.setattr(projects_router.jobs, "start_job", _start_job)
+    monkeypatch.setattr(
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(submit_action=_submit_action)
+        ),
+    )
 
     body = projects_router.SchemaCurateRequest(
         min_support=3,
@@ -197,11 +217,11 @@ def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
 
     result = projects_router.curate_schema(body)
 
-    assert result == {"job_id": "job-123"}
-    assert captured["kind"] == "ontology_induction"
-    assert captured["kwargs"]["mode"] == "local"
-    assert captured["kwargs"]["sample_size"] == 12
-    assert captured["kwargs"]["min_support"] == 3
+    assert result == {"job_id": str(job_id)}
+    assert captured["action"] == "curate_workflow_schema"
+    assert captured["mode"] == "local"
+    assert captured["sample_size"] == 12
+    assert captured["min_support"] == 3
 
 
 def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):

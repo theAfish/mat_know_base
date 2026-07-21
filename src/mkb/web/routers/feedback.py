@@ -1,9 +1,9 @@
 from fastapi import APIRouter
 
 from mkb import api
-from mkb.web._helpers import _parse_uuid, start_web_job_action
+from mkb.web._helpers import _parse_uuid
+from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import FeedbackResolveRequest, FeedbackReviewRequest
-from mkb.web._state import jobs
 
 router = APIRouter()
 
@@ -26,14 +26,14 @@ def resolve_feedback(feedback_id: str, body: FeedbackResolveRequest):
 
 @router.post("/api/feedback/review")
 def review_feedback(body: FeedbackReviewRequest):
+    service = get_knowledge_base().jobs
     if body.project_id:
         _parse_uuid(body.project_id, "project_id")
-        job_id = start_web_job_action(
-            jobs,
+        job = service.submit_action(
             "review_feedback",
             job_project_id=body.project_id,
             project_id=body.project_id,
         )
     else:
-        job_id = start_web_job_action(jobs, "review_feedback_all")
-    return {"job_id": job_id}
+        job = service.submit_action("review_feedback_all")
+    return {"job_id": str(job.id)}
