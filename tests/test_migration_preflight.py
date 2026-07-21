@@ -102,6 +102,17 @@ def test_preflight_blocks_missing_ids_and_changed_content():
     assert result["summary"]["blocker_count"] == 3
 
 
+def test_preflight_prefers_content_hash_over_multipart_etag():
+    before = _inventory()
+    after = json.loads(json.dumps(before))
+    old_object = before["object_storage"]["buckets"]["raw"]["objects"][0]
+    new_object = after["object_storage"]["buckets"]["raw"]["objects"][0]
+    old_object["sha256"] = "same-content"
+    new_object.update(sha256="same-content", etag="multipart-etag-2")
+
+    assert compare_migration_inventories(before, after)["ok"] is True
+
+
 def test_preflight_service_and_inventory_loader_are_read_only(tmp_path):
     source = tmp_path / "inventory.json"
     source.write_text(json.dumps(_inventory()), encoding="utf-8")

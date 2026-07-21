@@ -12,6 +12,9 @@
 #   --no-local     Skip local data restore
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+WORKSPACE_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+
 # ── Parse args ────────────────────────────────────────────────────────────────
 ARCHIVE_FILE=""
 DO_PG=true
@@ -100,7 +103,7 @@ if [[ "$ARCHIVE_FILE" == *.age ]]; then
     age --decrypt --identity "$MKB_AGE_IDENTITY" --output "$VALIDATION_ARCHIVE" "$ARCHIVE_FILE"
 fi
 EXTRACTED="$STAGING/extracted"
-python3 scripts/snapshot_manifest.py extract "$VALIDATION_ARCHIVE" "$EXTRACTED"
+python3 "$SCRIPT_DIR/snapshot_manifest.py" extract "$VALIDATION_ARCHIVE" "$EXTRACTED"
 
 if $DO_PG; then
     DUMP_FILE="$EXTRACTED/postgres/dump.sql"
@@ -180,7 +183,7 @@ if $DO_MINIO; then
             -c "
                 mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
                 mc mb --ignore-existing mkb/$bucket >/dev/null 2>&1 && \
-                mc mirror --overwrite --remove /minio_mirror/ mkb/$bucket
+                mc mirror --overwrite --remove /minio_mirror/ mkb/$bucket >/dev/null
             "
 
         info "  → bucket '$bucket' restored."
@@ -194,24 +197,9 @@ if $DO_LOCAL; then
         info "No local/ directory in archive, skipping."
     else
         info "Restoring local data directories…"
-
-        # Walk every dir that was packed (e.g. local/data/papers, local/data/processed…)
-        find "$LOCAL_STAGING" -mindepth 1 -maxdepth 3 -type d | while read -r src_dir; do
-            # Compute relative path from LOCAL_STAGING
-            rel_path="${src_dir#$LOCAL_STAGING/}"
-            dest_dir="$rel_path"
-
-            # Only restore dirs that have files directly under them
-            file_count=$(find "$src_dir" -maxdepth 1 -type f | wc -l)
-            if [ "$file_count" -gt 0 ]; then
-                mkdir -p "$dest_dir"
-                cp -r "$src_dir"/. "$dest_dir/"
-            fi
-        done
-
-        # Top-level copy: restore the whole local/ tree onto the workspace root
+        # Restore the whole local/ tree onto the workspace root, independent of cwd.
         (cd "$LOCAL_STAGING" && find . -type f -print0 | tar --null -cf - --files-from -) | \
-            tar xf -
+            tar xf - -C "$WORKSPACE_ROOT"
 
         info "  Local data restored."
     fi

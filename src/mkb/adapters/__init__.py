@@ -1,7 +1,7 @@
 """Default persistence adapters for the MKB SDK."""
 
 from mkb.adapters.database import SQLAlchemyDatabase
-from mkb.adapters.graph import InMemoryGraphStore
+from mkb.adapters.graph import InMemoryGraphStore, Neo4jGraphStore
 from mkb.adapters.legacy_jobs import SQLAlchemyLegacyJobBackend
 from mkb.adapters.generic_repositories import (
     GenericArtifactRepository,
@@ -49,6 +49,7 @@ __all__ = [
     "GenericSkillRepository",
     "GenericSourceRepository",
     "InMemoryGraphStore",
+    "Neo4jGraphStore",
     "S3ObjectStore",
     "SQLAlchemyArtifactRepository",
     "SQLAlchemyCollectionGroupRepository",

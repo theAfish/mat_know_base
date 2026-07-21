@@ -78,9 +78,15 @@ def compare_migration_inventories(
         added = sorted(set(new) - set(old))
         changed = []
         for key in sorted(set(old) & set(new)):
+            content_field = (
+                "sha256"
+                if old[key].get("sha256") is not None
+                and new[key].get("sha256") is not None
+                else "etag"
+            )
             differences = {
                 field: {"before": old[key].get(field), "after": new[key].get(field)}
-                for field in ("bytes", "etag")
+                for field in ("bytes", content_field)
                 if old[key].get(field) != new[key].get(field)
             }
             if differences:

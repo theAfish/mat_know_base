@@ -37,9 +37,11 @@ Restore is deliberately two-step:
 The restore mirrors bucket contents with removal, replaces the database from the
 validated dump, and restores local files. Run `make migrate`, `mkb reconcile`,
 and the readiness probe afterward. Practice this against a disposable Compose
-project before depending on a backup. `make restore-drill` performs the pack,
-checksum/path validation, and disposable-database restore and is suitable for a
-scheduled job or integration CI runner with Docker services.
+project before depending on a backup. `make restore-drill` performs checksum/path
+validation; restores a disposable database, MinIO instance, and local root; then runs
+full object-checksummed inventory comparison, reconciliation, and representative
+content verification. It is suitable for a scheduled job or integration CI runner
+with Docker services and never enables the live replacement path.
 
 Before an application upgrade, create and verify a snapshot, stop job starts,
 upgrade the code, run `make migrate`, then verify readiness and reconciliation.

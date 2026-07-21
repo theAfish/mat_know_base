@@ -45,4 +45,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    count = bind.execute(sa.text("SELECT count(*) FROM background_jobs")).scalar_one()
+    if count:
+        raise RuntimeError(
+            "Refusing to drop populated background_jobs during the preservation window"
+        )
     op.drop_table("background_jobs")

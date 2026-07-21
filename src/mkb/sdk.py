@@ -184,7 +184,7 @@ class KnowledgeBase:
             Callable[[dict[str, Any]], dict[str, Any]] | None
         ) = None,
         startup_validator: Callable[..., list[str]] | None = None,
-        migration_inventory_reader: Callable[[], dict[str, Any]] | None = None,
+        migration_inventory_reader: Callable[..., dict[str, Any]] | None = None,
         cleanup_executor: Callable[..., dict[str, Any]] | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()

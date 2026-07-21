@@ -413,14 +413,23 @@ class MaintenanceService:
             created_at=datetime.now(timezone.utc),
         )
 
-    def migration_inventory(self) -> MaintenanceReport:
+    def migration_inventory(
+        self,
+        *,
+        include_object_checksums: bool = False,
+    ) -> MaintenanceReport:
         """Return the application-wide preservation inventory when configured."""
         if self._migration_inventory_reader is None:
             return self.inventory()
+        options = (
+            {"include_object_checksums": True}
+            if include_object_checksums
+            else {}
+        )
         return MaintenanceReport(
             kind="migration_inventory",
             ok=True,
-            data=self._migration_inventory_reader(),
+            data=self._migration_inventory_reader(**options),
             created_at=datetime.now(timezone.utc),
         )
 

@@ -18,7 +18,13 @@ MINIO_SECRET_KEY="${MKB_S3_SECRET_KEY:-minioadmin}"
 MINIO_BUCKETS=(raw processed archive temp)
 MC_IMAGE="minio/mc:RELEASE.2025-04-16T18-13-26Z"
 
-LOCAL_DATA_DIRS=(data/papers data/processed data/uploads data/inbox)
+LOCAL_DATA_PATHS=(
+    data/papers
+    data/processed
+    data/uploads
+    data/inbox
+    data/runtime_settings.json
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()  { echo "[pack] $*"; }
@@ -80,7 +86,7 @@ for bucket in "${MINIO_BUCKETS[@]}"; do
         -c "
             mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
             mc stat mkb/$bucket >/dev/null && \
-            mc mirror --overwrite mkb/$bucket /minio_mirror/
+            mc mirror --overwrite mkb/$bucket /minio_mirror/ >/dev/null
         "
 
     count=$(find "$STAGING/minio/$bucket" -type f | wc -l)
@@ -91,17 +97,22 @@ done
 info "Copying local data directories…"
 mkdir -p "$STAGING/local"
 
-for dir in "${LOCAL_DATA_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        dest="$STAGING/local/$dir"
+for path in "${LOCAL_DATA_PATHS[@]}"; do
+    if [ -d "$path" ]; then
+        dest="$STAGING/local/$path"
         mkdir -p "$dest"
         # Use find+cp to avoid issues with empty dirs or non-rsync environments
-        (cd "$dir" && find . -type f -print0 | tar --null -cf - --files-from -) | \
+        (cd "$path" && find . -type f -print0 | tar --null -cf - --files-from -) | \
             (mkdir -p "$dest" && cd "$dest" && tar xf -)
         count=$(find "$dest" -type f | wc -l)
-        info "  → local/$dir  ($count files)"
+        info "  → local/$path  ($count files)"
+    elif [ -f "$path" ]; then
+        dest="$STAGING/local/$path"
+        mkdir -p "$(dirname "$dest")"
+        cp "$path" "$dest"
+        info "  → local/$path  (1 file)"
     else
-        info "  (skipping '$dir' — does not exist)"
+        info "  (skipping '$path' — does not exist)"
     fi
 done
 

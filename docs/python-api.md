@@ -119,6 +119,33 @@ legacy projects, groups, assets, frames, spaces, projections, feedback, skills,
 post-processors, and graph operations through injected adapters without copying IDs or
 object keys.
 
+## Optional Neo4j graph storage
+
+Install `mat-know-base[neo4j]` and inject the optional adapter into an explicitly
+configured client. Importing the base package does not import or require the Neo4j
+driver.
+
+```python
+from mkb import KnowledgeBase
+from mkb.adapters import Neo4jGraphStore
+
+graph = Neo4jGraphStore(
+    "neo4j://localhost:7687",
+    auth=("neo4j", "password"),
+    database="neo4j",
+)
+with KnowledgeBase.from_url(
+    database_url="sqlite:////absolute/path/project.db",
+    object_store_url="file:///absolute/path/objects",
+    graph_store=graph,
+) as kb:
+    entity = kb.graph.upsert_entity(type="material", name="Calcite")
+```
+
+The adapter stores backend-neutral entity/relation IDs and JSON properties beneath
+fixed `MKBEntity`/`MKBRelation` types, so user-provided values are parameters rather
+than Cypher identifiers.
+
 ## Safe migration/read-validation example
 
 Opening a client never runs migrations. A preservation-first validation can therefore

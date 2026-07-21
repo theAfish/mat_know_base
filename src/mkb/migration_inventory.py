@@ -101,8 +101,13 @@ def database_inventory(session_factory=None) -> dict[str, Any]:
     }
 
 
-def object_storage_inventory(client=None, buckets: Iterable[str] | None = None) -> dict[str, Any]:
-    """List object identity and metadata without downloading or changing objects."""
+def object_storage_inventory(
+    client=None,
+    buckets: Iterable[str] | None = None,
+    *,
+    include_checksums: bool = False,
+) -> dict[str, Any]:
+    """List object identity, optionally streaming every object for SHA-256."""
     if client is None:
         from mkb.storage.s3 import get_s3_client
 
@@ -123,14 +128,24 @@ def object_storage_inventory(client=None, buckets: Iterable[str] | None = None) 
         paginator = client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket):
             for item in page.get("Contents", []):
-                objects.append({
+                record = {
                     "key": item["Key"],
                     "bytes": int(item.get("Size") or 0),
                     # ETag is an identity aid, but is not guaranteed to be an MD5 for
                     # multipart or implementation-specific uploads.
                     "etag": str(item.get("ETag") or "").strip('"'),
                     "last_modified": _json_value(item.get("LastModified")),
-                })
+                }
+                if include_checksums:
+                    digest = hashlib.sha256()
+                    body = client.get_object(Bucket=bucket, Key=item["Key"])["Body"]
+                    try:
+                        while chunk := body.read(1024 * 1024):
+                            digest.update(chunk)
+                    finally:
+                        body.close()
+                    record["sha256"] = digest.hexdigest()
+                objects.append(record)
         objects.sort(key=lambda item: item["key"])
         result[str(bucket)] = {
             "object_count": len(objects),
@@ -228,11 +243,15 @@ def migration_inventory(
     s3_client=None,
     local_paths: Iterable[Path] = DEFAULT_LOCAL_PATHS,
     root: Path | None = None,
+    include_object_checksums: bool = False,
 ) -> dict[str, Any]:
     """Build a deterministic, read-only preservation baseline for local migrations."""
     project_root = root or Path(__file__).resolve().parents[2]
     database = database_inventory(session_factory)
-    storage = object_storage_inventory(s3_client)
+    storage = object_storage_inventory(
+        s3_client,
+        include_checksums=include_object_checksums,
+    )
     return {
         "format_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),

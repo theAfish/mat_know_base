@@ -76,7 +76,7 @@ unpack:  ## Restore from snapshot: make unpack file=mkb_data_YYYYMMDD.tar.gz
 	bash scripts/unpack_data.sh $(file)
 
 restore-drill:
-	bash scripts/restore_drill.sh
+	bash scripts/restore_drill.sh $(if $(file),$(file),)
 
 # ── Server ──────────────────────────────────────────────────────
 server:

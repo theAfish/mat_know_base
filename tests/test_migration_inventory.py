@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 from mkb.migration_inventory import local_inventory, object_storage_inventory
@@ -24,6 +25,10 @@ class _S3Client:
     def get_paginator(self, name):
         assert name == "list_objects_v2"
         return _Paginator()
+
+    def get_object(self, *, Bucket, Key):
+        assert Bucket == "raw"
+        return {"Body": BytesIO({"a/notes.md": b"notes", "z/document.pdf": b"pdf"}[Key])}
 
 
 def test_local_inventory_is_deterministic_and_checksummed(tmp_path: Path):
@@ -51,3 +56,11 @@ def test_object_inventory_sorts_keys_and_preserves_identity_metadata():
     assert [item["key"] for item in bucket["objects"]] == ["a/notes.md", "z/document.pdf"]
     assert bucket["objects"][1]["etag"] == "abc"
     assert bucket["objects"][1]["last_modified"] == "2026-01-02T00:00:00+00:00"
+
+
+def test_object_inventory_can_include_streamed_content_checksums():
+    result = object_storage_inventory(_S3Client(), ["raw"], include_checksums=True)
+
+    assert result["buckets"]["raw"]["objects"][0]["sha256"] == (
+        "ab5aa97074c454a0632057e704220d9a6678fbf773a0a5806fc09b8173b07309"
+    )

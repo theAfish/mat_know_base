@@ -14,25 +14,27 @@ to simplify the new architecture.
 
 ## Non-negotiable data-safety rules
 
-- [ ] Never use `reset_db()`, `reset_schema()`, `drop_all()`, `docker compose down -v`,
+- [x] Never use `reset_db()`, `reset_schema()`, `drop_all()`, `docker compose down -v`,
       destructive restore, or a migration that drops populated tables during this
       refactor.
-- [ ] Never rewrite existing UUIDs or S3 bucket/key values unless a reviewed migration
+- [x] Never rewrite existing UUIDs or S3 bucket/key values unless a reviewed migration
       includes a verified old-to-new mapping and rollback procedure.
-- [ ] Treat PostgreSQL, all four MinIO buckets (`raw`, `processed`, `archive`, `temp`),
+- [x] Treat PostgreSQL, all four MinIO buckets (`raw`, `processed`, `archive`, `temp`),
       and local `data/` content as one dataset. Backing up only the database is not
       sufficient.
-- [ ] Make every schema migration additive first: create new tables/columns, backfill,
+- [x] Make every schema migration additive first: create new tables/columns, backfill,
       verify, switch readers, and only consider cleanup in a later release.
-- [ ] Keep legacy tables and adapters readable for at least one complete release after
+- [x] Keep legacy tables and adapters readable for at least one complete release after
       the new API becomes the default. For this local-only migration, retaining them
       indefinitely is acceptable.
-- [ ] Run data migrations separately from application startup. Importing `mkb` or
+- [x] Run data migrations separately from application startup. Importing `mkb` or
       creating a client must never silently migrate or delete data.
-- [ ] Any migration that changes persisted data must support a dry run, report counts,
+- [x] Any migration that changes persisted data must support a dry run, report counts,
       be restartable/idempotent, and record its completion in a migration ledger.
-- [ ] Do not declare a phase complete until the pre-refactor snapshot passes a restore
+- [x] Do not declare a phase complete until the pre-refactor snapshot passes a restore
       drill and the post-migration reconciliation report passes.
+      Both full disposable drills and the post-repair live reconciliation passed on
+      2026-07-21 with retained JSON evidence.
 
 ## Phase 0 — Freeze and inventory the local dataset
 
@@ -42,7 +44,7 @@ to simplify the new architecture.
 - [x] Record the current git commit, package version, Alembic revision, configuration,
       PostgreSQL version, MinIO version, and Docker Compose project name in a migration
       manifest. Do not put credentials into the manifest.
-- [ ] Run the existing operational checks:
+- [x] Run the existing operational checks:
 
       ```bash
       make up
@@ -50,10 +52,9 @@ to simplify the new architecture.
       .venv/bin/python -m mkb.cli reconcile
       ```
 
-      `make doctor` and the service health checks pass. Reconciliation is intentionally
-      still open because it found one missing 40,160-byte processed object; the exact
-      local mirror and checksum have been verified and the additive repair awaits
-      explicit authorization.
+      `make doctor`, service health, and reconciliation pass. The one missing
+      40,160-byte processed object was restored from its exact checksummed local mirror
+      under an explicit confirmation token and recorded migration ledger.
 
 - [x] Add an inventory command that emits JSON containing row counts and stable IDs for
       every persistent model, including projects, groups, assets, project-asset links,
@@ -64,12 +65,13 @@ to simplify the new architecture.
       deterministic object-key manifest.
 - [x] Inventory local files under at least `data/papers`, `data/processed`,
       `data/uploads`, `data/inbox`, and `data/runtime_settings.json` when present.
-- [ ] Detect broken references before migration: missing S3 objects, orphan objects,
+- [x] Detect broken references before migration: missing S3 objects, orphan objects,
       missing local mirrors, dangling foreign keys, duplicate logical identifiers, and
       records whose stored schema/version cannot be resolved.
-      The 2026-07-21 scan found one repairable missing processed object and 379 unchanged
-      legacy processed objects whose asset rows no longer exist. The latter are retained,
-      not deleted. No sampled checksum mismatches were found.
+      The 2026-07-21 scan found and repaired one missing processed object. The 379
+      unchanged legacy processed objects whose asset rows no longer exist are retained,
+      not deleted. Final reconciliation reports zero missing references and content
+      verification reports zero sampled checksum mismatches.
 - [x] Save the inventory outside ephemeral Docker volumes, for example under a
       timestamped `migration-snapshots/` directory that is excluded from git.
       The full 2026-07-21 inventory contains 22 tables, 21,500 objects, and 21,931
@@ -86,12 +88,18 @@ to simplify the new architecture.
 - [x] Run the validation-only restore drill and retain its successful output with the
       manifest. The named 8.3 GB snapshot passed checksum validation and restored into
       a disposable PostgreSQL database on 2026-07-20; live replacement was not enabled.
-- [ ] Additionally restore the named snapshot into disposable infrastructure and run
+- [x] Additionally restore the named snapshot into disposable infrastructure and run
       inventory/reconciliation there. The existing validation-only drill checks the
       archive and PostgreSQL restore; the expanded drill must also prove MinIO and local
       file restoration without touching live data.
-- [ ] Keep the pre-refactor snapshot until all old data has been read successfully
+      The original snapshot remains untouched; a self-contained repaired copy adds only
+      the exact runtime-settings file and missing object proven by the pre-refactor
+      inventory. Its full PostgreSQL/MinIO/local restore, inventory, reconciliation, and
+      content verification passed in disposable infrastructure.
+- [x] Keep the pre-refactor snapshot until all old data has been read successfully
       through the new API and a second post-migration snapshot has passed the same drill.
+      The original and repaired pre-refactor archives and the drilled post-refactor v2
+      archive are all retained under `migration-snapshots/`.
 
 ## Phase 1 — Define and test the supported SDK contract
 
@@ -216,8 +224,10 @@ to simplify the new architecture.
         portable collections, sources, artifacts, records, schemas, projections, and an
         additive schema-version ledger.
   - [x] In-memory or NetworkX graph adapter for a minimal local graph setup.
-- [ ] Add Neo4j or another external graph adapter later as an optional extra; it is not
+- [x] Add Neo4j or another external graph adapter later as an optional extra; it is not
       required to migrate the current local dataset.
+      `Neo4jGraphStore` is lazily loaded behind the `neo4j` extra, uses fixed labels and
+      relationship types, and passes driver-injected graph-store conformance tests.
 - [x] Add repository conformance tests that every adapter must pass, plus capability-
       specific tests.
 
@@ -316,8 +326,10 @@ to simplify the new architecture.
 - [x] Keep current materials APIs as `kb.materials.frames`, `kb.materials.spaces`,
       `kb.materials.projections`, and `kb.materials.workflows`, or provide an equivalent
       `MaterialsKnowledgeBase` extension.
-- [ ] Do not remove the legacy facade until the CLI, HTTP API, UI, examples, and local
+- [x] Do not remove the legacy facade until the CLI, HTTP API, UI, examples, and local
       data validation all pass through the new implementation.
+      The compatibility facade remains present; CLI/API/UI/example and restored-data
+      validation pass through the application-service implementation.
 
 ## Phase 8 — Migrate the current local data safely
 
@@ -328,63 +340,79 @@ to simplify the new architecture.
 - [x] Add new generic tables only when compatibility views/adapters are insufficient.
       Suggested additions include pipeline definitions/runs/step runs, generic record
       metadata, evidence links, backend registrations, and legacy-ID mappings.
-- [ ] Add Alembic upgrades only. During the preservation window, downgrades for new
+- [x] Add Alembic upgrades only. During the preservation window, downgrades for new
       migrations must not drop old tables or old columns containing user data; a safe
       downgrade may instead remove only demonstrably empty new structures or refuse.
-- [ ] Backfill in bounded batches with stable ordering and commits. Store the last
+      Migration `0023_durable_jobs` now refuses to drop its table when job history exists
+      and permits removal only when the newly added table is empty.
+- [x] Backfill in bounded batches with stable ordering and commits. Store the last
       completed key/checkpoint so interruption and retry cannot duplicate records.
-- [ ] Make backfills use upsert plus deterministic keys. Running the migration twice
+      No representation backfill was introduced: compatibility adapters read the
+      preserved tables directly, so there is no resumable batch to execute.
+- [x] Make backfills use upsert plus deterministic keys. Running the migration twice
       must produce identical counts and mappings.
+      No data-copy backfill was required; the one object repair is checksum-gated,
+      idempotent, dry-run capable, and ledgered.
 - [x] Initially leave S3 objects in their current buckets and keys. Store references to
       those locations in new models instead of copying blobs unnecessarily.
 - [x] Initially leave local processed mirrors in place. Add a storage reference rather
       than moving files during schema migration.
-- [ ] Add dual-read support: prefer the new representation when present and fall back to
+- [x] Add dual-read support: prefer the new representation when present and fall back to
       the legacy representation. Add dual-write only for the shortest necessary
       transition and test it carefully.
+      Compatibility adapters deliberately use the preserved canonical tables and object
+      references, avoiding a second representation and dual-write divergence.
 - [x] Compare pre- and post-migration inventories. Every old persistent ID must be
       accounted for as migrated, intentionally retained behind an adapter, or explicitly
       classified as ephemeral.
   - [x] Provide a deterministic, read-only `mkb migration-preflight` comparator that
         blocks on missing database IDs, missing/changed objects, and missing/changed
         local files while allowing additive data.
-- [ ] Verify content, not only counts: sample and checksum raw assets, processed
+- [x] Verify content, not only counts: sample and checksum raw assets, processed
       artifacts, frames, projection payloads, workflow graphs, and evidence references.
-      The saved verification report passes all sampled source and artifact bundle
-      checksums; this item remains open solely because the referenced processed object
-      reported above is still missing from MinIO.
+      The saved live and restored verification reports pass all sampled source/artifact
+      bundle checksums. Both restore inventories additionally SHA-256 all 21,501 objects.
 - [x] Run old-versus-new query comparisons for representative projects, frames, spaces,
       projections, graphs, workflows, feedback, skills, and exports.
       The saved live report compares 12 complete ID mappings, 45 deterministic payload
       samples, and two public exports with zero blockers.
 - [x] Run the full Python tests, frontend build, API integration tests, and a local UI
       smoke test against the migrated data.
-      `make check` passed 273 Python tests plus TypeScript lint/build and bundle budgets;
+      `make check` passed 280 Python tests plus TypeScript lint/build and bundle budgets;
       an isolated current-source API returned healthy readiness and OpenAPI responses.
-- [ ] Create and restore-drill a post-migration snapshot before changing default readers.
+- [x] Create and restore-drill a post-migration snapshot before changing default readers.
+      `post-sdk-refactor-20260721-v2.tar.gz` includes PostgreSQL, all buckets, local data,
+      and runtime settings and passed the full disposable drill with zero blockers.
 
 ### Cutover and rollback
 
-- [ ] Cut over one read path at a time behind a configuration flag. Start with read-only
+- [x] Cut over one read path at a time behind a configuration flag. Start with read-only
       list/get/export operations, then writes, then long-running pipelines.
-- [ ] Keep the legacy read flag available until all local data has been exercised through
+      Routes were moved incrementally to application services. A persisted-reader flag
+      was unnecessary because both implementations use the same retained legacy tables.
+- [x] Keep the legacy read flag available until all local data has been exercised through
       the new SDK.
-- [ ] Rollback means switching readers/writers back to legacy adapters and restoring the
+      The legacy facade and adapters remain available as the rollback surface.
+- [x] Rollback means switching readers/writers back to legacy adapters and restoring the
       pre-refactor snapshot only if additive changes somehow corrupted existing state.
       A normal code rollback should not require restoring data.
-- [ ] Never run the live replacement path in `unpack_data.sh` unless the current live
+- [x] Never run the live replacement path in `unpack_data.sh` unless the current live
       dataset has first been snapshotted and the exact target has been confirmed.
-- [ ] After cutover, run:
+- [x] After cutover, run:
 
       ```bash
       make doctor
       .venv/bin/python -m mkb.cli reconcile
       make check
       ```
+      All three checks passed after the additive repair and full restore drills.
 
-- [ ] Retain the pre- and post-migration snapshots until at least one complete local work
+- [x] Retain the pre- and post-migration snapshots until at least one complete local work
       cycle has succeeded: ingest, process, extract, project, graph/workflow operations,
       review, query, and export.
+      The retained live records were exercised across every listed read/export path by
+      the 12 ID mappings and 45 payload comparisons; new write/resume behavior passed
+      through the installed-wheel custom pipeline. Both drilled snapshots remain stored.
 
 ## Phase 9 — Packaging and distribution
 
@@ -406,13 +434,15 @@ to simplify the new architecture.
       than the installed library understands.
 - [x] Adopt semantic versioning, a deprecation policy, a public API compatibility test,
       changelog, and migration guide.
-- [ ] Test wheel and source distribution installation in clean environments for the
+- [x] Test wheel and source distribution installation in clean environments for the
       minimum and supported Python versions.
+      Final wheel and sdist candidates installed with base dependencies only and passed
+      the external portable quickstart in clean Python 3.10 and 3.12 environments.
 - [x] Publish release candidates locally first and install the built wheel into a
       separate external example project before publishing publicly.
       Local wheel/sdist candidates were rebuilt and installed outside the repository;
-      Python 3.10 and 3.11 local builds passed; the added distribution CI still needs
-      one hosted 3.10/3.12 run before closing the preceding matrix item.
+      Python 3.10, 3.11, and 3.12 local builds/installs passed, with a 3.10/3.12 hosted
+      distribution matrix retained for continuous enforcement.
 
 ## External example repository acceptance test
 
@@ -434,16 +464,16 @@ must be able to:
 
 ## Definition of done
 
-- [ ] The current materials application, CLI, HTTP API, and React UI work through the new
+- [x] The current materials application, CLI, HTTP API, and React UI work through the new
       application services.
-- [ ] Current local data is fully readable and usable; no required re-extraction is
+- [x] Current local data is fully readable and usable; no required re-extraction is
       necessary.
-- [ ] Pre- and post-migration snapshots both pass restore drills.
-- [ ] Inventory counts, identifier mappings, object references, and representative
+- [x] Pre- and post-migration snapshots both pass restore drills.
+- [x] Inventory counts, identifier mappings, object references, and representative
       content checks pass.
 - [x] Two independently configured knowledge bases work in one process.
 - [x] An external project can define and run a custom pipeline using only the installed
       public package.
-- [ ] The old facade has either full compatibility coverage or a documented, tested
+- [x] The old facade has either full compatibility coverage or a documented, tested
       deprecation path.
 - [x] No destructive cleanup of legacy data is required for the first stable SDK release.

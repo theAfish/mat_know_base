@@ -14,6 +14,19 @@ encrypted using organization-approved storage and retention controls. A successf
 archive creation is not proof of restorability; schedule `make restore-drill` against
 disposable infrastructure.
 
+The full drill restores PostgreSQL into a temporary database, starts a disposable
+MinIO container, restores local files beneath a temporary root, and then runs inventory
+comparison, reconciliation, and content verification against those copies:
+
+```bash
+make restore-drill file=mkb-snapshot.tar.gz
+```
+
+Set `MKB_RESTORE_DRILL_OUT=/durable/evidence/directory` to retain its JSON reports. For
+a historical archive, `MKB_RESTORE_DRILL_BASELINE=/path/to/inventory.json` selects the
+matching historical inventory; object identities are enriched with SHA-256 values from
+the validated archive manifest. The drill never enables live replacement.
+
 Restore is intentionally two-stage. First validate without mutation:
 
 ```bash
@@ -32,4 +45,3 @@ make doctor
 
 Investigate checksum, revision, missing-object, or orphan reports before reopening the
 service. Never edit a snapshot manifest to bypass validation.
-

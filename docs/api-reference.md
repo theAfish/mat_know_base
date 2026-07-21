@@ -1036,7 +1036,7 @@ Compare two preservation inventories without reading live backends.
 
 
 
-#### `migration_inventory() -> 'MaintenanceReport'`
+#### `migration_inventory(*, include_object_checksums: 'bool' = False) -> 'MaintenanceReport'`
 
 Return the application-wide preservation inventory when configured.
 

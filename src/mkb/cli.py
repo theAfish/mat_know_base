@@ -629,7 +629,9 @@ def cmd_inventory(args):
     from pathlib import Path
 
     with _knowledge_base() as kb:
-        result = kb.maintenance.migration_inventory().data
+        result = kb.maintenance.migration_inventory(
+            include_object_checksums=args.object_checksums,
+        ).data
     if not args.out:
         _json_dump(result)
         return
@@ -958,6 +960,11 @@ def main():
     p = sub.add_parser("inventory", help="Write a read-only local data migration inventory")
     p.add_argument("--out", help="JSON output path; prints to stdout when omitted")
     p.add_argument("--overwrite", action="store_true", help="Replace an existing output file")
+    p.add_argument(
+        "--object-checksums",
+        action="store_true",
+        help="Stream every object and include SHA-256 content digests",
+    )
 
     p = sub.add_parser(
         "migration-preflight",
