@@ -6,12 +6,15 @@ import uuid
 
 from mkb.exceptions import ConflictError
 from mkb.models import Entity, Relation
+from mkb.ports import Capabilities
 
 
 class InMemoryGraphStore:
     """Process-local graph store with deterministic upsert semantics."""
 
-    capabilities = frozenset({"graph_traversal", "bulk_upsert"})
+    capabilities = frozenset(
+        {Capabilities.GRAPH_TRAVERSAL, Capabilities.BULK_UPSERT}
+    )
 
     def __init__(self) -> None:
         self._entities: dict[uuid.UUID, Entity] = {}

@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import uuid
+import shutil
+from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
 
 from mkb.models import (
     Artifact,
     Collection,
+    CollectionGroup,
     ExtractionSchema,
+    FeedbackItem,
+    PostProcessor,
     Projection,
     Record,
     Source,
     StorageReference,
+    Skill,
+    WorkflowRecord,
 )
 from mkb.ports import Database
 
@@ -56,6 +63,388 @@ class SQLAlchemyCollectionRepository:
         )
         with self._database.session() as session:
             return [self._model(row) for row in session.scalars(statement)]
+
+
+class SQLAlchemyCollectionGroupRepository:
+    """Map collection groups to existing project-group rows without copying them."""
+
+    def __init__(self, database: Database):
+        self._database = database
+
+    @staticmethod
+    def _model(row, collection_count: int = 0) -> CollectionGroup:
+        return CollectionGroup(
+            id=row.group_id,
+            name=row.name,
+            description=row.description,
+            color=row.color,
+            display_order=row.display_order,
+            collection_count=collection_count,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    def _count(self, session, group_id: uuid.UUID) -> int:
+        from mkb.db.models import ResearchProject
+
+        return int(
+            session.scalar(
+                select(func.count()).select_from(ResearchProject).where(
+                    ResearchProject.group_id == group_id
+                )
+            )
+            or 0
+        )
+
+    def create(self, group: CollectionGroup) -> CollectionGroup:
+        from mkb.db.models import ProjectGroup
+
+        row = ProjectGroup(
+            group_id=group.id,
+            name=group.name,
+            description=group.description,
+            color=group.color,
+            display_order=group.display_order,
+        )
+        with self._database.transaction() as session:
+            session.add(row)
+        return group
+
+    def get(self, group_id: uuid.UUID) -> CollectionGroup | None:
+        from mkb.db.models import ProjectGroup
+
+        with self._database.session() as session:
+            row = session.get(ProjectGroup, group_id)
+            return self._model(row, self._count(session, group_id)) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[CollectionGroup]:
+        from mkb.db.models import ProjectGroup, ResearchProject
+
+        count = (
+            select(func.count())
+            .select_from(ResearchProject)
+            .where(ResearchProject.group_id == ProjectGroup.group_id)
+            .correlate(ProjectGroup)
+            .scalar_subquery()
+        )
+        statement = (
+            select(ProjectGroup, count)
+            .order_by(
+                ProjectGroup.display_order,
+                ProjectGroup.created_at,
+                ProjectGroup.group_id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        with self._database.session() as session:
+            return [self._model(row, int(total)) for row, total in session.execute(statement)]
+
+    def update(self, group_id: uuid.UUID, **changes) -> CollectionGroup:
+        from mkb.db.models import ProjectGroup
+
+        values = {key: value for key, value in changes.items() if value is not None}
+        with self._database.transaction() as session:
+            result = session.execute(
+                update(ProjectGroup)
+                .where(ProjectGroup.group_id == group_id)
+                .values(**values)
+            )
+            if result.rowcount == 0:
+                from mkb.exceptions import NotFoundError
+
+                raise NotFoundError(f"Collection group not found: {group_id}")
+        return self.get(group_id)
+
+    def delete(self, group_id: uuid.UUID) -> int:
+        from mkb.db.models import ProjectGroup, ResearchProject
+        from mkb.exceptions import NotFoundError
+
+        with self._database.transaction() as session:
+            unassigned = session.execute(
+                update(ResearchProject)
+                .where(ResearchProject.group_id == group_id)
+                .values(group_id=None)
+            ).rowcount
+            result = session.execute(
+                delete(ProjectGroup).where(ProjectGroup.group_id == group_id)
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Collection group not found: {group_id}")
+        return int(unassigned or 0)
+
+    def assign(
+        self,
+        collection_ids: list[uuid.UUID],
+        group_id: uuid.UUID | None,
+    ) -> int:
+        from mkb.db.models import ResearchProject
+
+        with self._database.transaction() as session:
+            result = session.execute(
+                update(ResearchProject)
+                .where(ResearchProject.project_id.in_(collection_ids))
+                .values(group_id=group_id)
+            )
+            return int(result.rowcount or 0)
+
+
+class SQLAlchemyFeedbackRepository:
+    """Read and update existing feedback rows through an injected database."""
+
+    def __init__(self, database: Database):
+        self._database = database
+
+    @staticmethod
+    def _model(row) -> FeedbackItem:
+        status = _enum_value(row.status)
+        return FeedbackItem(
+            id=row.feedback_id,
+            target_record_id=row.target_frame_id,
+            target_collection_id=row.target_project_id,
+            category=row.category,
+            question=row.question,
+            source_agent=row.source_agent,
+            source_projection_id=row.source_projection_id,
+            field_path=row.field_path,
+            context=row.context,
+            status="IN_REVIEW" if status == "ACKNOWLEDGED" else status,
+            resolution_notes=row.resolution_notes,
+            resolved_by=row.resolved_by,
+            resolved_at=row.resolved_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    def create(self, item: FeedbackItem) -> FeedbackItem:
+        from mkb.db.models import Feedback as FeedbackRow, FeedbackStatus
+
+        row = FeedbackRow(
+            feedback_id=item.id,
+            source_projection_id=item.source_projection_id,
+            source_agent=item.source_agent,
+            target_frame_id=item.target_record_id,
+            target_project_id=item.target_collection_id,
+            category=item.category,
+            field_path=item.field_path,
+            question=item.question,
+            context=item.context,
+            status=FeedbackStatus.OPEN,
+        )
+        with self._database.transaction() as session:
+            session.add(row)
+        return item
+
+    def get(self, feedback_id: uuid.UUID) -> FeedbackItem | None:
+        from mkb.db.models import Feedback as FeedbackRow
+
+        with self._database.session() as session:
+            row = session.get(FeedbackRow, feedback_id)
+            return self._model(row) if row else None
+
+    def list(
+        self,
+        *,
+        collection_id: uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[FeedbackItem]:
+        from mkb.db.models import Feedback as FeedbackRow, FeedbackStatus
+
+        statement = select(FeedbackRow)
+        if collection_id is not None:
+            statement = statement.where(
+                FeedbackRow.target_project_id == collection_id
+            )
+        if status is not None:
+            persisted_status = "ACKNOWLEDGED" if status.upper() == "IN_REVIEW" else status.upper()
+            statement = statement.where(FeedbackRow.status == FeedbackStatus(persisted_status))
+        statement = statement.order_by(
+            FeedbackRow.created_at.desc(), FeedbackRow.feedback_id
+        ).limit(limit).offset(offset)
+        with self._database.session() as session:
+            return [self._model(row) for row in session.scalars(statement)]
+
+    def update(self, feedback_id: uuid.UUID, **changes) -> FeedbackItem:
+        from mkb.db.models import Feedback as FeedbackRow, FeedbackStatus
+        from mkb.exceptions import NotFoundError
+
+        values = dict(changes)
+        if "status" in values:
+            status = values["status"]
+            values["status"] = FeedbackStatus(
+                "ACKNOWLEDGED" if status == "IN_REVIEW" else status
+            )
+        with self._database.transaction() as session:
+            result = session.execute(
+                update(FeedbackRow)
+                .where(FeedbackRow.feedback_id == feedback_id)
+                .values(**values)
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Feedback not found: {feedback_id}")
+        return self.get(feedback_id)
+
+
+class SQLAlchemySkillRepository:
+    """Map typed skills to existing custom-skill rows and files."""
+
+    def __init__(self, database: Database, root: str | Path = "data/skills"):
+        self._database = database
+        self._root = Path(root)
+
+    @staticmethod
+    def _model(row) -> Skill:
+        return Skill(
+            id=row.skill_id,
+            name=row.name,
+            slug=row.slug,
+            content=row.skill_md,
+            description=row.description,
+            metadata=dict(row.metadata_ or {}),
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    def create(self, skill: Skill) -> Skill:
+        from mkb.db.models import CustomSkill
+
+        root = self._root / f"{skill.slug}_{skill.id.hex[:8]}"
+        root.mkdir(parents=True, exist_ok=False)
+        skill_file = root / "SKILL.md"
+        skill_file.write_text(skill.content, encoding="utf-8")
+        row = CustomSkill(
+            skill_id=skill.id,
+            name=skill.name,
+            slug=skill.slug,
+            description=skill.description,
+            source_type="sdk",
+            storage_path=str(root),
+            skill_md=skill.content,
+            file_count=1,
+            metadata_=skill.metadata,
+        )
+        try:
+            with self._database.transaction() as session:
+                session.add(row)
+        except Exception:
+            shutil.rmtree(root, ignore_errors=True)
+            raise
+        return skill
+
+    def get(self, identifier: str) -> Skill | None:
+        from mkb.db.models import CustomSkill
+
+        try:
+            condition = CustomSkill.skill_id == uuid.UUID(identifier)
+        except ValueError:
+            condition = CustomSkill.slug == identifier
+        with self._database.session() as session:
+            row = session.scalar(select(CustomSkill).where(condition))
+            return self._model(row) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[Skill]:
+        from mkb.db.models import CustomSkill
+
+        statement = (
+            select(CustomSkill)
+            .order_by(CustomSkill.name, CustomSkill.skill_id)
+            .limit(limit)
+            .offset(offset)
+        )
+        with self._database.session() as session:
+            return [self._model(row) for row in session.scalars(statement)]
+
+    def delete(self, skill_id: uuid.UUID) -> None:
+        from mkb.db.models import CustomSkill
+        from mkb.exceptions import NotFoundError
+
+        with self._database.transaction() as session:
+            row = session.get(CustomSkill, skill_id)
+            if row is None:
+                raise NotFoundError(f"Skill not found: {skill_id}")
+            root = Path(row.storage_path)
+            session.delete(row)
+        if root.is_dir():
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class SQLAlchemyPostProcessorRepository:
+    """Map typed processor source to existing script metadata and files."""
+
+    def __init__(
+        self,
+        database: Database,
+        root: str | Path = "data/post_processor_scripts",
+    ):
+        self._database = database
+        self._root = Path(root)
+
+    @staticmethod
+    def _model(row) -> PostProcessor:
+        path = Path(row.storage_path)
+        source = path.read_text(encoding="utf-8") if path.is_file() else ""
+        return PostProcessor(
+            id=row.script_id,
+            name=row.name,
+            filename=row.filename,
+            source=source,
+            metadata={"content_missing": not path.is_file()},
+            created_at=row.created_at,
+            updated_at=row.created_at,
+        )
+
+    def create(self, processor: PostProcessor) -> PostProcessor:
+        from mkb.db.models import PostProcessorScript
+
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._root / f"{processor.id.hex}_{processor.filename}"
+        path.write_text(processor.source, encoding="utf-8")
+        row = PostProcessorScript(
+            script_id=processor.id,
+            name=processor.name,
+            filename=processor.filename,
+            storage_path=str(path),
+        )
+        try:
+            with self._database.transaction() as session:
+                session.add(row)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        return processor
+
+    def get(self, processor_id: uuid.UUID) -> PostProcessor | None:
+        from mkb.db.models import PostProcessorScript
+
+        with self._database.session() as session:
+            row = session.get(PostProcessorScript, processor_id)
+            return self._model(row) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[PostProcessor]:
+        from mkb.db.models import PostProcessorScript
+
+        statement = (
+            select(PostProcessorScript)
+            .order_by(PostProcessorScript.name, PostProcessorScript.script_id)
+            .limit(limit)
+            .offset(offset)
+        )
+        with self._database.session() as session:
+            return [self._model(row) for row in session.scalars(statement)]
+
+    def delete(self, processor_id: uuid.UUID) -> None:
+        from mkb.db.models import PostProcessorScript
+        from mkb.exceptions import NotFoundError
+
+        with self._database.transaction() as session:
+            row = session.get(PostProcessorScript, processor_id)
+            if row is None:
+                raise NotFoundError(f"Post-processor not found: {processor_id}")
+            path = Path(row.storage_path)
+            session.delete(row)
+        path.unlink(missing_ok=True)
 
 
 class SQLAlchemySourceRepository:
@@ -257,6 +646,46 @@ class SQLAlchemyExtractionSchemaRepository:
     def __init__(self, database: Database):
         self._database = database
 
+    def create(
+        self,
+        *,
+        name: str,
+        domain: str,
+        definition: dict,
+        system_prompt: str,
+        description: str | None = None,
+        purpose: str = "freeform",
+        field_descriptions: dict | None = None,
+        schema_id: uuid.UUID | None = None,
+    ) -> ExtractionSchema:
+        from sqlalchemy.exc import IntegrityError
+
+        from mkb.db.models import Space
+        from mkb.exceptions import ConflictError
+
+        identifier = schema_id or uuid.uuid4()
+        row = Space(
+            space_id=identifier,
+            name=name,
+            description=description,
+            domain=domain,
+            purpose=purpose,
+            extraction_schema=definition,
+            system_prompt=system_prompt,
+            field_descriptions=field_descriptions or {},
+            review_trackable=True,
+            review_allow_search=False,
+            review_search_tools=[],
+            post_processors=[],
+            version=1,
+        )
+        try:
+            with self._database.transaction() as session:
+                session.add(row)
+        except IntegrityError as exc:
+            raise ConflictError(f"Extraction schema already exists: {name}") from exc
+        return self.get(identifier)
+
     @staticmethod
     def _model(row) -> ExtractionSchema:
         return ExtractionSchema(
@@ -301,6 +730,55 @@ class SQLAlchemyExtractionSchemaRepository:
         )
         with self._database.session() as session:
             return [self._model(row) for row in session.scalars(statement)]
+
+    def update(self, schema_id: uuid.UUID, **changes) -> ExtractionSchema:
+        from sqlalchemy.exc import IntegrityError
+
+        from mkb.db.models import Space
+        from mkb.exceptions import ConflictError, NotFoundError
+
+        mapping = {
+            "definition": "extraction_schema",
+            "field_descriptions": "field_descriptions",
+        }
+        values = {
+            mapping.get(key, key): value
+            for key, value in changes.items()
+            if value is not None
+        }
+        with self._database.transaction() as session:
+            row = session.get(Space, schema_id)
+            if row is None:
+                raise NotFoundError(f"Extraction schema not found: {schema_id}")
+            for key, value in values.items():
+                setattr(row, key, value)
+            row.version += 1
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                raise ConflictError(
+                    f"Extraction schema already exists: {values.get('name')}"
+                ) from exc
+        return self.get(schema_id)
+
+    def delete(self, schema_id: uuid.UUID) -> None:
+        from mkb.db.models import Projection as ProjectionRow, Space
+        from mkb.exceptions import ConflictError, NotFoundError
+
+        with self._database.transaction() as session:
+            row = session.get(Space, schema_id)
+            if row is None:
+                raise NotFoundError(f"Extraction schema not found: {schema_id}")
+            projection_count = session.scalar(
+                select(func.count()).select_from(ProjectionRow).where(
+                    ProjectionRow.space_id == schema_id
+                )
+            )
+            if projection_count:
+                raise ConflictError(
+                    "Extraction schema is in use; referenced schemas cannot be deleted"
+                )
+            session.delete(row)
 
 
 class SQLAlchemyProjectionRepository:
@@ -400,3 +878,66 @@ class SQLAlchemyProjectionRepository:
                     seen.add(key)
             models = newest
         return models[offset : offset + limit]
+
+
+class SQLAlchemyWorkflowRepository:
+    """Read legacy raw workflow rows without normalizing their JSON payloads."""
+
+    def __init__(self, database: Database):
+        self._database = database
+
+    @staticmethod
+    def _model(row) -> WorkflowRecord:
+        return WorkflowRecord(
+            id=row.extraction_id,
+            collection_id=row.project_id,
+            version=row.version,
+            schema_version=row.schema_version,
+            extractor_version=row.extractor_version,
+            model=row.model,
+            status=row.status,
+            record_status=row.record_status,
+            supersedes_id=row.supersedes_extraction_id,
+            correction_reason=row.correction_reason,
+            correction_author=row.correction_author,
+            correction_details=dict(row.correction_details or {}),
+            review_flags=tuple(row.review_flags or ()),
+            graph=(dict(row.graph) if row.graph is not None else None),
+            checkpoint=(dict(row.checkpoint) if row.checkpoint is not None else None),
+            provenance=dict(row.provenance or {}),
+            error=row.error,
+            extracted_at=row.extracted_at,
+            checkpoint_updated_at=row.checkpoint_updated_at,
+            created_at=row.created_at,
+        )
+
+    def get(self, workflow_id: str | uuid.UUID) -> WorkflowRecord | None:
+        from mkb.db.models import RawWorkflowExtraction
+
+        with self._database.session() as session:
+            row = session.get(RawWorkflowExtraction, uuid.UUID(str(workflow_id)))
+            return self._model(row) if row else None
+
+    def list(
+        self,
+        *,
+        collection_id: str | uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[WorkflowRecord]:
+        from mkb.db.models import RawWorkflowExtraction
+
+        statement = select(RawWorkflowExtraction)
+        if collection_id is not None:
+            statement = statement.where(
+                RawWorkflowExtraction.project_id == uuid.UUID(str(collection_id))
+            )
+        if status is not None:
+            statement = statement.where(RawWorkflowExtraction.status == status)
+        statement = statement.order_by(
+            RawWorkflowExtraction.created_at.desc(),
+            RawWorkflowExtraction.extraction_id,
+        ).limit(limit).offset(offset)
+        with self._database.session() as session:
+            return [self._model(row) for row in session.scalars(statement)]

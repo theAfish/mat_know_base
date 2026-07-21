@@ -14,16 +14,31 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
 
 from mkb.exceptions import ConflictError, MKBError, ValidationError
+from mkb.application_services import MaintenanceService, SettingsService
 from mkb.graph import Graph
+from mkb.job_service import Jobs
+from mkb.managed_services import Feedback, PostProcessors, Skills
+from mkb.materials import Materials
 from mkb.pipelines import Pipelines
-from mkb.ports import Database, GraphStore, JobBackend, ModelProvider, ObjectStore
+from mkb.ports import (
+    Capabilities,
+    Database,
+    GraphStore,
+    JobBackend,
+    ModelProvider,
+    ObjectStore,
+    VectorSearch,
+)
 from mkb.repositories import (
     Artifacts,
+    CollectionGroups,
     Collections,
+    EvidenceLinks,
     ExtractionSchemas,
     Projections,
     Records,
     Sources,
+    Workflows,
 )
 from mkb.registries import Parsers, Steps
 from mkb.transactions import Transaction
@@ -121,12 +136,15 @@ class KnowledgeBase:
         graph_store: GraphStore | None = None,
         model_provider: ModelProvider | None = None,
         job_backend: JobBackend | None = None,
+        vector_search: VectorSearch | None = None,
         collections: Collections | None = None,
         sources: Sources | None = None,
         artifacts: Artifacts | None = None,
         records: Records | None = None,
         schemas: ExtractionSchemas | None = None,
         projections: Projections | None = None,
+        evidence: EvidenceLinks | None = None,
+        materials: Materials | None = None,
         capabilities: frozenset[str] | None = None,
         schema_manager: Any | None = None,
         transaction_factory: Callable[[Any], Transaction] | None = None,
@@ -136,34 +154,58 @@ class KnowledgeBase:
         ]
         | None = None,
         steps: Steps | None = None,
+        feedback: Feedback | None = None,
+        skills: Skills | None = None,
+        post_processors: PostProcessors | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()
         self.config = config or MKBConfig()
         self.database = database
         self.object_store = object_store
         self.graph_store = graph_store
-        self.graph = Graph(graph_store) if graph_store is not None else None
+        self.graph = (
+            Graph(graph_store, model_provider=model_provider)
+            if graph_store is not None
+            else None
+        )
         self.model_provider = model_provider
         self.job_backend = job_backend
+        self.jobs = Jobs(job_backend)
+        self.vector_search = vector_search
         self.collections = collections
         self.sources = sources
         self.artifacts = artifacts
         self.records = records
         self.schemas = schemas
         self.projections = projections
+        self.evidence = evidence
+        self.materials = materials if materials is not None else Materials()
+        self.feedback = feedback if feedback is not None else Feedback(None)
+        self.skills = skills if skills is not None else Skills(None)
+        self.post_processors = (
+            post_processors if post_processors is not None else PostProcessors(None)
+        )
+        self.settings = SettingsService(self)
+        self.maintenance = MaintenanceService(self)
         self._schema_manager = schema_manager
         self._transaction_factory = transaction_factory
         detected_capabilities = set(capabilities or ())
         if database is not None:
-            detected_capabilities.add("transactions")
+            detected_capabilities.update(
+                getattr(database, "capabilities", {Capabilities.TRANSACTIONS})
+            )
         if object_store is not None:
-            detected_capabilities.add("object_streaming")
+            detected_capabilities.update(
+                getattr(object_store, "capabilities", {Capabilities.OBJECT_STREAMING})
+            )
         if graph_store is not None:
             detected_capabilities.update(graph_store.capabilities)
         if model_provider is not None:
             detected_capabilities.update(model_provider.capabilities)
         if job_backend is not None:
             detected_capabilities.update(job_backend.capabilities)
+        if vector_search is not None:
+            detected_capabilities.update(vector_search.capabilities)
         effective_capabilities = frozenset(detected_capabilities)
         self.parsers = (
             parser_registry_factory(self)
@@ -176,6 +218,9 @@ class KnowledgeBase:
             if pipeline_registry_factory is not None
             else Pipelines(self, capabilities=effective_capabilities)
         )
+        bind_job_backend = getattr(self.pipelines, "_bind_job_backend", None)
+        if callable(bind_job_backend):
+            bind_job_backend(job_backend)
         self._closed = False
 
     @classmethod
@@ -212,6 +257,7 @@ class KnowledgeBase:
         graph_store: GraphStore | None = None,
         model_provider: ModelProvider | None = None,
         job_backend: JobBackend | None = None,
+        vector_search: VectorSearch | None = None,
         parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
         pipeline_registry_factory: Callable[
             ["KnowledgeBase", frozenset[str]], Pipelines
@@ -270,6 +316,7 @@ class KnowledgeBase:
                 graph_store=graph_store,
                 model_provider=model_provider,
                 job_backend=job_backend,
+                vector_search=vector_search,
                 parser_registry_factory=parser_registry_factory,
                 pipeline_registry_factory=pipeline_registry_factory,
                 steps=steps,
@@ -291,20 +338,30 @@ class KnowledgeBase:
         capabilities: frozenset[str] | None = None,
     ) -> "KnowledgeBase":
         from mkb.adapters import (
+            InMemoryGraphStore,
             SQLAlchemyArtifactRepository,
+            SQLAlchemyCollectionGroupRepository,
             SQLAlchemyCollectionRepository,
             SQLAlchemyExtractionSchemaRepository,
+            SQLAlchemyFeedbackRepository,
+            SQLAlchemyPostProcessorRepository,
             SQLAlchemyProjectionRepository,
             SQLAlchemyRecordRepository,
             SQLAlchemySourceRepository,
+            SQLAlchemySkillRepository,
+            SQLAlchemyWorkflowRepository,
         )
 
-        return cls(
+        knowledge_base = cls(
             services=services,
             config=config,
             database=database,
             object_store=object_store,
-            collections=Collections(SQLAlchemyCollectionRepository(database)),
+            graph_store=InMemoryGraphStore(),
+            collections=Collections(
+                SQLAlchemyCollectionRepository(database),
+                CollectionGroups(SQLAlchemyCollectionGroupRepository(database)),
+            ),
             sources=(
                 Sources(SQLAlchemySourceRepository(database), object_store)
                 if object_store is not None
@@ -318,8 +375,26 @@ class KnowledgeBase:
             records=Records(SQLAlchemyRecordRepository(database)),
             schemas=ExtractionSchemas(SQLAlchemyExtractionSchemaRepository(database)),
             projections=Projections(SQLAlchemyProjectionRepository(database)),
+            feedback=Feedback(SQLAlchemyFeedbackRepository(database)),
+            skills=Skills(SQLAlchemySkillRepository(database)),
+            post_processors=PostProcessors(
+                SQLAlchemyPostProcessorRepository(database)
+            ),
+            materials=Materials(
+                workflows=Workflows(SQLAlchemyWorkflowRepository(database))
+            ),
             capabilities=capabilities,
         )
+        if services is not None and knowledge_base.graph is not None:
+            knowledge_base.graph._bind_compatibility(
+                loader=getattr(services, "get_knowledge_graph", None),
+                extractor=getattr(services, "extract_knowledge_graph", None),
+                reviewer=getattr(services, "review_knowledge_graph", None),
+            )
+        from mkb.builtin_pipelines import register_materials_builtin_pipelines
+
+        register_materials_builtin_pipelines(knowledge_base)
+        return knowledge_base
 
     @classmethod
     def _from_generic_resources(
@@ -332,6 +407,7 @@ class KnowledgeBase:
         graph_store: GraphStore | None = None,
         model_provider: ModelProvider | None = None,
         job_backend: JobBackend | None = None,
+        vector_search: VectorSearch | None = None,
         parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
         pipeline_registry_factory: Callable[
             ["KnowledgeBase", frozenset[str]], Pipelines
@@ -341,17 +417,26 @@ class KnowledgeBase:
     ) -> "KnowledgeBase":
         from mkb.adapters.generic_repositories import (
             GenericArtifactRepository,
+            GenericCollectionGroupRepository,
             GenericCollectionRepository,
             GenericExtractionSchemaRepository,
+            GenericEvidenceRepository,
+            GenericFeedbackRepository,
+            GenericJobBackend,
+            GenericPostProcessorRepository,
             GenericProjectionRepository,
             GenericRecordRepository,
             GenericSchemaManager,
+            GenericSkillRepository,
             GenericSourceRepository,
         )
         from mkb.adapters.graph import InMemoryGraphStore
 
         def transaction_factory(session) -> Transaction:
             rollback_actions: list[Callable[[], None]] = []
+            transaction_evidence = EvidenceLinks(
+                GenericEvidenceRepository(database, session)
+            )
             transaction_sources = (
                 Sources(
                     GenericSourceRepository(database, session),
@@ -374,14 +459,23 @@ class KnowledgeBase:
                 else None
             )
             return Transaction(
-                collections=Collections(GenericCollectionRepository(database, session)),
-                records=Records(GenericRecordRepository(database, session)),
+                collections=Collections(
+                    GenericCollectionRepository(database, session),
+                    CollectionGroups(
+                        GenericCollectionGroupRepository(database, session)
+                    ),
+                ),
+                records=Records(
+                    GenericRecordRepository(database, session),
+                    transaction_evidence,
+                ),
                 schemas=ExtractionSchemas(
                     GenericExtractionSchemaRepository(database, session)
                 ),
                 projections=Projections(
                     GenericProjectionRepository(database, session)
                 ),
+                evidence=transaction_evidence,
                 sources=transaction_sources,
                 artifacts=transaction_artifacts,
                 _rollback_actions=rollback_actions,
@@ -396,6 +490,10 @@ class KnowledgeBase:
             if object_store is not None
             else None
         )
+        effective_job_backend = (
+            job_backend if job_backend is not None else GenericJobBackend(database)
+        )
+        evidence = EvidenceLinks(GenericEvidenceRepository(database))
 
         return cls(
             config=config,
@@ -403,8 +501,12 @@ class KnowledgeBase:
             object_store=object_store,
             graph_store=graph_store if graph_store is not None else InMemoryGraphStore(),
             model_provider=model_provider,
-            job_backend=job_backend,
-            collections=Collections(GenericCollectionRepository(database)),
+            job_backend=effective_job_backend,
+            vector_search=vector_search,
+            collections=Collections(
+                GenericCollectionRepository(database),
+                CollectionGroups(GenericCollectionGroupRepository(database)),
+            ),
             sources=sources,
             artifacts=(
                 Artifacts(
@@ -416,9 +518,15 @@ class KnowledgeBase:
                 if object_store is not None
                 else None
             ),
-            records=Records(GenericRecordRepository(database)),
+            records=Records(GenericRecordRepository(database), evidence),
             schemas=ExtractionSchemas(GenericExtractionSchemaRepository(database)),
             projections=Projections(GenericProjectionRepository(database)),
+            evidence=evidence,
+            feedback=Feedback(GenericFeedbackRepository(database)),
+            skills=Skills(GenericSkillRepository(database)),
+            post_processors=PostProcessors(
+                GenericPostProcessorRepository(database)
+            ),
             capabilities=capabilities,
             schema_manager=GenericSchemaManager(database),
             transaction_factory=transaction_factory,
@@ -452,6 +560,8 @@ class KnowledgeBase:
             self.model_provider.close()
         if self.job_backend is not None:
             self.job_backend.close()
+        if self.vector_search is not None:
+            self.vector_search.close()
         if self.database is not None:
             self.database.close()
         self._closed = True

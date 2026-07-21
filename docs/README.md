@@ -5,6 +5,7 @@ Choose the guide for the work you are doing.
 ## Users and API consumers
 
 - [Python API](python-api.md): supported facade, lifecycle, arguments, results, and examples
+- [Generated Python API reference](api-reference.md): typed models and grouped methods
 - [HTTP API contract](api-contract.md): routes, authentication, jobs, errors, and compatibility
 - [Workflow lifecycle policy](workflow-lifecycle-policy.md): current and legacy workflow surfaces
 
@@ -28,4 +29,3 @@ Choose the guide for the work you are doing.
 The React frontend under `frontend/` is current. `src/mkb/ui/` (Streamlit) and
 legacy canonical-workflow compatibility paths are maintained only to avoid breaking
 existing callers; new product and API work targets React and the service layer.
-

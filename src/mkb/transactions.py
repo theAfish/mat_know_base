@@ -9,6 +9,7 @@ from mkb.repositories import (
     Artifacts,
     Collections,
     ExtractionSchemas,
+    EvidenceLinks,
     Projections,
     Records,
     Sources,
@@ -25,6 +26,7 @@ class Transaction:
     projections: Projections
     sources: Sources | None = None
     artifacts: Artifacts | None = None
+    evidence: EvidenceLinks | None = None
     _rollback_actions: list[Callable[[], None]] = field(
         default_factory=list,
         repr=False,

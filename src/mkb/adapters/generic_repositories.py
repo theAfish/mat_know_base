@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,8 +20,10 @@ from sqlalchemy import (
     String,
     Table,
     func,
+    delete,
     insert,
     select,
+    update,
 )
 from sqlalchemy.exc import IntegrityError
 
@@ -28,13 +31,19 @@ from mkb.exceptions import ConflictError, NotFoundError, ValidationError
 from mkb.models import (
     Artifact,
     Collection,
+    CollectionGroup,
+    Evidence,
     ExtractionSchema,
+    FeedbackItem,
     Projection,
+    PostProcessor,
     Record,
+    Skill,
     Source,
     StorageReference,
+    Job,
 )
-from mkb.ports import Database
+from mkb.ports import Capabilities, Database
 
 generic_metadata = MetaData()
 
@@ -47,6 +56,30 @@ collections_table = Table(
     Column("metadata", JSON, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+collection_groups_table = Table(
+    "mkb_collection_groups",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("description", String),
+    Column("color", String(32)),
+    Column("display_order", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+collection_group_memberships_table = Table(
+    "mkb_collection_group_memberships",
+    generic_metadata,
+    Column(
+        "collection_id",
+        String(36),
+        ForeignKey("mkb_collections.id"),
+        primary_key=True,
+    ),
+    Column("group_id", String(36), ForeignKey("mkb_collection_groups.id"), nullable=False),
 )
 
 sources_table = Table(
@@ -157,6 +190,90 @@ projections_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+evidence_table = Table(
+    "mkb_evidence",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("output_type", String(64), nullable=False),
+    Column("output_id", String(36), nullable=False),
+    Column("source_id", String(36)),
+    Column("artifact_id", String(36)),
+    Column("locator", JSON, nullable=False),
+    Column("excerpt", String),
+    Column("metadata", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+jobs_table = Table(
+    "mkb_jobs",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("kind", String(64), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("label", String(255)),
+    Column("pipeline_name", String(255)),
+    Column("pipeline_version", String(64)),
+    Column("run_id", String(36)),
+    Column("idempotency_key", String(255), unique=True),
+    Column("inputs", JSON, nullable=False),
+    Column("parameters", JSON, nullable=False),
+    Column("checkpoint", JSON, nullable=False),
+    Column("events", JSON, nullable=False),
+    Column("attempt_count", Integer, nullable=False),
+    Column("progress", String(32)),
+    Column("message", String),
+    Column("result", JSON),
+    Column("error", String),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("started_at", DateTime(timezone=True)),
+    Column("completed_at", DateTime(timezone=True)),
+)
+
+feedback_table = Table(
+    "mkb_feedback",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("target_record_id", String(36), nullable=False),
+    Column("target_collection_id", String(36), nullable=False),
+    Column("category", String(64), nullable=False),
+    Column("question", String, nullable=False),
+    Column("source_agent", String(100), nullable=False),
+    Column("source_projection_id", String(36)),
+    Column("field_path", String),
+    Column("context", String),
+    Column("status", String(32), nullable=False),
+    Column("resolution_notes", String),
+    Column("resolved_by", String(100)),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+skills_table = Table(
+    "mkb_skills",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("slug", String(255), nullable=False, unique=True),
+    Column("content", String, nullable=False),
+    Column("description", String),
+    Column("metadata", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+post_processors_table = Table(
+    "mkb_post_processors",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("filename", String(255), nullable=False),
+    Column("source", String, nullable=False),
+    Column("metadata", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 schema_migrations_table = Table(
     "mkb_schema_migrations",
     generic_metadata,
@@ -165,11 +282,18 @@ schema_migrations_table = Table(
     Column("applied_at", DateTime(timezone=True), nullable=False),
 )
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 6
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """Restore UTC metadata that SQLite does not retain on DateTime columns."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
 
 
 def _json_value(value: Any, field: str) -> Any:
@@ -216,6 +340,49 @@ class GenericSchemaManager:
                     )
                 )
                 current = 2
+            if current < 3:
+                evidence_table.create(connection, checkfirst=True)
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=3,
+                        name="evidence_links",
+                        applied_at=_now(),
+                    )
+                )
+                current = 3
+            if current < 4:
+                jobs_table.create(connection, checkfirst=True)
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=4,
+                        name="durable_pipeline_jobs",
+                        applied_at=_now(),
+                    )
+                )
+                current = 4
+            if current < 5:
+                feedback_table.create(connection, checkfirst=True)
+                skills_table.create(connection, checkfirst=True)
+                post_processors_table.create(connection, checkfirst=True)
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=5,
+                        name="feedback_skills_post_processors",
+                        applied_at=_now(),
+                    )
+                )
+                current = 5
+            if current < 6:
+                collection_groups_table.create(connection, checkfirst=True)
+                collection_group_memberships_table.create(connection, checkfirst=True)
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=6,
+                        name="collection_groups",
+                        applied_at=_now(),
+                    )
+                )
+                current = 6
             return int(current)
 
     def version(self) -> int | None:
@@ -257,9 +424,10 @@ class GenericCollectionRepository(_Repository):
             name=values["name"],
             source_path=values["source_path"],
             source_count=int(values.get("source_count", 0)),
+            group_id=(uuid.UUID(values["group_id"]) if values.get("group_id") else None),
             metadata=dict(values["metadata"] or {}),
-            created_at=values["created_at"],
-            updated_at=values["updated_at"],
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
         )
 
     def create(
@@ -296,7 +464,17 @@ class GenericCollectionRepository(_Repository):
             .scalar_subquery()
             .label("source_count")
         )
-        statement = select(collections_table, source_count).where(
+        group_id = (
+            select(collection_group_memberships_table.c.group_id)
+            .where(
+                collection_group_memberships_table.c.collection_id
+                == collections_table.c.id
+            )
+            .correlate(collections_table)
+            .scalar_subquery()
+            .label("group_id")
+        )
+        statement = select(collections_table, source_count, group_id).where(
             collections_table.c.id == str(collection_id)
         )
         with self._session() as session:
@@ -312,14 +490,203 @@ class GenericCollectionRepository(_Repository):
             .scalar_subquery()
             .label("source_count")
         )
+        group_id = (
+            select(collection_group_memberships_table.c.group_id)
+            .where(
+                collection_group_memberships_table.c.collection_id
+                == collections_table.c.id
+            )
+            .correlate(collections_table)
+            .scalar_subquery()
+            .label("group_id")
+        )
         statement = (
-            select(collections_table, source_count)
+            select(collections_table, source_count, group_id)
             .order_by(collections_table.c.created_at.desc(), collections_table.c.id)
             .limit(limit)
             .offset(offset)
         )
         with self._session() as session:
             return [self._model(row) for row in session.execute(statement)]
+
+    def update(
+        self,
+        collection_id: uuid.UUID,
+        *,
+        name: str | None = None,
+        source_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Collection:
+        current = self.get(collection_id)
+        if current is None:
+            raise NotFoundError(f"Collection not found: {collection_id}")
+        changes = {"updated_at": _now()}
+        if name is not None:
+            changes["name"] = name
+        if source_path is not None:
+            changes["source_path"] = source_path
+        if metadata is not None:
+            changes["metadata"] = _json_value(dict(metadata), "metadata")
+        try:
+            with self._session(write=True) as session:
+                session.execute(
+                    update(collections_table)
+                    .where(collections_table.c.id == str(collection_id))
+                    .values(**changes)
+                )
+        except IntegrityError as exc:
+            raise ConflictError(f"Collection already exists: {name}") from exc
+        return self.get(collection_id)
+
+    def delete(self, collection_id: uuid.UUID) -> None:
+        with self._session(write=True) as session:
+            exists = session.execute(
+                select(collections_table.c.id).where(
+                    collections_table.c.id == str(collection_id)
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                raise NotFoundError(f"Collection not found: {collection_id}")
+            source_count = session.execute(
+                select(func.count()).select_from(collection_sources_table).where(
+                    collection_sources_table.c.collection_id == str(collection_id)
+                )
+            ).scalar_one()
+            record_count = session.execute(
+                select(func.count()).select_from(records_table).where(
+                    records_table.c.collection_id == str(collection_id)
+                )
+            ).scalar_one()
+            if source_count or record_count:
+                raise ConflictError(
+                    "Collection is not empty; remove linked sources and records first"
+                )
+            session.execute(
+                delete(collection_group_memberships_table).where(
+                    collection_group_memberships_table.c.collection_id
+                    == str(collection_id)
+                )
+            )
+            session.execute(
+                delete(collections_table).where(
+                    collections_table.c.id == str(collection_id)
+                )
+            )
+
+
+class GenericCollectionGroupRepository(_Repository):
+    """Portable collection grouping and membership persistence."""
+
+    @staticmethod
+    def _model(row) -> CollectionGroup:
+        values = row._mapping
+        return CollectionGroup(
+            id=uuid.UUID(values["id"]),
+            name=values["name"],
+            description=values["description"],
+            color=values["color"],
+            display_order=int(values["display_order"]),
+            collection_count=int(values.get("collection_count", 0)),
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
+        )
+
+    @staticmethod
+    def _count():
+        return (
+            select(func.count())
+            .select_from(collection_group_memberships_table)
+            .where(
+                collection_group_memberships_table.c.group_id
+                == collection_groups_table.c.id
+            )
+            .correlate(collection_groups_table)
+            .scalar_subquery()
+            .label("collection_count")
+        )
+
+    def create(self, group: CollectionGroup) -> CollectionGroup:
+        values = group.model_dump(mode="python", exclude={"collection_count"})
+        values["id"] = str(group.id)
+        try:
+            with self._session(write=True) as session:
+                session.execute(insert(collection_groups_table).values(**values))
+        except IntegrityError as exc:
+            raise ConflictError(f"Collection group already exists: {group.id}") from exc
+        return group
+
+    def get(self, group_id: uuid.UUID) -> CollectionGroup | None:
+        statement = select(collection_groups_table, self._count()).where(
+            collection_groups_table.c.id == str(group_id)
+        )
+        with self._session() as session:
+            row = session.execute(statement).one_or_none()
+            return self._model(row) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[CollectionGroup]:
+        statement = (
+            select(collection_groups_table, self._count())
+            .order_by(
+                collection_groups_table.c.display_order,
+                collection_groups_table.c.created_at,
+                collection_groups_table.c.id,
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        with self._session() as session:
+            return [self._model(row) for row in session.execute(statement)]
+
+    def update(self, group_id: uuid.UUID, **changes: Any) -> CollectionGroup:
+        values = {key: value for key, value in changes.items() if value is not None}
+        values["updated_at"] = _now()
+        with self._session(write=True) as session:
+            result = session.execute(
+                update(collection_groups_table)
+                .where(collection_groups_table.c.id == str(group_id))
+                .values(**values)
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Collection group not found: {group_id}")
+        return self.get(group_id)
+
+    def delete(self, group_id: uuid.UUID) -> int:
+        with self._session(write=True) as session:
+            memberships = session.execute(
+                delete(collection_group_memberships_table).where(
+                    collection_group_memberships_table.c.group_id == str(group_id)
+                )
+            ).rowcount
+            result = session.execute(
+                delete(collection_groups_table).where(
+                    collection_groups_table.c.id == str(group_id)
+                )
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Collection group not found: {group_id}")
+            return int(memberships or 0)
+
+    def assign(
+        self,
+        collection_ids: list[uuid.UUID],
+        group_id: uuid.UUID | None,
+    ) -> int:
+        identifiers = [str(item) for item in collection_ids]
+        with self._session(write=True) as session:
+            session.execute(
+                delete(collection_group_memberships_table).where(
+                    collection_group_memberships_table.c.collection_id.in_(identifiers)
+                )
+            )
+            if group_id is not None:
+                session.execute(
+                    insert(collection_group_memberships_table),
+                    [
+                        {"collection_id": identifier, "group_id": str(group_id)}
+                        for identifier in identifiers
+                    ],
+                )
+        return len(identifiers)
 
 
 class GenericSourceRepository(_Repository):
@@ -328,6 +695,8 @@ class GenericSourceRepository(_Repository):
     @staticmethod
     def _model(row, collection_ids: tuple[uuid.UUID, ...]) -> Source:
         values = row._mapping
+        metadata = dict(values["metadata"] or {})
+        uri = metadata.pop("_mkb_external_uri", None)
         return Source(
             id=uuid.UUID(values["id"]),
             filename=values["filename"],
@@ -335,13 +704,16 @@ class GenericSourceRepository(_Repository):
             size=values["size"],
             sha256=values["sha256"],
             status=values["status"],
-            storage=StorageReference(
-                bucket=values["bucket"], key=values["object_key"]
+            storage=(
+                StorageReference(bucket=values["bucket"], key=values["object_key"])
+                if values["bucket"] and values["object_key"]
+                else None
             ),
+            uri=uri,
             collection_ids=collection_ids,
-            metadata=dict(values["metadata"] or {}),
-            created_at=values["created_at"],
-            updated_at=values["updated_at"],
+            metadata=metadata,
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
         )
 
     def _collections(self, session, source_id: str) -> tuple[uuid.UUID, ...]:
@@ -352,6 +724,9 @@ class GenericSourceRepository(_Repository):
 
     def create(self, source: Source, *, collection_id: uuid.UUID) -> Source:
         now = source.created_at or _now()
+        metadata = dict(source.metadata)
+        if source.uri is not None:
+            metadata["_mkb_external_uri"] = source.uri
         values = {
             "id": str(source.id),
             "filename": source.filename,
@@ -359,9 +734,9 @@ class GenericSourceRepository(_Repository):
             "size": source.size,
             "sha256": source.sha256,
             "status": source.status,
-            "bucket": source.storage.bucket,
-            "object_key": source.storage.key,
-            "metadata": _json_value(dict(source.metadata), "metadata"),
+            "bucket": source.storage.bucket if source.storage is not None else "",
+            "object_key": source.storage.key if source.storage is not None else "",
+            "metadata": _json_value(metadata, "metadata"),
             "created_at": now,
             "updated_at": source.updated_at or now,
         }
@@ -434,8 +809,8 @@ class GenericArtifactRepository(_Repository):
             ),
             primary_path=values["primary_path"],
             metadata=dict(values["metadata"] or {}),
-            created_at=values["created_at"],
-            updated_at=values["updated_at"],
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
         )
 
     def create(self, artifact: Artifact) -> Artifact:
@@ -510,11 +885,11 @@ class GenericRecordRepository(_Repository):
             summary=values["summary"],
             review_count=int(values["review_count"]),
             version=int(values["version"]),
-            extracted_at=values["extracted_at"],
+            extracted_at=_utc(values["extracted_at"]),
             source_metadata=dict(values["source_metadata"] or {}),
             annotations=dict(values["annotations"] or {}),
-            created_at=values["created_at"],
-            updated_at=values["updated_at"],
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
         )
 
     def create(
@@ -608,6 +983,35 @@ class GenericRecordRepository(_Repository):
         with self._session() as session:
             return [self._model(row) for row in session.execute(statement)]
 
+    def query(
+        self,
+        *,
+        collection_id: str | uuid.UUID | None = None,
+        status: str | None = None,
+        filters: dict[str, Any] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Record]:
+        statement = select(records_table)
+        if collection_id is not None:
+            statement = statement.where(
+                records_table.c.collection_id == str(collection_id)
+            )
+        if status is not None:
+            statement = statement.where(records_table.c.status == status)
+        statement = statement.order_by(
+            records_table.c.created_at.desc(), records_table.c.id
+        )
+        with self._session() as session:
+            rows = (self._model(row) for row in session.execute(statement))
+            matched = (
+                record
+                for record in rows
+                if isinstance(record.data, dict)
+                and all(record.data.get(key) == value for key, value in (filters or {}).items())
+            )
+            return list(matched)[offset : offset + limit]
+
 
 class GenericExtractionSchemaRepository(_Repository):
     """Portable schema registry for custom extraction definitions."""
@@ -630,8 +1034,8 @@ class GenericExtractionSchemaRepository(_Repository):
             review_search_tools=tuple(values["review_search_tools"] or ()),
             post_processors=tuple(values["post_processors"] or ()),
             version=int(values["version"]),
-            created_at=values["created_at"],
-            updated_at=values["updated_at"],
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
         )
 
     def create(
@@ -703,6 +1107,49 @@ class GenericExtractionSchemaRepository(_Repository):
         with self._session() as session:
             return [self._model(row) for row in session.execute(statement)]
 
+    def update(self, schema_id: uuid.UUID, **changes: Any) -> ExtractionSchema:
+        current = self.get(schema_id)
+        if current is None:
+            raise NotFoundError(f"Extraction schema not found: {schema_id}")
+        values = {key: value for key, value in changes.items() if value is not None}
+        for field in ("definition", "field_descriptions"):
+            if field in values:
+                values[field] = _json_value(dict(values[field]), field)
+        values["version"] = current.version + 1
+        values["updated_at"] = _now()
+        try:
+            with self._session(write=True) as session:
+                session.execute(
+                    update(schemas_table)
+                    .where(schemas_table.c.id == str(schema_id))
+                    .values(**values)
+                )
+        except IntegrityError as exc:
+            raise ConflictError(
+                f"Extraction schema already exists: {values.get('name')}"
+            ) from exc
+        return self.get(schema_id)
+
+    def delete(self, schema_id: uuid.UUID) -> None:
+        with self._session(write=True) as session:
+            exists = session.execute(
+                select(schemas_table.c.id).where(schemas_table.c.id == str(schema_id))
+            ).scalar_one_or_none()
+            if exists is None:
+                raise NotFoundError(f"Extraction schema not found: {schema_id}")
+            projection_count = session.execute(
+                select(func.count()).select_from(projections_table).where(
+                    projections_table.c.schema_id == str(schema_id)
+                )
+            ).scalar_one()
+            if projection_count:
+                raise ConflictError(
+                    "Extraction schema is in use; referenced schemas cannot be deleted"
+                )
+            session.execute(
+                delete(schemas_table).where(schemas_table.c.id == str(schema_id))
+            )
+
 
 class GenericProjectionRepository(_Repository):
     """Portable writable projections for consumer-defined schemas."""
@@ -720,20 +1167,20 @@ class GenericProjectionRepository(_Repository):
             data=values["data"],
             validation=values["validation"],
             notes=values["notes"],
-            extracted_at=values["extracted_at"],
+            extracted_at=_utc(values["extracted_at"]),
             schema_version=values["schema_version"],
             review_count=values["review_count"],
             review_notes=values["review_notes"],
-            reviewed_at=values["reviewed_at"],
-            deleted_at=values["deleted_at"],
+            reviewed_at=_utc(values["reviewed_at"]),
+            deleted_at=_utc(values["deleted_at"]),
             superseded_by_id=(
                 uuid.UUID(values["superseded_by_id"])
                 if values["superseded_by_id"]
                 else None
             ),
             supersedes_ids=tuple(values["supersedes_ids"] or ()),
-            created_at=values["created_at"],
-            updated_at=values["updated_at"],
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
         )
 
     def create(
@@ -860,3 +1307,449 @@ class GenericProjectionRepository(_Repository):
                     seen.add(key)
             models = newest
         return models[offset : offset + limit]
+
+
+class GenericEvidenceRepository(_Repository):
+    """Portable lossless evidence-link persistence."""
+
+    @staticmethod
+    def _model(row) -> Evidence:
+        values = row._mapping
+        return Evidence(
+            id=uuid.UUID(values["id"]),
+            output_type=values["output_type"],
+            output_id=uuid.UUID(values["output_id"]),
+            source_id=(uuid.UUID(values["source_id"]) if values["source_id"] else None),
+            artifact_id=(
+                uuid.UUID(values["artifact_id"]) if values["artifact_id"] else None
+            ),
+            locator=dict(values["locator"] or {}),
+            excerpt=values["excerpt"],
+            metadata=dict(values["metadata"] or {}),
+            created_at=_utc(values["created_at"]),
+        )
+
+    def create(
+        self,
+        *,
+        output_type: str,
+        output_id: uuid.UUID,
+        source_id: uuid.UUID | None = None,
+        artifact_id: uuid.UUID | None = None,
+        locator: dict[str, Any] | None = None,
+        excerpt: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        evidence_id: uuid.UUID | None = None,
+    ) -> Evidence:
+        identifier = evidence_id or uuid.uuid4()
+        now = _now()
+        values = {
+            "id": str(identifier),
+            "output_type": output_type,
+            "output_id": str(output_id),
+            "source_id": str(source_id) if source_id is not None else None,
+            "artifact_id": str(artifact_id) if artifact_id is not None else None,
+            "locator": _json_value(dict(locator or {}), "locator"),
+            "excerpt": excerpt,
+            "metadata": _json_value(dict(metadata or {}), "metadata"),
+            "created_at": now,
+        }
+        try:
+            with self._session(write=True) as session:
+                session.execute(insert(evidence_table).values(**values))
+        except IntegrityError as exc:
+            raise ConflictError(f"Evidence already exists: {identifier}") from exc
+        return Evidence(
+            id=identifier,
+            output_type=output_type,
+            output_id=output_id,
+            source_id=source_id,
+            artifact_id=artifact_id,
+            locator=values["locator"],
+            excerpt=excerpt,
+            metadata=values["metadata"],
+            created_at=now,
+        )
+
+    def get(self, evidence_id: str | uuid.UUID) -> Evidence | None:
+        statement = select(evidence_table).where(evidence_table.c.id == str(evidence_id))
+        with self._session() as session:
+            row = session.execute(statement).one_or_none()
+            return self._model(row) if row else None
+
+    def list(
+        self,
+        *,
+        output_id: str | uuid.UUID | None = None,
+        source_id: str | uuid.UUID | None = None,
+        artifact_id: str | uuid.UUID | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Evidence]:
+        statement = select(evidence_table)
+        for column, value in (
+            (evidence_table.c.output_id, output_id),
+            (evidence_table.c.source_id, source_id),
+            (evidence_table.c.artifact_id, artifact_id),
+        ):
+            if value is not None:
+                statement = statement.where(column == str(value))
+        statement = statement.order_by(
+            evidence_table.c.created_at.desc(), evidence_table.c.id
+        ).limit(limit).offset(offset)
+        with self._session() as session:
+            return [self._model(row) for row in session.execute(statement)]
+
+
+class GenericFeedbackRepository(_Repository):
+    """Portable feedback persistence for SDK-managed databases."""
+
+    @staticmethod
+    def _model(row) -> FeedbackItem:
+        values = row._mapping
+        return FeedbackItem(
+            id=uuid.UUID(values["id"]),
+            target_record_id=uuid.UUID(values["target_record_id"]),
+            target_collection_id=uuid.UUID(values["target_collection_id"]),
+            category=values["category"],
+            question=values["question"],
+            source_agent=values["source_agent"],
+            source_projection_id=(
+                uuid.UUID(values["source_projection_id"])
+                if values["source_projection_id"]
+                else None
+            ),
+            field_path=values["field_path"],
+            context=values["context"],
+            status=values["status"],
+            resolution_notes=values["resolution_notes"],
+            resolved_by=values["resolved_by"],
+            resolved_at=_utc(values["resolved_at"]),
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
+        )
+
+    def create(self, item: FeedbackItem) -> FeedbackItem:
+        values = item.model_dump(mode="python")
+        values["id"] = str(item.id)
+        values["target_record_id"] = str(item.target_record_id)
+        values["target_collection_id"] = str(item.target_collection_id)
+        values["source_projection_id"] = (
+            str(item.source_projection_id) if item.source_projection_id else None
+        )
+        try:
+            with self._session(write=True) as session:
+                session.execute(insert(feedback_table).values(**values))
+        except IntegrityError as exc:
+            raise ConflictError(f"Feedback already exists: {item.id}") from exc
+        return item
+
+    def get(self, feedback_id: uuid.UUID) -> FeedbackItem | None:
+        with self._session() as session:
+            row = session.execute(
+                select(feedback_table).where(feedback_table.c.id == str(feedback_id))
+            ).one_or_none()
+            return self._model(row) if row else None
+
+    def list(
+        self,
+        *,
+        collection_id: uuid.UUID | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[FeedbackItem]:
+        statement = select(feedback_table)
+        if collection_id is not None:
+            statement = statement.where(
+                feedback_table.c.target_collection_id == str(collection_id)
+            )
+        if status is not None:
+            statement = statement.where(feedback_table.c.status == status.upper())
+        statement = statement.order_by(
+            feedback_table.c.created_at.desc(), feedback_table.c.id
+        ).limit(limit).offset(offset)
+        with self._session() as session:
+            return [self._model(row) for row in session.execute(statement)]
+
+    def update(self, feedback_id: uuid.UUID, **changes: Any) -> FeedbackItem:
+        changes["updated_at"] = _now()
+        with self._session(write=True) as session:
+            result = session.execute(
+                update(feedback_table)
+                .where(feedback_table.c.id == str(feedback_id))
+                .values(**changes)
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Feedback not found: {feedback_id}")
+        return self.get(feedback_id)
+
+
+class GenericSkillRepository(_Repository):
+    """Portable skill-document persistence."""
+
+    @staticmethod
+    def _model(row) -> Skill:
+        values = row._mapping
+        return Skill(
+            id=uuid.UUID(values["id"]),
+            name=values["name"],
+            slug=values["slug"],
+            content=values["content"],
+            description=values["description"],
+            metadata=dict(values["metadata"] or {}),
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
+        )
+
+    def create(self, skill: Skill) -> Skill:
+        values = skill.model_dump(mode="python")
+        values["id"] = str(skill.id)
+        values["metadata"] = _json_value(values["metadata"], "metadata")
+        try:
+            with self._session(write=True) as session:
+                session.execute(insert(skills_table).values(**values))
+        except IntegrityError as exc:
+            raise ConflictError(f"Skill already exists: {skill.slug}") from exc
+        return skill
+
+    def get(self, identifier: str) -> Skill | None:
+        try:
+            uuid.UUID(identifier)
+            condition = skills_table.c.id == identifier
+        except ValueError:
+            condition = skills_table.c.slug == identifier
+        with self._session() as session:
+            row = session.execute(select(skills_table).where(condition)).one_or_none()
+            return self._model(row) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[Skill]:
+        statement = select(skills_table).order_by(skills_table.c.name, skills_table.c.id)
+        with self._session() as session:
+            return [
+                self._model(row)
+                for row in session.execute(statement.limit(limit).offset(offset))
+            ]
+
+    def delete(self, skill_id: uuid.UUID) -> None:
+        with self._session(write=True) as session:
+            result = session.execute(
+                delete(skills_table).where(skills_table.c.id == str(skill_id))
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Skill not found: {skill_id}")
+
+
+class GenericPostProcessorRepository(_Repository):
+    """Portable post-processor source persistence."""
+
+    @staticmethod
+    def _model(row) -> PostProcessor:
+        values = row._mapping
+        return PostProcessor(
+            id=uuid.UUID(values["id"]),
+            name=values["name"],
+            filename=values["filename"],
+            source=values["source"],
+            metadata=dict(values["metadata"] or {}),
+            created_at=_utc(values["created_at"]),
+            updated_at=_utc(values["updated_at"]),
+        )
+
+    def create(self, processor: PostProcessor) -> PostProcessor:
+        values = processor.model_dump(mode="python")
+        values["id"] = str(processor.id)
+        values["metadata"] = _json_value(values["metadata"], "metadata")
+        try:
+            with self._session(write=True) as session:
+                session.execute(insert(post_processors_table).values(**values))
+        except IntegrityError as exc:
+            raise ConflictError(f"Post-processor already exists: {processor.id}") from exc
+        return processor
+
+    def get(self, processor_id: uuid.UUID) -> PostProcessor | None:
+        with self._session() as session:
+            row = session.execute(
+                select(post_processors_table).where(
+                    post_processors_table.c.id == str(processor_id)
+                )
+            ).one_or_none()
+            return self._model(row) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[PostProcessor]:
+        statement = select(post_processors_table).order_by(
+            post_processors_table.c.name, post_processors_table.c.id
+        )
+        with self._session() as session:
+            return [
+                self._model(row)
+                for row in session.execute(statement.limit(limit).offset(offset))
+            ]
+
+    def delete(self, processor_id: uuid.UUID) -> None:
+        with self._session(write=True) as session:
+            result = session.execute(
+                delete(post_processors_table).where(
+                    post_processors_table.c.id == str(processor_id)
+                )
+            )
+            if result.rowcount == 0:
+                raise NotFoundError(f"Post-processor not found: {processor_id}")
+
+
+class GenericJobBackend(_Repository):
+    """Portable persisted backend for local pipeline submission."""
+
+    capabilities = frozenset({Capabilities.DURABLE_SUBMISSION})
+    terminal_statuses = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
+
+    @staticmethod
+    def _model(row) -> Job:
+        values = row._mapping
+        return Job(
+            id=uuid.UUID(values["id"]),
+            kind=values["kind"],
+            status=values["status"],
+            label=values["label"],
+            pipeline_name=values["pipeline_name"],
+            pipeline_version=values["pipeline_version"],
+            run_id=uuid.UUID(values["run_id"]) if values["run_id"] else None,
+            idempotency_key=values["idempotency_key"],
+            inputs=dict(values["inputs"] or {}),
+            parameters=dict(values["parameters"] or {}),
+            checkpoint=dict(values["checkpoint"] or {}),
+            events=tuple(values["events"] or ()),
+            attempt_count=int(values["attempt_count"]),
+            progress=(float(values["progress"]) if values["progress"] is not None else None),
+            message=values["message"],
+            result=values["result"],
+            error=values["error"],
+            created_at=_utc(values["created_at"]),
+            started_at=_utc(values["started_at"]),
+            completed_at=_utc(values["completed_at"]),
+        )
+
+    @staticmethod
+    def _values(job: Job) -> dict[str, Any]:
+        return {
+            "id": str(job.id),
+            "kind": job.kind,
+            "status": job.status,
+            "label": job.label,
+            "pipeline_name": job.pipeline_name,
+            "pipeline_version": job.pipeline_version,
+            "run_id": str(job.run_id) if job.run_id else None,
+            "idempotency_key": job.idempotency_key,
+            "inputs": _json_value(dict(job.inputs), "job inputs"),
+            "parameters": _json_value(dict(job.parameters), "job parameters"),
+            "checkpoint": _json_value(dict(job.checkpoint), "job checkpoint"),
+            "events": _json_value(list(job.events), "job events"),
+            "attempt_count": job.attempt_count,
+            "progress": str(job.progress) if job.progress is not None else None,
+            "message": job.message,
+            "result": _json_value(job.result, "job result") if job.result is not None else None,
+            "error": job.error,
+            "created_at": job.created_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+        }
+
+    def create(self, job: Job) -> Job:
+        try:
+            with self._session(write=True) as session:
+                session.execute(insert(jobs_table).values(**self._values(job)))
+        except IntegrityError as exc:
+            if job.idempotency_key is not None:
+                with self._session() as session:
+                    row = session.execute(
+                        select(jobs_table).where(
+                            jobs_table.c.idempotency_key == job.idempotency_key
+                        )
+                    ).one_or_none()
+                    if row is not None:
+                        return self._model(row)
+            raise ConflictError(f"Job already exists: {job.id}") from exc
+        return job
+
+    def update(self, job_id: str, **changes: Any) -> Job:
+        current = self.get(job_id)
+        if current is None:
+            raise NotFoundError(f"Job not found: {job_id}")
+        updated = current.model_copy(update=changes)
+        values = self._values(updated)
+        values.pop("id")
+        with self._session(write=True) as session:
+            session.execute(
+                update(jobs_table).where(jobs_table.c.id == str(current.id)).values(**values)
+            )
+        return updated
+
+    def get(self, job_id: str) -> Job | None:
+        try:
+            identifier = str(uuid.UUID(str(job_id)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValidationError("job_id must be a UUID") from exc
+        with self._session() as session:
+            row = session.execute(
+                select(jobs_table).where(jobs_table.c.id == identifier)
+            ).one_or_none()
+            return self._model(row) if row else None
+
+    def list(self, *, limit: int = 100, offset: int = 0) -> list[Job]:
+        statement = (
+            select(jobs_table)
+            .order_by(jobs_table.c.created_at.desc(), jobs_table.c.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        with self._session() as session:
+            return [self._model(row) for row in session.execute(statement)]
+
+    def wait(self, job_id: str, *, timeout: float | None = None) -> Job:
+        started = time.monotonic()
+        while True:
+            job = self.get(job_id)
+            if job is None:
+                raise NotFoundError(f"Job not found: {job_id}")
+            if job.status in self.terminal_statuses:
+                return job
+            if timeout is not None and time.monotonic() - started >= timeout:
+                raise TimeoutError(f"Timed out waiting for job {job_id}")
+            time.sleep(0.02)
+
+    def cancel(self, job_id: str) -> Job:
+        job = self.get(job_id)
+        if job is None:
+            raise NotFoundError(f"Job not found: {job_id}")
+        if job.status in self.terminal_statuses:
+            return job
+        status = "CANCELLED" if job.status == "QUEUED" else "CANCELLING"
+        return self.update(
+            job_id,
+            status=status,
+            message="Cancellation requested",
+            completed_at=(_now() if status == "CANCELLED" else None),
+        )
+
+    def recover_interrupted(self) -> int:
+        """Explicitly mark jobs abandoned by a prior process as resumable."""
+        with self._session() as session:
+            identifiers = list(
+                session.scalars(
+                    select(jobs_table.c.id).where(
+                        jobs_table.c.status.in_({"QUEUED", "RUNNING", "CANCELLING"})
+                    )
+                )
+            )
+        for identifier in identifiers:
+            self.update(
+                identifier,
+                status="INTERRUPTED",
+                message="Interrupted by process restart",
+                error="Worker process ended before completion",
+                completed_at=_now(),
+            )
+        return len(identifiers)
+
+    def close(self) -> None:
+        return None

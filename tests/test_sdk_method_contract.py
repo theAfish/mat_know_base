@@ -13,23 +13,42 @@ from mkb import (
     ValidationError,
 )
 from mkb.graph import Graph
+from mkb.application_services import MaintenanceService, SettingsService
+from mkb.job_service import Jobs
+from mkb.managed_services import Feedback, PostProcessors, Skills
 from mkb.pipelines import Pipelines
 from mkb.registries import Parsers, Steps
 from mkb.repositories import (
     Artifacts,
+    CollectionGroups,
     Collections,
+    EvidenceLinks,
     ExtractionSchemas,
     Projections,
     Records,
     Sources,
+    Workflows,
 )
 
 
 SUPPORTED_METHODS = {
-    Collections: {"create", "get", "list", "require"},
+    Collections: {
+        "assign_group",
+        "create",
+        "delete",
+        "get",
+        "list",
+        "require",
+        "update",
+    },
+    CollectionGroups: {"assign", "create", "delete", "get", "list", "require", "update"},
     Sources: {
         "add_bytes",
+        "add_directory",
+        "add_file",
+        "add_records",
         "add_text",
+        "add_uri",
         "content_exists",
         "get",
         "list",
@@ -44,24 +63,81 @@ SUPPORTED_METHODS = {
         "list",
         "open",
         "read_bytes",
+        "register",
         "require",
     },
-    Records: {"create", "export_json", "get", "get_for_collection", "list", "require"},
-    ExtractionSchemas: {"create", "get", "list", "register", "require"},
+    Records: {
+        "create",
+        "evidence",
+        "export_json",
+        "get",
+        "get_for_collection",
+        "list",
+        "query",
+        "require",
+    },
+    ExtractionSchemas: {
+        "create",
+        "delete",
+        "get",
+        "list",
+        "register",
+        "require",
+        "update",
+    },
     Projections: {"create", "export_json", "get", "list", "require"},
+    EvidenceLinks: {"create", "get", "list", "require"},
+    Workflows: {"get", "list", "require"},
     Graph: {
+        "extract",
         "get_entity",
         "get_relation",
         "list_entities",
         "list_relations",
+        "list_reviews",
         "neighbors",
+        "query",
+        "review",
         "require_entity",
+        "traverse",
         "upsert_entity",
         "upsert_relation",
     },
-    Pipelines: {"get", "get_run", "list", "register", "require", "run"},
-    Parsers: {"for_source_type", "get", "list", "parse", "register", "require"},
+    Pipelines: {
+        "get",
+        "get_run",
+        "list",
+        "register",
+        "require",
+        "resume",
+        "run",
+        "submit",
+    },
+    Parsers: {
+        "for_source_type",
+        "get",
+        "list",
+        "parse",
+        "register",
+        "register_adapter",
+        "require",
+    },
     Steps: {"get", "list", "register", "require"},
+    Jobs: {
+        "cancel",
+        "events",
+        "get",
+        "list",
+        "recover_interrupted",
+        "require",
+        "submit",
+        "wait",
+    },
+    SettingsService: {"inspect"},
+    MaintenanceService: {"backup_metadata", "cleanup_plan", "inventory", "reconcile"},
+    Feedback: {"create", "get", "list", "require", "resolve", "review"},
+    Skills: {"create", "delete", "get", "list", "require"},
+    PostProcessors: {"delete", "get", "list", "register", "require"},
 }
 
 
@@ -165,6 +241,41 @@ def test_graph_registry_and_pipeline_method_contracts():
         }
         assert kb.graph.list_relations(entity_id=left.id) == [relation]
         assert kb.graph.neighbors(left.id) == [right]
+        queried = kb.graph.query(entity_type="node", name_contains="left")
+        traversed = kb.graph.traverse(left.id, max_depth=1, direction="out")
+        assert queried.entities == (left,)
+        assert queried.relations == (relation,)
+        assert {item.id for item in traversed.entities} == {left.id, right.id}
+
+        extracted = kb.graph.extract(
+            "ignored by test extractor",
+            extractor=lambda _content: {
+                "entities": [
+                    {"id": "sample", "type": "material", "name": "Steel"},
+                    {"id": "phase", "type": "phase", "name": "Ferrite"},
+                ],
+                "relations": [
+                    {
+                        "source": "sample",
+                        "target": "phase",
+                        "type": "contains",
+                    }
+                ],
+            },
+        )
+        assert len(extracted.entities) == 2
+        assert len(extracted.relations) == 1
+        review = kb.graph.review(
+            extracted.entities[0].id,
+            reviewer=lambda _target: {
+                "decision": "modified",
+                "changes": {"properties": {"reviewed": True}},
+                "notes": "Verified",
+            },
+        )
+        assert review.decision == "modified"
+        assert kb.graph.require_entity(review.target_id).properties["reviewed"] is True
+        assert kb.graph.list_reviews(target_id=review.target_id) == [review]
 
         parser = Parser(
             name="plain",
@@ -198,3 +309,30 @@ def test_graph_registry_and_pipeline_method_contracts():
             assert registry.get(name) is None
             with pytest.raises(NotFoundError):
                 registry.require(name)
+
+
+def test_graph_compatibility_operations_are_injected_and_typed():
+    from mkb.adapters import InMemoryGraphStore
+
+    state = {
+        "graph": {
+            "concepts": [{"label": "Steel"}],
+            "relations": [],
+        }
+    }
+    calls = []
+    graph = Graph(InMemoryGraphStore())
+    graph._bind_compatibility(
+        loader=lambda: {"graph": state["graph"]},
+        extractor=lambda **kwargs: calls.append(("extract", kwargs)) or {"ok": True},
+        reviewer=lambda **kwargs: calls.append(("review", kwargs)) or {"ok": True},
+    )
+
+    assert [entity.name for entity in graph.query().entities] == ["Steel"]
+    extracted = graph.extract(collection_id=uuid.uuid4(), parameters={"model": "test"})
+    reviewed = graph.review(parameters={"mode": "global"})
+
+    assert extracted.metadata["operation_result"] == {"ok": True}
+    assert reviewed.target_type == "graph"
+    assert reviewed.metadata["operation_result"] == {"ok": True}
+    assert [call[0] for call in calls] == ["extract", "review"]

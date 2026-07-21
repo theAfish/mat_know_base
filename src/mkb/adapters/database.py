@@ -9,9 +9,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from mkb.ports import Capabilities
+
 
 class SQLAlchemyDatabase:
     """Own an engine and session factory for exactly one SDK instance."""
+
+    capabilities = frozenset({Capabilities.TRANSACTIONS})
 
     def __init__(self, url: str, **engine_options):
         self.url = url

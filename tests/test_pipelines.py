@@ -5,6 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 from mkb import (
+    CacheKeyComponents,
     ConflictError,
     KnowledgeBase,
     Pipeline,
@@ -167,7 +168,69 @@ def test_steps_validate_typed_contracts_and_accept_existing_records():
 def test_pipeline_definitions_and_run_ids_use_public_validation_errors():
     with pytest.raises(ValidationError, match="deterministic"):
         Step(name="bad-cache", handler=lambda _c, _s: {}, cacheable=True)
+    with pytest.raises(ValidationError, match="cache_key"):
+        Step(
+            name="missing-cache-key",
+            handler=lambda _c, _s: {},
+            deterministic=True,
+            cacheable=True,
+        )
     with pytest.raises(ValidationError, match="at least 1"):
         RetryPolicy(max_attempts=0)
     with pytest.raises(ValidationError, match="UUID"):
         _client().pipelines.get_run("bad-id")
+
+
+def test_deterministic_cache_key_contains_all_required_identity_components():
+    calls = []
+
+    def handler(_context, state):
+        calls.append(state["value"])
+        return {"normalized": state["value"].lower()}
+
+    def cache_key(context, state):
+        return CacheKeyComponents(
+            configuration={"mode": context.parameters["mode"]},
+            source_fingerprint=state["fingerprint"],
+            model_identity=context.parameters["model"],
+            schema_version=context.parameters["schema_version"],
+        )
+
+    pipeline = Pipeline(
+        name="cached",
+        steps=(
+            Step(
+                name="normalize",
+                version="3",
+                handler=handler,
+                deterministic=True,
+                cacheable=True,
+                cache_key=cache_key,
+            ),
+        ),
+    )
+    kb = _client()
+    parameters = {"mode": "strict", "model": "provider/model", "schema_version": "7"}
+
+    first = kb.pipelines.run(
+        pipeline,
+        inputs={"value": "CALCITE", "fingerprint": "sha256:one"},
+        parameters=parameters,
+    )
+    second = kb.pipelines.run(
+        pipeline,
+        inputs={"value": "CALCITE", "fingerprint": "sha256:one"},
+        parameters=parameters,
+    )
+    changed_schema = kb.pipelines.run(
+        pipeline,
+        inputs={"value": "CALCITE", "fingerprint": "sha256:one"},
+        parameters={**parameters, "schema_version": "8"},
+    )
+
+    assert calls == ["CALCITE", "CALCITE"]
+    assert first.steps[0].cached is False
+    assert second.steps[0].cached is True
+    assert second.steps[0].attempts == 0
+    assert second.steps[0].cache_key == first.steps[0].cache_key
+    assert changed_schema.steps[0].cache_key != first.steps[0].cache_key

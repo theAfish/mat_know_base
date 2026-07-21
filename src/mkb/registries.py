@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from mkb.exceptions import ConflictError, NotFoundError, ValidationError
 from mkb.pipelines import Step
+from mkb.ports import ContentParser
 
 if TYPE_CHECKING:
     from mkb.sdk import KnowledgeBase
@@ -57,6 +58,25 @@ class Parsers:
             raise ConflictError(f"Parser already registered: {parser.name}")
         self._registry[parser.name] = parser
         return parser
+
+    def register_adapter(
+        self,
+        adapter: ContentParser,
+        *,
+        version: str = "1",
+        replace: bool = False,
+    ) -> Parser:
+        """Register a parser port without coupling it to SDK context types."""
+        parser = Parser(
+            name=adapter.name,
+            source_types=adapter.source_types,
+            version=version,
+            handler=lambda context, content: adapter.parse(
+                content,
+                parameters=dict(context.parameters),
+            ),
+        )
+        return self.register(parser, replace=replace)
 
     def get(self, name: str) -> Parser | None:
         return self._registry.get(name)

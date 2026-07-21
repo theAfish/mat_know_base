@@ -6,11 +6,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, cast
 
-import boto3
-from botocore.config import Config as BotoConfig
-from botocore.exceptions import ClientError
-
-from mkb.ports import ObjectInfo
+from mkb.ports import Capabilities, ObjectInfo
 
 
 def _safe_key(key: str) -> PurePosixPath:
@@ -23,6 +19,8 @@ def _safe_key(key: str) -> PurePosixPath:
 class S3ObjectStore:
     """S3-compatible object store with no dependency on global settings."""
 
+    capabilities = frozenset({Capabilities.OBJECT_STREAMING})
+
     def __init__(
         self,
         *,
@@ -32,14 +30,23 @@ class S3ObjectStore:
         region_name: str = "us-east-1",
         client=None,
     ):
-        self._client = client or boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            config=BotoConfig(signature_version="s3v4"),
-            region_name=region_name,
-        )
+        if client is None:
+            try:
+                import boto3
+                from botocore.config import Config as BotoConfig
+            except ImportError as exc:
+                raise RuntimeError(
+                    "The S3 adapter requires the optional boto3 dependency"
+                ) from exc
+            client = boto3.client(
+                "s3",
+                endpoint_url=endpoint_url,
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                config=BotoConfig(signature_version="s3v4"),
+                region_name=region_name,
+            )
+        self._client = client
         self._closed = False
 
     def _ensure_open(self) -> None:
@@ -70,7 +77,11 @@ class S3ObjectStore:
         try:
             self._client.head_object(Bucket=bucket, Key=key)
             return True
-        except ClientError as exc:
+        except Exception as exc:
+            # Keep botocore optional for filesystem-only installations and for
+            # callers that inject another S3-compatible client implementation.
+            if not hasattr(exc, "response"):
+                raise
             code = str((exc.response or {}).get("Error", {}).get("Code", ""))
             if code in {"404", "NoSuchKey", "NotFound"}:
                 return False
@@ -116,6 +127,8 @@ class S3ObjectStore:
 
 class FileObjectStore:
     """Filesystem object store suitable for local SDK use and tests."""
+
+    capabilities = frozenset({Capabilities.OBJECT_STREAMING})
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()

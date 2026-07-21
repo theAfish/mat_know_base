@@ -9,9 +9,6 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from mkb.config import settings
-
-
 def _older_than(path: Path, cutoff: datetime) -> bool:
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < cutoff
 
@@ -73,6 +70,7 @@ def prune_job_history(*, older_than_days: int = 30, apply: bool = False) -> dict
 
 def consistency_report() -> dict[str, Any]:
     """Compare database object references with S3; never mutates either side."""
+    from mkb.config import settings
     from mkb.db.engine import SyncSessionLocal
     from mkb.db.models import Asset, ProcessedAsset
     from mkb.storage.s3 import get_s3_client

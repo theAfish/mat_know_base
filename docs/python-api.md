@@ -41,6 +41,13 @@ bindings belong to one object rather than module globals. The initial environmen
 adapter still uses the existing application services; independently configured SQLite,
 PostgreSQL, filesystem, S3, and graph adapters will be added incrementally.
 
+The supported client is intentionally synchronous. The current SQLAlchemy repositories,
+S3/filesystem adapters, model-provider boundary, and graph adapters expose synchronous
+operations; wrapping them in `async def` would still block an event loop. Durable work
+uses `kb.pipelines.submit(...)`/`kb.jobs`, and asynchronous applications should call the
+synchronous SDK at their worker/thread boundary. An async client will be added only when
+the injected ports have genuinely asynchronous implementations.
+
 For pipeline execution and typed repository access without reading `.env` or YAML,
 construct an independent client explicitly:
 
@@ -83,7 +90,58 @@ additive, idempotent table creation and never drops or renames tables.
 It returns the current portable schema version; `kb.schema_version()` reports the
 stored version afterward. Revisions are recorded in `mkb_schema_migrations`. Revision
 1 contains collections, sources, records, and schemas; revision 2 adds artifacts and
-projections.
+projections; revision 3 adds generic evidence links; revision 4 adds durable local
+pipeline jobs; revision 5 adds portable feedback, skills, and post-processor metadata;
+revision 6 adds portable collection groups and memberships.
+
+## PostgreSQL and MinIO/S3
+
+An explicitly configured PostgreSQL/S3 client owns its adapters and does not read global
+settings:
+
+```python
+from mkb import KnowledgeBase
+
+with KnowledgeBase.from_url(
+    database_url="postgresql+psycopg://mkb:password@localhost:5432/mkb",
+    object_store_url="s3://raw?endpoint=http://localhost:9000",
+    object_store_access_key="...",
+    object_store_secret_key="...",
+) as kb:
+    kb.database.check()
+    kb.object_store.check((kb.config.raw_bucket, kb.config.processed_bucket))
+    # Explicit and additive; omit this call for a read-only validation connection.
+    kb.initialize()
+```
+
+Use `KnowledgeBase.from_environment()` for the existing materials deployment. It maps
+legacy projects, groups, assets, frames, spaces, projections, feedback, skills,
+post-processors, and graph operations through injected adapters without copying IDs or
+object keys.
+
+## Safe migration/read-validation example
+
+Opening a client never runs migrations. A preservation-first validation can therefore
+inspect existing data without writing:
+
+```python
+from mkb import KnowledgeBase
+
+with KnowledgeBase.from_environment() as kb:
+    inventory = kb.maintenance.inventory()
+    reconciliation = kb.maintenance.reconcile()
+    assert reconciliation.ok, reconciliation.model_dump(mode="json")
+
+    for collection in kb.collections.list(limit=1000):
+        assert kb.collections.get(collection.id) == collection
+        for source in kb.sources.list(collection_id=collection.id, limit=1000):
+            if source.storage is not None:
+                assert kb.sources.content_exists(source.id)
+```
+
+Run additive initialization/backfills separately only after the pre-migration snapshot
+and restore drill required by `TODO.md`. Never use initialization as an implicit startup
+side effect, and compare inventories/reconciliation before switching readers.
 
 Multiple relational writes can share one commit or rollback boundary:
 
@@ -109,12 +167,11 @@ with KnowledgeBase.from_url(database_url="sqlite:////tmp/research.db") as kb:
         )
 ```
 
-The current transaction object includes collections, records, schemas, and projections.
-Direct `sources.add_bytes(...)` and `sources.add_text(...)` calls write content first, commit
-metadata second, and delete the new object if the metadata write fails. Artifact byte
-registration follows the same compensation rule. Object-backed writes are not available
-on the transaction object because S3 and filesystem operations cannot participate in
-the relational ACID transaction.
+The transaction object includes collections, sources, artifacts, records, schemas,
+projections, and evidence. Object-backed writes place content first, commit metadata
+second, and register reverse-order best-effort cleanup if the relational transaction
+rolls back. S3/filesystem writes are compensating operations, not part of relational
+ACID atomicity.
 
 The client already owns explicit relational and object-store resources. They are
 available for health checks and are closed with the client:
@@ -155,6 +212,46 @@ with KnowledgeBase.from_environment() as kb:
         )
 ```
 
+Legacy raw workflow extraction versions are available without graph normalization via
+`kb.materials.workflows.get(...)` and `.list(...)`. The resulting `WorkflowRecord`
+preserves workflow/schema versions, correction and review fields, graph, checkpoint,
+provenance, errors, and timestamps. Portable clients can persist provenance with
+`kb.evidence.create(...)` and query it by output, source, or artifact ID.
+
+Portable resource lifecycle operations include collection update/safe delete, managed
+file/bytes/text ingestion, recursive directory ingestion, external URI registration
+without copying, structured JSON-record batches, and registration of an object already
+produced by an external processor. External URI sources deliberately reject
+`open()`/`read_bytes()` because their content is not owned by the configured store.
+
+Records support exact top-level JSON field queries through `kb.records.query(...)` and
+their provenance through `kb.records.evidence(record_id)`. Portable extraction schemas
+increment `version` on update and refuse deletion while projections reference them.
+Feedback, skills, and post-processors are typed, client-owned services:
+
+```python
+feedback = kb.feedback.create(
+    target_record_id=record.id,
+    target_collection_id=collection.id,
+    category="ambiguous_data",
+    question="Which unit applies?",
+)
+kb.feedback.review(feedback.id)
+kb.feedback.resolve(feedback.id, notes="The source specifies kelvin.")
+
+skill = kb.skills.create(
+    name="Normalize units",
+    content="# Normalize units\nConvert reported measurements to SI.",
+)
+processor = kb.post_processors.register(
+    name="Choose projection",
+    source="print('{}')\n",
+)
+```
+
+Registration stores post-processor source but does not execute it; execution remains
+behind the existing administrator opt-in and sandbox policy.
+
 The generic model mapping is deliberately compatible with the current local schema:
 `research_projects` become `Collection`, `assets` become `Source`, processed assets
 become `Artifact`, `knowledge_frames` become `Record`, spaces become
@@ -168,10 +265,18 @@ All public models support `model_dump(mode="json")` and `model_dump_json()`. The
 `records.export_json(...)` and `projections.export_json(...)` helpers return JSON text
 without writing files, so package consumers decide where exported data belongs.
 
-The adapter interfaces are `mkb.Database` and `mkb.ObjectStore`; default implementations
-are available from `mkb.adapters`. Existing domain services are being moved onto these
-resources incrementally, so direct construction with a new database is not yet a full
-replacement for `from_environment()`.
+Narrow adapter protocols live in `mkb.ports`: relational database, object storage,
+graph storage, vector search, content parser, model provider, and job backend. Default
+database, S3/MinIO, filesystem, and in-memory graph implementations are available from
+`mkb.adapters`. These ports remain separate and are composed by `KnowledgeBase`; there
+is no artificial storage interface spanning relational transactions, blobs, vectors,
+and graph traversal.
+
+Adapters declare stable capability names through `Capabilities`. Pipeline steps fail
+before execution when requirements such as `vector_search`, `full_text_search`,
+`object_streaming`, or `graph_traversal` are unavailable. Adapter conformance tests
+cover lifecycle, transactions, streaming, CRUD semantics, structural repository
+contracts, and capability composition.
 
 The API performs real database, object-storage, filesystem, processor, and LLM work.
 It is not an in-memory SDK. Configure `.env`, start infrastructure with `make up`, and
@@ -254,13 +359,46 @@ with KnowledgeBase.from_url(database_url="sqlite:///:memory:") as kb:
 
 Steps may declare `required_capabilities`, `RetryPolicy`, `cacheable`,
 `timeout_seconds`, and `side_effects`. Capability requirements are checked before
-execution. Cache, timeout, and side-effect fields are currently provenance
-declarations; enforcement, durable jobs, cancellation, checkpointing, and caching
-remain future milestones.
+execution. Timeout and side-effect fields are currently provenance declarations;
+timeout enforcement remains a future milestone.
 Failures raise `PipelineExecutionError`; its `run` attribute contains the failed typed
 run and completed step history. A progress callback receives typed `ProgressEvent`
 objects. Existing `Record` instances can be supplied directly in pipeline inputs, so
 local extracted data does not need to be reprocessed.
+
+Portable clients support persisted submission using the same definition. Initialize
+the client first so the additive jobs table is available:
+
+```python
+kb.pipelines.register(pipeline)
+job = kb.pipelines.submit(
+    "count-words",
+    inputs={"text": "custom project data"},
+    idempotency_key="count:source-42:v1",
+)
+completed = kb.jobs.wait(job.id, timeout=60)
+```
+
+Jobs retain inputs, parameters, stable run IDs, completed-step checkpoints, structured
+progress/log events, attempts, results, and errors. `kb.jobs.cancel(...)` requests
+cooperative cancellation at a step/event boundary. A failed, cancelled, or interrupted
+job can be restarted with `kb.pipelines.resume(job.id)`; completed steps in a compatible
+checkpoint are not repeated. Reusing an idempotency key returns the original job.
+Custom workers may enqueue non-pipeline work with `kb.jobs.submit(...)`. Persisted
+events can be consumed as a snapshot with `kb.jobs.events(job.id)` or followed until a
+terminal state with `kb.jobs.events(job.id, follow=True)`.
+
+Cacheable steps must be deterministic and provide a `cache_key` builder returning
+`CacheKeyComponents`. The components require configuration, source fingerprint, model
+identity, and schema version; MKB additionally includes the step name and version before
+hashing. A cache hit is recorded on `StepRun` and does not invoke the handler.
+
+Environment-backed clients register built-in materials pipelines named
+`materials.ingest`, `materials.process`, `materials.extract_frames`,
+`materials.project`, `materials.extract_graph`, `materials.extract_workflow`,
+`materials.review_schema`, and `materials.review_feedback`. Their single steps delegate
+to the existing compatibility operations and retain the original result under the
+pipeline output's `result` key.
 
 Parsers and reusable standalone steps are also registered on one configured client;
 they do not mutate module-global registries. Portable schemas are persisted by the

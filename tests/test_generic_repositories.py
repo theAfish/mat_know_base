@@ -6,6 +6,8 @@ from sqlalchemy import delete, text
 from mkb import ConflictError, KnowledgeBase, NotFoundError, ValidationError
 from mkb.adapters.generic_repositories import (
     artifacts_table,
+    evidence_table,
+    jobs_table,
     projections_table,
     schema_migrations_table,
 )
@@ -18,16 +20,16 @@ def _client(tmp_path, name="sdk.db"):
 def test_explicit_initialization_is_idempotent_and_enables_typed_writes(tmp_path):
     with _client(tmp_path) as kb:
         assert kb.schema_version() is None
-        assert kb.initialize() == 2
-        assert kb.initialize() == 2
-        assert kb.schema_version() == 2
+        assert kb.initialize() == 6
+        assert kb.initialize() == 6
+        assert kb.schema_version() == 6
         with kb.database.session() as session:
             versions = list(
                 session.scalars(
                     text("select version from mkb_schema_migrations order by version")
                 )
             )
-        assert versions == [1, 2]
+        assert versions == [1, 2, 3, 4, 5, 6]
 
         collection = kb.collections.create(
             name="Experiment 42",
@@ -269,6 +271,44 @@ def test_projection_missing_dependencies_raise_without_partial_rows(tmp_path):
         assert kb.projections.list() == []
 
 
+def test_evidence_links_persist_losslessly_and_share_transactions(tmp_path):
+    with _client(tmp_path, "evidence.db") as kb:
+        kb.initialize()
+        collection = kb.collections.create(name="Evidence collection")
+        record = kb.records.create(collection_id=collection.id, data={"claim": "supported"})
+        source_id = uuid.uuid4()
+        evidence_id = uuid.uuid4()
+
+        with kb.transaction() as tx:
+            evidence = tx.evidence.create(
+                evidence_id=evidence_id,
+                output_type="record",
+                output_id=record.id,
+                source_id=source_id,
+                locator={"page": 7, "bbox": [1.25, 2.5, 4.0, 8.0]},
+                excerpt="verbatim supporting statement",
+                metadata={"review": {"status": "accepted"}},
+            )
+
+        reloaded = kb.evidence.require(evidence.id)
+        assert reloaded.model_dump(mode="json") == evidence.model_dump(mode="json")
+        assert [item.id for item in kb.evidence.list(output_id=record.id)] == [
+            evidence.id
+        ]
+
+        rolled_back_id = uuid.uuid4()
+        with pytest.raises(RuntimeError, match="rollback evidence"):
+            with kb.transaction() as tx:
+                tx.evidence.create(
+                    evidence_id=rolled_back_id,
+                    output_type="record",
+                    output_id=record.id,
+                    source_id=source_id,
+                )
+                raise RuntimeError("rollback evidence")
+        assert kb.evidence.get(rolled_back_id) is None
+
+
 def test_revision_one_database_upgrades_additively_without_losing_rows(tmp_path):
     with _client(tmp_path, "upgrade.db") as kb:
         kb.initialize()
@@ -278,14 +318,16 @@ def test_revision_one_database_upgrades_additively_without_losing_rows(tmp_path)
         with kb.database.transaction() as session:
             projections_table.drop(session.connection())
             artifacts_table.drop(session.connection())
+            evidence_table.drop(session.connection())
+            jobs_table.drop(session.connection())
             session.execute(
                 delete(schema_migrations_table).where(
-                    schema_migrations_table.c.version == 2
+                    schema_migrations_table.c.version.in_([2, 3, 4, 5, 6])
                 )
             )
 
         assert kb.schema_version() == 1
-        assert kb.initialize() == 2
+        assert kb.initialize() == 6
         assert kb.collections.require(collection.id).name == "Preserved during upgrade"
 
         with kb.database.session() as session:
@@ -298,4 +340,9 @@ def test_revision_one_database_upgrades_additively_without_losing_rows(tmp_path)
                     )
                 )
             }
-        assert {"mkb_artifacts", "mkb_projections"}.issubset(tables)
+        assert {
+            "mkb_artifacts",
+            "mkb_projections",
+            "mkb_evidence",
+            "mkb_jobs",
+        }.issubset(tables)

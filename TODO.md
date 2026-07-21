@@ -153,7 +153,7 @@ to simplify the new architecture.
 
 ## Phase 3 — Introduce generic domain concepts without discarding old records
 
-- [ ] Define infrastructure-independent concepts:
+- [x] Define infrastructure-independent concepts:
   - [x] `Collection`: a typed logical grouping of data, initially mapped read-only to
         existing `research_projects` rows through the injected SQLAlchemy adapter.
   - [x] `Source`: a typed ingested input, initially mapped read-only to existing assets
@@ -164,51 +164,50 @@ to simplify the new architecture.
   - [x] `Schema`: typed extraction policy mapped read-only to current spaces.
   - [x] `Entity` and `Relation`: typed, serializable graph elements with an in-memory
         adapter and grouped graph service.
-  - [x] `Evidence`: typed, serializable provenance linking outputs to sources/artifacts;
-        persistence adapters remain pending.
+  - [x] `Evidence`: typed, serializable provenance linking outputs to sources/artifacts,
+        with portable additive persistence and transaction support.
   - [x] `PipelineRun` and `StepRun`: typed local execution and provenance records.
-- [ ] Keep materials concepts as a supported extension and map them explicitly:
-  - research project -> collection
-  - asset -> source
-  - processed asset -> artifact
+- [x] Keep materials concepts as a supported extension and map them explicitly:
+  - [x] research project -> collection
+  - [x] asset -> source
+  - [x] processed asset -> artifact
   - [x] knowledge frame -> record
   - [x] space -> schema/extraction profile
   - [x] projection -> schema-specific record
-  - raw workflow -> specialized workflow record
+  - [x] raw workflow -> specialized lossless workflow record under `kb.materials`
 - [x] Prefer compatibility views/adapters over immediately renaming old tables. The
       first implementation may read existing `research_projects`, `assets`,
       `processed_assets`, `knowledge_frames`, `spaces`, and `projections` directly and
       present generic typed models.
 - [x] Preserve the original IDs in generic models. If a new universal ID is needed, add
       it alongside the legacy ID and maintain a unique mapping table.
-- [ ] Preserve raw JSON payloads, schema versions, timestamps, status fields, source
+- [x] Preserve raw JSON payloads, schema versions, timestamps, status fields, source
       paths, S3 locations, evidence, review annotations, and agent notes losslessly.
-      The current collection/source/artifact/record/schema/projection adapters preserve
-      their mapped fields; dedicated evidence models and verification are still pending.
-- [ ] Add round-trip tests using a sanitized copy of representative current records:
+      SQLite timestamp rehydration restores UTC metadata lost by its datetime storage.
+- [x] Add round-trip tests using a sanitized copy of representative current records:
       legacy row -> new typed model -> serialized form -> model, with no meaningful
       field loss.
 
 ## Phase 4 — Define ports and default adapters
 
-- [ ] Add narrow protocols for collection/source/artifact/record repositories, object
+- [x] Add narrow protocols for collection/source/artifact/record repositories, object
       storage, graph storage, vector search, parsers, model providers, and jobs.
-- [ ] Do not create one artificial storage interface for relational, object, vector,
+- [x] Do not create one artificial storage interface for relational, object, vector,
       and graph data. Keep the ports distinct and compose them in `KnowledgeBase`.
-- [ ] Declare adapter capabilities such as transactions, vector search, full-text
+- [x] Declare adapter capabilities such as transactions, vector search, full-text
       search, streaming, graph traversal, and bulk upsert. Fail early when a pipeline
       requires an unsupported capability.
-- [ ] Implement and test these initial adapters:
-  - Existing PostgreSQL/pgvector schema adapter, including all current local data.
-  - Existing MinIO/S3 adapter, preserving current buckets and keys.
-  - Filesystem object store for lightweight local projects and tests.
+- [x] Implement and test these initial adapters:
+  - [x] Existing PostgreSQL/pgvector schema adapter, including all current local data.
+  - [x] Existing MinIO/S3 adapter, preserving current buckets and keys.
+  - [x] Filesystem object store for lightweight local projects and tests.
   - [x] SQLite metadata repository for a minimal pip-package quickstart, including
         portable collections, sources, artifacts, records, schemas, projections, and an
         additive schema-version ledger.
   - [x] In-memory or NetworkX graph adapter for a minimal local graph setup.
 - [ ] Add Neo4j or another external graph adapter later as an optional extra; it is not
       required to migrate the current local dataset.
-- [ ] Add repository conformance tests that every adapter must pass, plus capability-
+- [x] Add repository conformance tests that every adapter must pass, plus capability-
       specific tests.
 
 ## Phase 5 — Make custom pipelines a first-class public API
@@ -229,18 +228,18 @@ to simplify the new architecture.
       )
       ```
 
-- [ ] Support durable submission using the same pipeline definition:
+- [x] Support durable submission using the same pipeline definition:
 
       ```python
       job = kb.pipelines.submit(pipeline, inputs={"source_id": source.id})
       completed = kb.jobs.wait(job.id)
       ```
 
-- [ ] Add checkpointing, cancellation, resumption, structured progress, per-step logs,
+- [x] Add checkpointing, cancellation, resumption, structured progress, per-step logs,
       provenance, stable run IDs, and idempotency keys.
-- [ ] Implement caching only after deterministic cache keys include step version,
+- [x] Implement caching only after deterministic cache keys include step version,
       configuration, source fingerprint, model identity, and relevant schema version.
-- [ ] Convert current operations into built-in steps and pipelines without changing
+- [x] Convert current operations into built-in steps and pipelines without changing
       output semantics: ingest, process, frame extraction, projection, graph extraction,
       workflow extraction, schema review, and feedback review.
 - [x] Ensure old extracted records can be used as pipeline inputs without reprocessing
@@ -252,33 +251,35 @@ to simplify the new architecture.
 
 ## Phase 6 — Expand the Python API to full application parity
 
-- [ ] Provide grouped services on `KnowledgeBase`:
-  - `kb.collections`: create/get/list/update/delete and grouping.
-  - `kb.sources`: add file/bytes/text/URI/records, list, inspect, and stream content.
-  - `kb.artifacts`: list, register, inspect, and stream content.
-  - `kb.records`: create/get/list/query/export with evidence.
-  - `kb.schemas`: create/version/get/list/update/delete.
-  - `kb.graph`: entity/relation upsert, query, traversal, extraction, and review.
-  - `kb.pipelines`: register/get/list/run/submit/resume.
-  - `kb.jobs`: submit/get/list/wait/cancel and event streaming.
-  - `kb.feedback`: create/list/review/resolve.
-  - `kb.skills`: create/get/list/delete.
-  - `kb.post_processors`: register/get/list/delete.
-  - `kb.settings`: inspect effective configuration without exposing secrets.
-  - `kb.maintenance`: inventory, reconcile, backup metadata, and safe cleanup plans.
-- [ ] Add missing simple lookups such as `get_project`/`get_collection`; never implement
+- [x] Provide grouped services on `KnowledgeBase`:
+  - [x] `kb.collections`: create/get/list/update/delete and grouping.
+  - [x] `kb.sources`: add file/bytes/text/URI/records, list, inspect, and stream content.
+  - [x] `kb.artifacts`: list, register, inspect, and stream content.
+  - [x] `kb.records`: create/get/list/query/export with evidence.
+  - [x] `kb.schemas`: create/version/get/list/update/delete.
+  - [x] `kb.graph`: entity/relation upsert, query, traversal, extraction, and review.
+  - [x] `kb.pipelines`: register/get/list/run/submit/resume.
+  - [x] `kb.jobs`: submit/get/list/wait/cancel and event streaming.
+  - [x] `kb.feedback`: create/list/review/resolve.
+  - [x] `kb.skills`: create/get/list/delete.
+  - [x] `kb.post_processors`: register/get/list/delete.
+  - [x] `kb.settings`: inspect effective configuration without exposing secrets.
+  - [x] `kb.maintenance`: inventory, reconcile, backup metadata, and safe cleanup plans.
+- [x] Add missing simple lookups such as `get_project`/`get_collection`; never implement
       a singular lookup by scanning a limited list result.
-- [ ] Add public source/artifact content access instead of requiring ORM and S3 imports.
-- [ ] Support all useful ingestion forms:
-  - managed file copy
-  - bytes and text
-  - directory convenience ingestion
-  - external URI/reference without copying
-  - structured record batches
-  - externally processed artifact registration
-- [ ] Provide both sync and async clients only where async behavior is real. Do not make
-      synchronous ORM/storage calls appear asynchronous through superficial wrappers.
-- [ ] Generate API reference documentation from the typed public surface and include
+- [x] Add public source/artifact content access instead of requiring ORM and S3 imports.
+- [x] Support all useful ingestion forms:
+  - [x] managed file copy
+  - [x] bytes and text
+  - [x] directory convenience ingestion
+  - [x] external URI/reference without copying
+  - [x] structured record batches
+  - [x] externally processed artifact registration
+- [x] Provide both sync and async clients only where async behavior is real. The public
+      SDK remains explicitly synchronous because its current injected ports are
+      synchronous; durable jobs provide non-blocking application execution without fake
+      `async` wrappers.
+- [x] Generate API reference documentation from the typed public surface and include
       complete local, PostgreSQL/MinIO, custom pipeline, and migration examples.
 
 ## Phase 7 — Make the CLI, FastAPI server, and materials app consume the SDK
