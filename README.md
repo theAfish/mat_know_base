@@ -7,13 +7,49 @@ building structured knowledge frames, domain projections, workflows, and graphs.
 The React application is the user interface. Canonical-workflow paths remain a limited
 compatibility surface; see the [workflow lifecycle policy](docs/workflow-lifecycle-policy.md).
 
+## Install during development
+
+MKB is not yet published on PyPI. Install it directly from this repository instead.
+The `dev` branch is the current shared development build:
+
+```bash
+python -m pip install --upgrade --force-reinstall \
+  "mat-know-base @ git+https://github.com/theAfish/mat_know_base.git@dev"
+```
+
+Install optional integrations only when they are needed. For example, the full
+materials application and HTTP server require:
+
+```bash
+python -m pip install --upgrade --force-reinstall \
+  "mat-know-base[materials,server] @ git+https://github.com/theAfish/mat_know_base.git@dev"
+```
+
+`--force-reinstall` is intentional while the package version remains `0.1.0`; it makes
+pip replace an older build from the moving development branch. For a reproducible bug
+report, replace `dev` with the commit SHA being tested. Git must be installed and the
+repository must be accessible to the user.
+
+To develop or debug with the maintainers, use an editable checkout instead. Python code
+changes then take effect without reinstalling:
+
+```bash
+git clone https://github.com/theAfish/mat_know_base.git
+cd mat_know_base
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+```
+
+Use `-e ".[dev,materials,server]"` when working on the complete application. Rerun the
+install command after changing dependencies or package metadata.
+
 ## Local quickstart
 
 Requirements: Python 3.10+, Node.js 20+, npm, Docker with Compose, and `libmagic`.
 For image OCR, install Tesseract. On macOS, `brew install libmagic tesseract`.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/theAfish/mat_know_base.git
 cd mat_know_base
 make bootstrap
 ```
@@ -74,13 +110,17 @@ SQLite plus filesystem storage. The reusable example is in the Python API guide;
 source checkout, it can also be run directly:
 
 ```bash
-pip install mat-know-base
+python -m pip install --upgrade --force-reinstall \
+  "mat-know-base @ git+https://github.com/theAfish/mat_know_base.git@dev"
 # From this repository checkout:
 python examples/portable_quickstart.py
 ```
 
-Install backend features explicitly, such as `mat-know-base[postgres,s3]`, or use
-`mat-know-base[materials,server]` for the complete materials application and API.
+For backend integrations, install extras from Git as well, such as
+`"mat-know-base[postgres,s3] @ git+https://github.com/theAfish/mat_know_base.git@dev"`.
+
+When MKB is released on PyPI, the Git URLs above will be replaced by normal package
+installs.
 
 ## Common development commands
 
