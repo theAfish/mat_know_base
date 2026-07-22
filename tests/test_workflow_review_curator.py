@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from mkb.workflows.curator import (
     apply_proposal, validate_proposal,
 )
+from mkb.workflows import editing as workflow_editing
 from mkb.workflows.review import audit_raw_graph, rebase_graph
 from mkb.workflows.contract import RawWorkflowGraph
 from mkb.workflows.validation import json_safe_validation_errors
@@ -33,6 +34,31 @@ def test_audit_and_rebase_correction_graph():
     corrected = rebase_graph(graph, new_id)
     assert corrected["extraction_id"] == str(new_id)
     assert corrected["nodes"][0]["node_id"].startswith(f"raw:{new_id}:n")
+
+
+def test_audit_allows_planning_edge_to_downstream_operation():
+    graph = _raw_graph()
+    eid = graph["extraction_id"]
+    graph["nodes"].append({
+        "node_id": f"raw:{eid}:n0003",
+        "raw_name": "screen high temperature phase stability",
+        "node_kind_guess": "planning",
+        "evidence_text": "We screened high temperature phase stability before annealing.",
+        "paper_location": {},
+        "confidence": 0.9,
+    })
+    graph["edges"].append({
+        "edge_id": f"raw:{eid}:e0002",
+        "source_node": f"raw:{eid}:n0003",
+        "target_node": f"raw:{eid}:n0002",
+        "relation_type": "leads_to",
+        "evidence_text": "We screened high temperature phase stability before annealing.",
+        "confidence": 0.9,
+    })
+
+    flags = audit_raw_graph(graph)
+
+    assert not [flag for flag in flags if flag["type"] == "impossible_edge"]
 
 
 def test_validation_errors_are_safe_for_agent_request_serialization():
@@ -128,7 +154,7 @@ def test_object_and_operation_cards_evolve_symmetrically():
 
 def test_extractor_card_search_uses_newest_library(monkeypatch):
     monkeypatch.setattr(
-        workflow_tools,
+        workflow_editing,
         "get_schema_library_payload",
         lambda: {
             "schema_version": "workflow-schema/9.9",

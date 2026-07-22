@@ -24,7 +24,7 @@ max_concurrent_jobs: 5
 # ── Logging ───────────────────────────────────────────────────────────────────
 # DEBUG → verbose (agent dialogs, tool calls, LiteLLM traces).
 # INFO  → concise app-level messages only.
-log_level: DEBUG
+log_level: INFO
 
 # Directory where rotating log files are written (relative to project root).
 log_dir: logs

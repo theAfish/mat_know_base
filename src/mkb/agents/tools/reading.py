@@ -16,16 +16,21 @@ from pathlib import Path
 import pandas as pd
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import (
     Asset,
     ProcessedAsset,
     ProcessingType,
     ProjectAsset,
 )
-from mkb.storage.s3 import download_bytes, object_exists
 
 logger = logging.getLogger(__name__)
+
+
+def _require_object_store(runtime: AgentRuntime):
+    if runtime.object_store is None:
+        raise RuntimeError("This agent tool requires an object-store resource")
+    return runtime.object_store
 
 
 def _resolve_asset_id(session, asset_ref: str) -> tuple[uuid.UUID | None, str | None]:
@@ -35,7 +40,8 @@ def _resolve_asset_id(session, asset_ref: str) -> tuple[uuid.UUID | None, str | 
         return asset_id, None
 
     candidate = str(asset_ref).strip().strip("\"'")
-    if candidate:
+    filename_like = bool(candidate and (Path(candidate).suffix or "/" in candidate or "\\" in candidate))
+    if filename_like:
         asset = (
             session.query(Asset)
             .filter(Asset.filename == candidate)
@@ -52,6 +58,7 @@ def _select_processed_asset(
     session,
     asset_id: uuid.UUID,
     processing_type: ProcessingType,
+    runtime: AgentRuntime,
 ) -> ProcessedAsset | None:
     rows = (
         session.query(ProcessedAsset)
@@ -62,14 +69,14 @@ def _select_processed_asset(
     if not rows:
         return None
     for row in rows:
-        if object_exists(row.s3_bucket, row.s3_key):
+        if _require_object_store(runtime).exists(row.s3_bucket, row.s3_key):
             return row
     return rows[0]
 
 
-def _read_processed_bytes(pa: ProcessedAsset) -> bytes:
+def _read_processed_bytes(pa: ProcessedAsset, runtime: AgentRuntime) -> bytes:
     try:
-        return download_bytes(pa.s3_bucket, pa.s3_key)
+        return _require_object_store(runtime).get_bytes(pa.s3_bucket, pa.s3_key)
     except Exception:
         metadata = pa.conversion_metadata or {}
         local_dir = metadata.get("local_dir")
@@ -86,15 +93,15 @@ def _read_processed_bytes(pa: ProcessedAsset) -> bytes:
 # =====================================================================
 
 
-def list_project_files(project_id: str) -> list[dict]:
+def list_project_files(project_id: str, *, runtime: AgentRuntime) -> list[dict]:
     """List every file in a research project with its processing status."""
     pid = parse_uuidish(project_id)
     if not pid:
         return [{"error": invalid_identifier_message("project_id", project_id)}]
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
         assets = session.query(Asset).filter(Asset.asset_id.in_(asset_ids)).all()
@@ -115,7 +122,7 @@ def list_project_files(project_id: str) -> list[dict]:
 _MAX_MARKDOWN_CHARS = 80_000  # leave headroom for conversation history
 
 
-def get_markdown_length(asset_id: str) -> dict:
+def get_markdown_length(asset_id: str, *, runtime: AgentRuntime) -> dict:
     """Return the total character length of a processed-Markdown asset.
 
     Useful for planning paged reads with `read_processed_markdown` without
@@ -123,16 +130,16 @@ def get_markdown_length(asset_id: str) -> dict:
     `read_processed_markdown` calls (chunks of up to 80,000 characters) are
     needed to cover the entire file.
     """
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return {"error": error or invalid_identifier_message("asset_id", asset_id)}
 
-        pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN)
+        pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN, runtime)
         if not pa:
             return {"error": f"No processed markdown found for asset {asset_id}."}
         try:
-            data = _read_processed_bytes(pa)
+            data = _read_processed_bytes(pa, runtime)
         except Exception as exc:
             return {"error": f"Cannot read markdown for asset {asset_id}: {exc}"}
 
@@ -148,23 +155,28 @@ def get_markdown_length(asset_id: str) -> dict:
     }
 
 
-def read_processed_markdown(asset_id: str, start_char: int = 0) -> str:
+def read_processed_markdown(
+    asset_id: str,
+    start_char: int = 0,
+    *,
+    runtime: AgentRuntime,
+) -> str:
     """Read processed Markdown content for a given asset.
 
     Returns up to 80,000 characters starting at *start_char*.  If the content
     was truncated a trailing notice is appended with the total length and the
     next start_char to use for a subsequent call.
     """
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return error or invalid_identifier_message("asset_id", asset_id)
 
-        pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN)
+        pa = _select_processed_asset(session, aid, ProcessingType.MARKDOWN, runtime)
         if not pa:
             return f"No processed markdown found for asset {asset_id}."
         try:
-            data = _read_processed_bytes(pa)
+            data = _read_processed_bytes(pa, runtime)
         except Exception as exc:
             return f"Cannot read markdown for asset {asset_id}: {exc}"
 
@@ -180,9 +192,14 @@ def read_processed_markdown(asset_id: str, start_char: int = 0) -> str:
     return chunk
 
 
-def read_markdown_section(asset_id: str, section_heading: str) -> str:
+def read_markdown_section(
+    asset_id: str,
+    section_heading: str,
+    *,
+    runtime: AgentRuntime,
+) -> str:
     """Read a specific section from a processed Markdown file."""
-    full_md = read_processed_markdown(asset_id)
+    full_md = read_processed_markdown(asset_id, runtime=runtime)
     if full_md.startswith("No processed markdown"):
         return full_md
 
@@ -222,9 +239,9 @@ def read_markdown_section(asset_id: str, section_heading: str) -> str:
     return "".join(lines[start_idx:end_idx])
 
 
-def list_markdown_headings(asset_id: str) -> list[str]:
+def list_markdown_headings(asset_id: str, *, runtime: AgentRuntime) -> list[str]:
     """List all headings in a processed Markdown file."""
-    full_md = read_processed_markdown(asset_id)
+    full_md = read_processed_markdown(asset_id, runtime=runtime)
     if full_md.startswith("No processed markdown"):
         return [full_md]
     return _list_headings(full_md.splitlines())
@@ -239,9 +256,9 @@ def _list_headings(lines: list[str]) -> list[str]:
     return headings
 
 
-def read_raw_text(asset_id: str) -> str:
+def read_raw_text(asset_id: str, *, runtime: AgentRuntime) -> str:
     """Read the raw text content of an asset directly from object storage."""
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return error or invalid_identifier_message("asset_id", asset_id)
@@ -254,22 +271,22 @@ def read_raw_text(asset_id: str) -> str:
             or asset.mime_type in ("application/json", "application/xml")
         ):
             return f"Asset is binary ({asset.mime_type}). Use a processed output instead."
-        data = download_bytes(asset.s3_bucket, asset.s3_key)
+        data = _require_object_store(runtime).get_bytes(asset.s3_bucket, asset.s3_key)
         return data.decode("utf-8", errors="replace")
 
 
-def read_dataframe_summary(asset_id: str) -> str:
+def read_dataframe_summary(asset_id: str, *, runtime: AgentRuntime) -> str:
     """Read a summary of a processed dataframe (Parquet) for an asset."""
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return error or invalid_identifier_message("asset_id", asset_id)
 
-        pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
+        pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME, runtime)
         if not pa:
             return f"No processed dataframe found for asset {asset_id}."
         try:
-            data = _read_processed_bytes(pa)
+            data = _read_processed_bytes(pa, runtime)
         except Exception as exc:
             return f"Cannot read dataframe for asset {asset_id}: {exc}"
 
@@ -285,19 +302,25 @@ def read_dataframe_summary(asset_id: str) -> str:
     return "\n".join(parts)
 
 
-def read_dataframe_rows(asset_id: str, start_row: int = 0, end_row: int = 20) -> str:
+def read_dataframe_rows(
+    asset_id: str,
+    start_row: int = 0,
+    end_row: int = 20,
+    *,
+    runtime: AgentRuntime,
+) -> str:
     """Read specific rows from a processed dataframe (capped at 100)."""
     end_row = min(end_row, start_row + 100)
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return error or invalid_identifier_message("asset_id", asset_id)
 
-        pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME)
+        pa = _select_processed_asset(session, aid, ProcessingType.DATAFRAME, runtime)
         if not pa:
             return f"No processed dataframe found for asset {asset_id}."
         try:
-            data = _read_processed_bytes(pa)
+            data = _read_processed_bytes(pa, runtime)
         except Exception as exc:
             return f"Cannot read dataframe for asset {asset_id}: {exc}"
 
@@ -307,26 +330,26 @@ def read_dataframe_rows(asset_id: str, start_row: int = 0, end_row: int = 20) ->
     return f"Rows {start_row}–{min(end_row, len(df))} of {len(df)}:\n{subset.to_string()}"
 
 
-def read_image_metadata(asset_id: str) -> str:
+def read_image_metadata(asset_id: str, *, runtime: AgentRuntime) -> str:
     """Read the processed image metadata JSON for an image asset."""
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return error or invalid_identifier_message("asset_id", asset_id)
 
-        pa = _select_processed_asset(session, aid, ProcessingType.IMAGE)
+        pa = _select_processed_asset(session, aid, ProcessingType.IMAGE, runtime)
         if not pa:
             return f"No processed image metadata found for asset {asset_id}."
         try:
-            data = _read_processed_bytes(pa)
+            data = _read_processed_bytes(pa, runtime)
         except Exception as exc:
             return f"Cannot read image metadata for asset {asset_id}: {exc}"
         return data.decode("utf-8", errors="replace")
 
 
-def get_image_base64(asset_id: str) -> dict:
+def get_image_base64(asset_id: str, *, runtime: AgentRuntime) -> dict:
     """Get the raw image bytes as a base64-encoded string."""
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         aid, error = _resolve_asset_id(session, asset_id)
         if not aid:
             return {"error": error or invalid_identifier_message("asset_id", asset_id)}
@@ -336,7 +359,7 @@ def get_image_base64(asset_id: str) -> dict:
             return {"error": f"Asset {asset_id} not found."}
         if not asset.mime_type.startswith("image/"):
             return {"error": f"Asset is not an image ({asset.mime_type})."}
-        data = download_bytes(asset.s3_bucket, asset.s3_key)
+        data = _require_object_store(runtime).get_bytes(asset.s3_bucket, asset.s3_key)
         return {
             "mime_type": asset.mime_type,
             "base64_data": base64.b64encode(data).decode("ascii"),
@@ -344,7 +367,12 @@ def get_image_base64(asset_id: str) -> dict:
         }
 
 
-def search_in_project(project_id: str, query: str) -> list[dict]:
+def search_in_project(
+    project_id: str,
+    query: str,
+    *,
+    runtime: AgentRuntime,
+) -> list[dict]:
     """Search for a text pattern across all processed Markdown files in a project."""
     pid = parse_uuidish(project_id)
     if not pid:
@@ -352,9 +380,9 @@ def search_in_project(project_id: str, query: str) -> list[dict]:
 
     query_lower = query.lower()
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [l.asset_id for l in links]
+        asset_ids = [link.asset_id for link in links]
         if not asset_ids:
             return []
 
@@ -371,7 +399,7 @@ def search_in_project(project_id: str, query: str) -> list[dict]:
         for pa in processed:
             asset = session.query(Asset).filter_by(asset_id=pa.asset_id).first()
             try:
-                data = _read_processed_bytes(pa)
+                data = _read_processed_bytes(pa, runtime)
                 text = data.decode("utf-8", errors="replace")
             except Exception:
                 continue
@@ -395,7 +423,7 @@ def search_in_project(project_id: str, query: str) -> list[dict]:
         return results
 
 
-READING_TOOLS = [
+READING_OPERATIONS = [
     list_project_files,
     read_processed_markdown,
     read_markdown_section,
@@ -408,3 +436,14 @@ READING_TOOLS = [
     get_image_base64,
     search_in_project,
 ]
+
+
+def reading_tools(runtime: AgentRuntime):
+    """Return reading tools bound to one client's persistence resources."""
+
+    return bind_tools(READING_OPERATIONS, runtime)
+
+
+# See ``FRAME_TOOLS`` for why this is intentionally unbound compatibility
+# metadata. New agent factories must call ``reading_tools(runtime)``.
+READING_TOOLS = READING_OPERATIONS

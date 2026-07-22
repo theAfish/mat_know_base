@@ -8,82 +8,11 @@ import StatusBadge from './StatusBadge'
 import BatchActionBar from './BatchActionBar'
 import type { Project, ProjectGroup, Space } from '../types'
 import { projectDisplayName } from '../utils/projectName'
+import { useDragAutoScroll } from '../features/projects/useDragAutoScroll'
 
 // ─── Auto-scroll during drag ────────────────────────────────────────────────
 // When the user drags near the top or bottom edge of the viewport, scroll the
 // page automatically so they don't have to drop-release-scroll-pick-up again.
-
-function useDragAutoScroll({
-  edgePx = 120,  // px from scroll-container edge that activates scrolling
-  maxSpeed = 18, // max px scrolled per animation frame (~1080 px/s)
-} = {}) {
-  const posRef      = useRef<number | null>(null) // latest drag clientY
-  const scrollElRef = useRef<HTMLElement | null>(null)
-  const rafRef      = useRef<number | null>(null)
-  const dragging    = useRef(false)
-
-  useEffect(() => {
-    /** Walk up the DOM to find the first scrollable ancestor. */
-    function findScrollParent(el: HTMLElement | null): HTMLElement {
-      if (!el || el === document.documentElement) return document.documentElement
-      const { overflowY } = window.getComputedStyle(el)
-      if ((overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight)
-        return el
-      return findScrollParent(el.parentElement as HTMLElement)
-    }
-
-    const tick = () => {
-      const y  = posRef.current
-      const el = scrollElRef.current
-      if (y !== null && el) {
-        const rect = el.getBoundingClientRect()
-        const relY = y - rect.top
-        const h    = rect.height
-        let speed  = 0
-        if (relY < edgePx)        speed = -maxSpeed * (1 - relY / edgePx)
-        else if (relY > h - edgePx) speed =  maxSpeed * ((relY - (h - edgePx)) / edgePx)
-        if (speed !== 0) el.scrollTop += speed
-      }
-      rafRef.current = requestAnimationFrame(tick)
-    }
-
-    const onDragStart = (e: DragEvent) => {
-      dragging.current = true
-      scrollElRef.current = findScrollParent(e.target as HTMLElement)
-      rafRef.current = requestAnimationFrame(tick)
-    }
-
-    const onDragOver = (e: DragEvent) => { posRef.current = e.clientY }
-
-    const stop = () => {
-      dragging.current = false
-      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-      posRef.current = null
-    }
-
-    // Capture-phase wheel listener — fires even during HTML5 drag in Chrome/Edge.
-    // Lets the user scroll with the mouse wheel while holding a drag.
-    const onWheel = (e: WheelEvent) => {
-      if (!dragging.current || !scrollElRef.current) return
-      scrollElRef.current.scrollTop += e.deltaY
-      e.preventDefault()
-    }
-
-    document.addEventListener('dragstart', onDragStart, true)
-    document.addEventListener('dragover',  onDragOver)
-    document.addEventListener('dragend',   stop)
-    document.addEventListener('drop',      stop)
-    document.addEventListener('wheel',     onWheel, { passive: false, capture: true })
-    return () => {
-      document.removeEventListener('dragstart', onDragStart, true)
-      document.removeEventListener('dragover',  onDragOver)
-      document.removeEventListener('dragend',   stop)
-      document.removeEventListener('drop',      stop)
-      document.removeEventListener('wheel',     onWheel, { capture: true })
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    }
-  }, [edgePx, maxSpeed])
-}
 
 // ─── Shared types ───────────────────────────────────────────────────────────
 

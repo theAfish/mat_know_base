@@ -7,10 +7,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from mkb import api
-from mkb.web._helpers import _parse_uuid
+from mkb.web._helpers import _parse_uuid, require_service_result
+from mkb.web.dependencies import get_knowledge_base
 from mkb.web._models import ProjectionReviewRequest
-from mkb.web._state import jobs
 
 router = APIRouter()
 
@@ -29,7 +28,7 @@ def list_projections(
     newest_only: bool = False,
     include_history: bool = False,
 ):
-    rows = api.list_projections(
+    rows = get_knowledge_base().materials.projections.list(
         space_id=space_id,
         project_id=project_id,
         include_data=include_data,
@@ -41,7 +40,7 @@ def list_projections(
 
 @router.get("/api/projections/{projection_id}")
 def get_projection(projection_id: str):
-    row = api.get_projection(projection_id)
+    row = get_knowledge_base().materials.projections.get(projection_id)
     if not row:
         raise HTTPException(status_code=404, detail="Projection not found")
     return row
@@ -49,7 +48,7 @@ def get_projection(projection_id: str):
 
 @router.delete("/api/projections/{projection_id}", status_code=204)
 def delete_projection(projection_id: str):
-    found = api.delete_projection(projection_id)
+    found = get_knowledge_base().materials.projections.delete(projection_id)
     if not found:
         raise HTTPException(status_code=404, detail="Projection not found")
 
@@ -68,9 +67,10 @@ def export_projection_endpoint(projection_id: str, format: str = "yaml"):
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / "export"
-        result = api.export_projection(projection_id, out_dir, format=fmt, overwrite=True)
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+        result = get_knowledge_base().materials.projections.export(
+            projection_id, out_dir, format=fmt, overwrite=True
+        )
+        require_service_result(result)
         files = [Path(p) for p in result.get("files", [])]
         if not files:
             raise HTTPException(status_code=404, detail="Nothing to export")
@@ -116,7 +116,9 @@ def export_projections_batch(body: ProjectionBatchExportRequest):
         out_dir = Path(tmp) / "export"
         out_dir.mkdir(parents=True, exist_ok=True)
         for pid in body.projection_ids:
-            api.export_projection(pid, out_dir, format=fmt, overwrite=True)
+            get_knowledge_base().materials.projections.export(
+                pid, out_dir, format=fmt, overwrite=True
+            )
 
         files = [p for p in out_dir.rglob("*") if p.is_file()]
         if not files:
@@ -152,11 +154,10 @@ def export_space_endpoint(space_id_or_name: str, format: str = "yaml"):
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / "export"
-        result = api.export_space_projections(
+        result = get_knowledge_base().materials.projections.export_all(
             space_id_or_name, out_dir, format=fmt, overwrite=True
         )
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result["error"])
+        require_service_result(result)
         files = list(out_dir.rglob("*"))
         if not any(p.is_file() for p in files):
             raise HTTPException(status_code=404, detail="Nothing to export")
@@ -200,31 +201,42 @@ def review_projections(body: ProjectionReviewRequest):
                 status_code=400,
                 detail="Session-mode review requires explicit project_ids (or project_id).",
             )
-        job_id = jobs.start_job(
-            kind="projection_review",
-            label="Projection Review (session)",
-            target=api.review_projections_session,
-            kwargs={"space_id": body.space_id, "project_ids": project_ids, "reviewer_id": body.reviewer_id},
+        job = get_knowledge_base().jobs.submit_action(
+            "review_projection_session",
+            space_id=body.space_id,
+            project_ids=project_ids,
+            reviewer_id=body.reviewer_id,
         )
-        return {"job_id": job_id}
+        return {"job_id": str(job.id)}
 
     if len(project_ids) == 1:
-        job_id = jobs.start_job(
-            kind="projection_review",
-            label="Projection Review",
+        job = get_knowledge_base().jobs.submit_action(
+            "review_projection",
+            job_project_id=project_ids[0],
+            space_id=body.space_id,
             project_id=project_ids[0],
-            target=api.review_projections,
-            kwargs={"space_id": body.space_id, "project_id": project_ids[0], "reviewer_id": body.reviewer_id},
+            reviewer_id=body.reviewer_id,
         )
+    elif project_ids:
+        job_ids: list[str] = []
+        for project_id in project_ids:
+            job_ids.append(
+                str(
+                    get_knowledge_base().jobs.submit_action(
+                        "review_projection",
+                        job_project_id=project_id,
+                        space_id=body.space_id,
+                        project_id=project_id,
+                        reviewer_id=body.reviewer_id,
+                    ).id
+                )
+            )
+        return {"job_id": job_ids[0], "job_ids": job_ids}
     else:
-        job_id = jobs.start_job(
-            kind="projection_review",
-            label="Projection Review",
-            target=api.review_projections_all,
-            kwargs={
-                "space_id": body.space_id,
-                "project_ids": project_ids or None,
-                "reviewer_id": body.reviewer_id,
-            },
+        job = get_knowledge_base().jobs.submit_action(
+            "review_projection_all",
+            space_id=body.space_id,
+            project_ids=project_ids or None,
+            reviewer_id=body.reviewer_id,
         )
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}

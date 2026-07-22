@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { getKnowledgeGraph } from '../../api/graph'
-import type { GraphConcept, GraphRelation } from '../../types'
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
+import type { GraphConcept, GraphRelation, Job } from '../../types'
 import MiniGraph from './MiniGraph'
 
 
@@ -11,12 +12,30 @@ export default function GraphTab({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true)
   const [showList, setShowList] = useState(false)
 
-  useEffect(() => {
+  const load = useCallback((showLoading = false) => {
+    if (showLoading) setLoading(true)
     getKnowledgeGraph({ project_id: projectId })
       .then(d => { setConcepts(d.graph?.concepts ?? []); setRelations(d.graph?.relations ?? []) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [projectId])
+
+  useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        job.project_id === projectId &&
+        ['knowledge_graph', 'graph_review'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load, projectId])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
   if (concepts.length === 0) return <p className="text-sm text-slate-400">No graph elements for this project yet. Run Extract Graph.</p>

@@ -1,36 +1,26 @@
 import { useEffect, useState } from 'react'
+import dagre from '@dagrejs/dagre'
 import ReactFlow, {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MarkerType,
   MiniMap,
   Position,
+  applyNodeChanges,
   type Edge,
+  type EdgeProps,
   type Node,
+  type NodeChange,
   type NodeProps,
   useEdgesState,
   useNodesState,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-
-type WorkflowNodeKind = 'object' | 'operation'
-
-export interface WorkflowCanvasNode {
-  id: string
-  label: string
-  kind: WorkflowNodeKind
-  title?: string
-  details?: Record<string, unknown>
-}
-
-export interface WorkflowCanvasEdge {
-  id: string
-  source: string
-  target: string
-  label?: string
-  title?: string
-}
+import { escapeXml, labelLines, type WorkflowCanvasEdge, type WorkflowCanvasNode, type WorkflowNodeKind } from '../../features/workflows/model'
+export type { WorkflowCanvasEdge, WorkflowCanvasNode } from '../../features/workflows/model'
 
 interface WorkflowNodeData {
   id: string
@@ -40,22 +30,43 @@ interface WorkflowNodeData {
   details?: Record<string, unknown>
 }
 
+interface WorkflowEdgeData {
+  title?: string
+  points?: Array<{ x: number; y: number }>
+  sourceSide?: AnchorSide
+  targetSide?: AnchorSide
+}
+
 const XML_NS = 'http://www.w3.org/2000/svg'
 const OP_WIDTH = 190
 const OBJ_WIDTH = 190
+const CONTEXT_WIDTH = 210
 const NODE_HEIGHT = 74
-const X_GAP = 260
-const Y_GAP = 240
-const OBJECT_OFFSET = 145
-const MIN_ROW_SPACING = 235
+
+type AnchorSide = 'top' | 'right' | 'bottom' | 'left'
 
 function NodeHandles() {
+  const handles: AnchorSide[] = ['top', 'right', 'bottom', 'left']
   return (
     <>
-      <Handle type="target" position={Position.Top} className="opacity-0" />
-      <Handle type="target" position={Position.Left} className="opacity-0" />
-      <Handle type="source" position={Position.Bottom} className="opacity-0" />
-      <Handle type="source" position={Position.Right} className="opacity-0" />
+      {handles.map(side => (
+        <Handle
+          key={`target-${side}`}
+          id={`target-${side}`}
+          type="target"
+          position={sideToPosition(side)}
+          className="opacity-0"
+        />
+      ))}
+      {handles.map(side => (
+        <Handle
+          key={`source-${side}`}
+          id={`source-${side}`}
+          type="source"
+          position={sideToPosition(side)}
+          className="opacity-0"
+        />
+      ))}
     </>
   )
 }
@@ -109,65 +120,80 @@ function ObjectNode({ data }: NodeProps<WorkflowNodeData>) {
   )
 }
 
-function average(values: number[]) {
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+function PlanningNode({ data }: NodeProps<WorkflowNodeData>) {
+  return (
+    <div
+      title={data.title}
+      className="rounded-lg border border-amber-300/75 bg-amber-900/75 px-4 py-3 shadow-[0_10px_28px_rgba(217,119,6,0.2)]"
+      style={{ width: CONTEXT_WIDTH }}
+    >
+      <NodeHandles />
+      <LabelText label={data.label} />
+    </div>
+  )
 }
 
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;')
+function ReasoningNode({ data }: NodeProps<WorkflowNodeData>) {
+  return (
+    <div
+      title={data.title}
+      className="rounded-lg border border-sky-300/75 bg-sky-900/75 px-4 py-3 shadow-[0_10px_28px_rgba(14,116,144,0.2)]"
+      style={{ width: CONTEXT_WIDTH }}
+    >
+      <NodeHandles />
+      <LabelText label={data.label} />
+    </div>
+  )
 }
 
-function labelLines(label: string, maxChars = 18, maxLines = 3) {
-  const words = label.split(/\s+/).filter(Boolean)
-  if (words.length === 0) return ['']
+function UnknownNode({ data }: NodeProps<WorkflowNodeData>) {
+  return (
+    <div
+      title={data.title}
+      className="rounded-lg border border-slate-400/70 bg-slate-800/85 px-4 py-3 shadow-[0_10px_28px_rgba(15,23,42,0.22)]"
+      style={{ width: CONTEXT_WIDTH }}
+    >
+      <NodeHandles />
+      <LabelText label={data.label} />
+    </div>
+  )
+}
 
-  const lines: string[] = []
-  let current = ''
-  let index = 0
-
-  while (index < words.length) {
-    const word = words[index]
-    const candidate = current ? `${current} ${word}` : word
-    if (candidate.length <= maxChars || current.length === 0) {
-      current = candidate
-      index += 1
-      continue
-    }
-
-    lines.push(current)
-    current = word
-    index += 1
-    if (lines.length === maxLines - 1) {
-      break
-    }
+function sideToPosition(side: AnchorSide) {
+  switch (side) {
+    case 'top':
+      return Position.Top
+    case 'right':
+      return Position.Right
+    case 'bottom':
+      return Position.Bottom
+    case 'left':
+      return Position.Left
   }
+}
 
-  const tailWords = current ? [current, ...words.slice(index)] : words.slice(index)
-  const tail = tailWords.join(' ').trim()
-  if (tail) {
-    lines.push(tail)
+function sideVector(side: AnchorSide) {
+  switch (side) {
+    case 'top':
+      return { x: 0, y: -1 }
+    case 'right':
+      return { x: 1, y: 0 }
+    case 'bottom':
+      return { x: 0, y: 1 }
+    case 'left':
+      return { x: -1, y: 0 }
   }
-
-  if (lines.length > maxLines) {
-    lines.length = maxLines
-  }
-  if (lines.length === maxLines && lines[maxLines - 1].length > maxChars + 6) {
-    lines[maxLines - 1] = `${lines[maxLines - 1].slice(0, maxChars + 3).trimEnd()}...`
-  }
-  return lines
 }
 
 function nodeWidth(kind: WorkflowNodeKind) {
-  return kind === 'operation' ? OP_WIDTH : OBJ_WIDTH
+  if (kind === 'operation') return OP_WIDTH
+  if (kind === 'object') return OBJ_WIDTH
+  return CONTEXT_WIDTH
 }
 
 function nodeBounds(node: Node<WorkflowNodeData>) {
-  const width = nodeWidth(node.type === 'operation' ? 'operation' : 'object')
+  const kind = (node.type ?? node.data.kind) as WorkflowNodeKind
+  const width = nodeWidth(kind)
   return {
     x: node.position.x,
     y: node.position.y,
@@ -178,16 +204,80 @@ function nodeBounds(node: Node<WorkflowNodeData>) {
   }
 }
 
+function sidePoint(box: ReturnType<typeof nodeBounds>, side: AnchorSide) {
+  switch (side) {
+    case 'top':
+      return { x: box.centerX, y: box.y }
+    case 'right':
+      return { x: box.x + box.width, y: box.centerY }
+    case 'bottom':
+      return { x: box.centerX, y: box.y + box.height }
+    case 'left':
+      return { x: box.x, y: box.centerY }
+  }
+}
+
+function chooseAnchorSides(source: Node<WorkflowNodeData>, target: Node<WorkflowNodeData>) {
+  const sb = nodeBounds(source)
+  const tb = nodeBounds(target)
+  const sourceSides: AnchorSide[] = ['top', 'right', 'bottom', 'left']
+  const targetSides: AnchorSide[] = ['top', 'right', 'bottom', 'left']
+  let best = { sourceSide: 'bottom' as AnchorSide, targetSide: 'top' as AnchorSide, score: Number.POSITIVE_INFINITY }
+
+  sourceSides.forEach(sourceSide => {
+    targetSides.forEach(targetSide => {
+      const start = sidePoint(sb, sourceSide)
+      const end = sidePoint(tb, targetSide)
+      const dx = end.x - start.x
+      const dy = end.y - start.y
+      let score = Math.abs(dx) + Math.abs(dy)
+
+      const sv = sideVector(sourceSide)
+      const tv = sideVector(targetSide)
+      if (Math.sign(dx) !== 0 && Math.sign(dx) !== Math.sign(sv.x)) score += sourceSide === 'left' || sourceSide === 'right' ? 140 : 40
+      if (Math.sign(dy) !== 0 && Math.sign(dy) !== Math.sign(sv.y)) score += sourceSide === 'top' || sourceSide === 'bottom' ? 140 : 40
+      if (Math.sign(dx) !== 0 && Math.sign(dx) === Math.sign(tv.x)) score += targetSide === 'left' || targetSide === 'right' ? 140 : 40
+      if (Math.sign(dy) !== 0 && Math.sign(dy) === Math.sign(tv.y)) score += targetSide === 'top' || targetSide === 'bottom' ? 140 : 40
+
+      const mostlyVertical = Math.abs(dy) > Math.abs(dx) * 0.9
+      const mostlyHorizontal = Math.abs(dx) > Math.abs(dy) * 0.9
+      if (mostlyVertical && sourceSide === 'bottom' && targetSide === 'top' && dy > 0) score -= 130
+      if (mostlyVertical && sourceSide === 'top' && targetSide === 'bottom' && dy < 0) score -= 130
+      if (mostlyHorizontal && sourceSide === 'right' && targetSide === 'left' && dx > 0) score -= 130
+      if (mostlyHorizontal && sourceSide === 'left' && targetSide === 'right' && dx < 0) score -= 130
+      if (sourceSide === targetSide) score += 1000
+
+      if (sourceSide === 'bottom') score -= 90
+      if (sourceSide === 'right') score -= 35
+      if (sourceSide === 'top') score += 220
+      if (sourceSide === 'left') score += 70
+
+      if (targetSide === 'top') score -= 90
+      if (targetSide === 'left') score -= 35
+      if (targetSide === 'bottom') score += 220
+      if (targetSide === 'right') score += 70
+
+      if (score < best.score) {
+        best = { sourceSide, targetSide, score }
+      }
+    })
+  })
+
+  return best
+}
+
 function edgePath(source: Node<WorkflowNodeData>, target: Node<WorkflowNodeData>) {
   const sb = nodeBounds(source)
   const tb = nodeBounds(target)
-  const sourceBelow = tb.centerY >= sb.centerY
-  const startX = sb.centerX
-  const startY = sourceBelow ? sb.y + sb.height : sb.y
-  const endX = tb.centerX
-  const endY = sourceBelow ? tb.y : tb.y + tb.height
-  const midY = startY + (endY - startY) / 2
-  return `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`
+  const { sourceSide, targetSide } = chooseAnchorSides(source, target)
+  const start = sidePoint(sb, sourceSide)
+  const end = sidePoint(tb, targetSide)
+  const sv = sideVector(sourceSide)
+  const tv = sideVector(targetSide)
+  const distance = Math.max(72, Math.min(220, (Math.abs(end.x - start.x) + Math.abs(end.y - start.y)) / 2))
+  const c1 = { x: start.x + sv.x * distance, y: start.y + sv.y * distance }
+  const c2 = { x: end.x + tv.x * distance, y: end.y + tv.y * distance }
+  return `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`
 }
 
 function downloadFile(filename: string, mimeType: string, content: string) {
@@ -200,197 +290,245 @@ function downloadFile(filename: string, mimeType: string, content: string) {
   URL.revokeObjectURL(url)
 }
 
-function spreadRow<T extends { x: number }>(items: T[], minSpacing: number) {
-  if (items.length <= 1) return
-  items.sort((a, b) => a.x - b.x)
-  for (let index = 1; index < items.length; index += 1) {
-    if (items[index].x - items[index - 1].x < minSpacing) {
-      items[index].x = items[index - 1].x + minSpacing
+function dedupePoints(points: Array<{ x: number; y: number }>) {
+  return points.filter((point, index) => {
+    const previous = points[index - 1]
+    return !previous || Math.abs(previous.x - point.x) > 1 || Math.abs(previous.y - point.y) > 1
+  })
+}
+
+function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return Math.hypot(b.x - a.x, b.y - a.y)
+}
+
+function midpointOnPolyline(points: Array<{ x: number; y: number }>) {
+  if (points.length === 0) return { x: 0, y: 0 }
+  if (points.length === 1) return points[0]
+
+  const total = points.slice(1).reduce((sum, point, index) => sum + distance(points[index], point), 0)
+  const target = total / 2
+  let traversed = 0
+
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]
+    const end = points[index]
+    const segment = distance(start, end)
+    if (traversed + segment >= target) {
+      const ratio = segment === 0 ? 0 : (target - traversed) / segment
+      return {
+        x: start.x + (end.x - start.x) * ratio,
+        y: start.y + (end.y - start.y) * ratio,
+      }
     }
+    traversed += segment
   }
 
-  const midpoint = (items[0].x + items[items.length - 1].x) / 2
-  const targetCenter = average(items.map(item => item.x))
-  const shift = midpoint - targetCenter
-  items.forEach(item => {
-    item.x -= shift
+  return points[points.length - 1]
+}
+
+function controlDistance(start: { x: number; y: number }, end: { x: number; y: number }) {
+  return Math.max(44, Math.min(150, distance(start, end) / 2))
+}
+
+function smoothBezierPath(points: Array<{ x: number; y: number }>, sourceSide?: AnchorSide, targetSide?: AnchorSide) {
+  if (points.length === 0) return ''
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`
+  if (points.length === 2) {
+    const [start, end] = points
+    const sourceVector = sideVector(sourceSide ?? 'bottom')
+    const targetVector = sideVector(targetSide ?? 'top')
+    const offset = controlDistance(start, end)
+    const c1 = { x: start.x + sourceVector.x * offset, y: start.y + sourceVector.y * offset }
+    const c2 = { x: end.x + targetVector.x * offset, y: end.y + targetVector.y * offset }
+    return `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`
+  }
+
+  const parts = [`M ${points[0].x} ${points[0].y}`]
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] ?? points[index]
+    const start = points[index]
+    const end = points[index + 1]
+    const next = points[index + 2] ?? end
+    const sourceVector = sourceSide ? sideVector(sourceSide) : null
+    const targetVector = targetSide ? sideVector(targetSide) : null
+    let c1 = {
+      x: start.x + (end.x - previous.x) / 6,
+      y: start.y + (end.y - previous.y) / 6,
+    }
+    let c2 = {
+      x: end.x - (next.x - start.x) / 6,
+      y: end.y - (next.y - start.y) / 6,
+    }
+    if (index === 0 && sourceVector) {
+      const offset = controlDistance(start, end)
+      c1 = { x: start.x + sourceVector.x * offset, y: start.y + sourceVector.y * offset }
+    }
+    if (index === points.length - 2 && targetVector) {
+      const offset = controlDistance(start, end)
+      c2 = { x: end.x + targetVector.x * offset, y: end.y + targetVector.y * offset }
+    }
+    parts.push(`C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`)
+  }
+  return parts.join(' ')
+}
+
+function WorkflowEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  markerEnd,
+  style,
+  data,
+  label,
+}: EdgeProps<WorkflowEdgeData>) {
+  const points = dedupePoints([
+    { x: sourceX, y: sourceY },
+    ...(data?.points ?? []),
+    { x: targetX, y: targetY },
+  ])
+  const path = smoothBezierPath(points, data?.sourceSide, data?.targetSide)
+  const labelPoint = midpointOnPolyline(points)
+
+  return (
+    <>
+      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
+      {label ? (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan rounded-md bg-zinc-950/95 px-1.5 py-0.5 text-[11px] text-slate-400"
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelPoint.x}px, ${labelPoint.y}px)`,
+            }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  )
+}
+
+function anchorEdges(edgeList: Edge[], nodeList: Node<WorkflowNodeData>[]) {
+  const flowNodeMap = new Map(nodeList.map(node => [node.id, node]))
+  return edgeList.map(edge => {
+    const source = flowNodeMap.get(String(edge.source))
+    const target = flowNodeMap.get(String(edge.target))
+    const anchors = source && target ? chooseAnchorSides(source, target) : null
+    return {
+      ...edge,
+      sourceHandle: anchors ? `source-${anchors.sourceSide}` : edge.sourceHandle,
+      targetHandle: anchors ? `target-${anchors.targetSide}` : edge.targetHandle,
+      data: anchors ? { ...(edge.data ?? {}), sourceSide: anchors.sourceSide, targetSide: anchors.targetSide } : edge.data,
+    }
   })
 }
 
 function buildLayout(nodes: WorkflowCanvasNode[], edges: WorkflowCanvasEdge[]): { nodes: Node<WorkflowNodeData>[]; edges: Edge[] } {
+  if (nodes.length === 0) return { nodes: [], edges: [] }
+
   const nodeMap = new Map(nodes.map(node => [node.id, node]))
-  const operationIds = nodes.filter(node => node.kind === 'operation').map(node => node.id)
-  const objectIds = nodes.filter(node => node.kind === 'object').map(node => node.id)
-
-  const producerMap = new Map<string, string[]>()
-  const consumerMap = new Map<string, string[]>()
-  objectIds.forEach(id => {
-    producerMap.set(id, [])
-    consumerMap.set(id, [])
+  const validEdges = edges.filter(edge => nodeMap.has(edge.source) && nodeMap.has(edge.target))
+  const dagreGraph = new dagre.graphlib.Graph({ multigraph: true })
+  dagreGraph.setDefaultEdgeLabel(() => ({}))
+  dagreGraph.setGraph({
+    rankdir: 'TB',
+    align: 'UL',
+    nodesep: 62,
+    edgesep: 34,
+    ranksep: 96,
+    marginx: 32,
+    marginy: 32,
+    acyclicer: 'greedy',
+    ranker: 'network-simplex',
   })
 
-  edges.forEach(edge => {
-    const sourceKind = nodeMap.get(edge.source)?.kind
-    const targetKind = nodeMap.get(edge.target)?.kind
-    if (sourceKind === 'operation' && targetKind === 'object') {
-      producerMap.get(edge.target)?.push(edge.source)
-    }
-    if (sourceKind === 'object' && targetKind === 'operation') {
-      consumerMap.get(edge.source)?.push(edge.target)
-    }
-  })
-
-  const opChildren = new Map<string, Set<string>>()
-  const opParents = new Map<string, Set<string>>()
-  const indegree = new Map<string, number>()
-  operationIds.forEach(id => {
-    opChildren.set(id, new Set())
-    opParents.set(id, new Set())
-    indegree.set(id, 0)
-  })
-
-  objectIds.forEach(objectId => {
-    const producers = producerMap.get(objectId) ?? []
-    const consumers = consumerMap.get(objectId) ?? []
-    producers.forEach(producerId => {
-      consumers.forEach(consumerId => {
-        if (producerId === consumerId || opChildren.get(producerId)?.has(consumerId)) return
-        opChildren.get(producerId)?.add(consumerId)
-        opParents.get(consumerId)?.add(producerId)
-        indegree.set(consumerId, (indegree.get(consumerId) ?? 0) + 1)
+  ;[...nodes]
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .forEach(node => {
+      dagreGraph.setNode(node.id, {
+        width: nodeWidth(node.kind),
+        height: NODE_HEIGHT,
       })
     })
-  })
 
-  const queue = operationIds
-    .filter(id => (indegree.get(id) ?? 0) === 0)
-    .sort((a, b) => (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? ''))
-
-  const opLevel = new Map<string, number>()
-  operationIds.forEach(id => opLevel.set(id, 0))
-
-  while (queue.length > 0) {
-    const currentId = queue.shift()!
-    const currentLevel = opLevel.get(currentId) ?? 0
-    Array.from(opChildren.get(currentId) ?? []).forEach(childId => {
-      opLevel.set(childId, Math.max(opLevel.get(childId) ?? 0, currentLevel + 1))
-      indegree.set(childId, (indegree.get(childId) ?? 1) - 1)
-      if ((indegree.get(childId) ?? 0) === 0) {
-        queue.push(childId)
-      }
-    })
-  }
-
-  const levels = new Map<number, string[]>()
-  operationIds.forEach(id => {
-    const level = opLevel.get(id) ?? 0
-    if (!levels.has(level)) levels.set(level, [])
-    levels.get(level)!.push(id)
-  })
-
-  const opX = new Map<string, number>()
-  Array.from(levels.keys()).sort((a, b) => a - b).forEach(level => {
-    const ids = levels.get(level) ?? []
-    ids.sort((a, b) => {
-      const aParents = Array.from(opParents.get(a) ?? [])
-      const bParents = Array.from(opParents.get(b) ?? [])
-      const aAnchor = aParents.length ? average(aParents.map(parentId => opX.get(parentId) ?? 0)) : 0
-      const bAnchor = bParents.length ? average(bParents.map(parentId => opX.get(parentId) ?? 0)) : 0
-      if (aAnchor !== bAnchor) return aAnchor - bAnchor
-      return (nodeMap.get(a)?.label ?? '').localeCompare(nodeMap.get(b)?.label ?? '')
+  ;[...validEdges]
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .forEach(edge => {
+      dagreGraph.setEdge(
+        edge.source,
+        edge.target,
+        {
+          weight: 1,
+          minlen: 1,
+          width: edge.label ? Math.max(40, edge.label.length * 6) : 0,
+          height: edge.label ? 18 : 0,
+        },
+        edge.id,
+      )
     })
 
-    const rowWidth = (ids.length - 1) * X_GAP
-    ids.forEach((id, index) => {
-      opX.set(id, index * X_GAP - rowWidth / 2)
-    })
-
-    const rowItems = ids.map(id => ({ id, x: opX.get(id) ?? 0 }))
-    spreadRow(rowItems, MIN_ROW_SPACING)
-    rowItems.forEach(item => {
-      opX.set(item.id, item.x)
-    })
-  })
-
-  const objectLayout = objectIds.map(id => {
-    const producers = producerMap.get(id) ?? []
-    const consumers = consumerMap.get(id) ?? []
-
-    if (consumers.length > 0) {
-      const earliestLevel = Math.min(...consumers.map(consumerId => opLevel.get(consumerId) ?? 0))
-      const earliestConsumers = consumers.filter(consumerId => (opLevel.get(consumerId) ?? 0) === earliestLevel)
-      return {
-        id,
-        x: average(earliestConsumers.map(consumerId => opX.get(consumerId) ?? 0)),
-        y: earliestLevel * Y_GAP - OBJECT_OFFSET,
-      }
-    }
-
-    if (producers.length > 0) {
-      const latestLevel = Math.max(...producers.map(producerId => opLevel.get(producerId) ?? 0))
-      const latestProducers = producers.filter(producerId => (opLevel.get(producerId) ?? 0) === latestLevel)
-      return {
-        id,
-        x: average(latestProducers.map(producerId => opX.get(producerId) ?? 0)),
-        y: latestLevel * Y_GAP + OBJECT_OFFSET,
-      }
-    }
-
-    return { id, x: 0, y: -OBJECT_OFFSET }
-  })
-
-  const objectRows = new Map<number, Array<{ id: string; x: number; y: number }>>()
-  objectLayout.forEach(item => {
-    const rowKey = Math.round(item.y)
-    if (!objectRows.has(rowKey)) objectRows.set(rowKey, [])
-    objectRows.get(rowKey)!.push(item)
-  })
-
-  objectRows.forEach(items => {
-    spreadRow(items, MIN_ROW_SPACING)
-  })
+  dagre.layout(dagreGraph)
 
   const flowNodes: Node<WorkflowNodeData>[] = nodes.map(node => {
-    if (node.kind === 'operation') {
-      return {
-        id: node.id,
-        type: 'operation',
-        position: { x: opX.get(node.id) ?? 0, y: (opLevel.get(node.id) ?? 0) * Y_GAP },
-        data: { id: node.id, kind: node.kind, label: node.label, title: node.title, details: node.details },
-      }
-    }
-
-    const layout = objectLayout.find(item => item.id === node.id) ?? { x: 0, y: -OBJECT_OFFSET }
+    const layoutNode = dagreGraph.node(node.id) as { x?: number; y?: number } | undefined
+    const width = nodeWidth(node.kind)
     return {
       id: node.id,
-      type: 'object',
-      position: { x: layout.x, y: layout.y },
+      type: node.kind,
+      position: {
+        x: (layoutNode?.x ?? 0) - width / 2,
+        y: (layoutNode?.y ?? 0) - NODE_HEIGHT / 2,
+      },
       data: { id: node.id, kind: node.kind, label: node.label, title: node.title, details: node.details },
     }
   })
 
-  const flowEdges: Edge[] = edges.map(edge => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    type: 'smoothstep',
-    label: edge.label,
-    data: edge.title ? { title: edge.title } : undefined,
-    animated: false,
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' },
-    style: { stroke: '#64748b', strokeWidth: 1.5 },
-    labelStyle: { fill: '#94a3b8', fontSize: 11 },
-    labelBgStyle: { fill: 'rgba(9, 9, 11, 0.92)', fillOpacity: 1 },
-    labelBgPadding: [6, 2],
-    labelBgBorderRadius: 6,
-  }))
+  const flowEdges: Edge[] = validEdges.map(edge => {
+    const layoutEdge = dagreGraph.edge({ v: edge.source, w: edge.target, name: edge.id }) as { points?: Array<{ x: number; y: number }> } | undefined
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: 'workflow',
+      label: edge.label,
+      data: { title: edge.title, points: layoutEdge?.points ?? [] },
+      animated: false,
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#64748b' },
+      style: { stroke: '#64748b', strokeWidth: 1.5 },
+    }
+  })
 
-  return { nodes: flowNodes, edges: flowEdges }
+  return { nodes: flowNodes, edges: anchorEdges(flowEdges, flowNodes) }
 }
 
 const nodeTypes = {
   operation: OperationNode,
   object: ObjectNode,
+  planning: PlanningNode,
+  reasoning: ReasoningNode,
+  unknown: UnknownNode,
+}
+
+const edgeTypes = {
+  workflow: WorkflowEdge,
+}
+
+function nodeColor(kind: WorkflowNodeKind) {
+  switch (kind) {
+    case 'operation':
+      return '#8b5cf6'
+    case 'object':
+      return '#14b8a6'
+    case 'planning':
+      return '#f59e0b'
+    case 'reasoning':
+      return '#38bdf8'
+    case 'unknown':
+      return '#64748b'
+  }
 }
 
 export default function WorkflowCanvas({
@@ -402,7 +540,7 @@ export default function WorkflowCanvas({
   edges: WorkflowCanvasEdge[]
   exportBaseName?: string
 }) {
-  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowNodeData>([])
+  const [flowNodes, setFlowNodes] = useNodesState<WorkflowNodeData>([])
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
@@ -414,6 +552,17 @@ export default function WorkflowCanvas({
   }, [edges, nodes, setFlowEdges, setFlowNodes])
 
   const selectedNode = flowNodes.find(node => node.id === selectedNodeId) ?? null
+
+  const handleNodesChange = (changes: NodeChange[]) => {
+    setFlowNodes(currentNodes => {
+      const nextNodes = applyNodeChanges(changes, currentNodes)
+      setFlowEdges(currentEdges => anchorEdges(currentEdges.map(edge => ({
+        ...edge,
+        data: { ...(edge.data ?? {}), points: [] },
+      })), nextNodes))
+      return nextNodes
+    })
+  }
 
   const exportSvg = () => {
     if (flowNodes.length === 0) return
@@ -467,11 +616,12 @@ export default function WorkflowCanvas({
     for (const node of flowNodes) {
       const box = nodeBounds(node)
       const lines = labelLines(node.data.label)
-      if (node.type === 'operation') {
+      const kind = node.data.kind
+      if (kind === 'operation') {
         svgParts.push(
           `<rect x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" rx="16" ry="16" fill="#4c1d95" fill-opacity="0.88" stroke="#a78bfa" stroke-width="1.5" />`,
         )
-      } else {
+      } else if (kind === 'object') {
         const slant = 20
         const points = [
           `${box.x + slant},${box.y}`,
@@ -481,6 +631,12 @@ export default function WorkflowCanvas({
         ].join(' ')
         svgParts.push(
           `<polygon points="${points}" fill="#134e4a" fill-opacity="0.9" stroke="#5eead4" stroke-width="1.5" />`,
+        )
+      } else {
+        const fill = kind === 'planning' ? '#78350f' : kind === 'reasoning' ? '#0c4a6e' : '#1e293b'
+        const stroke = kind === 'planning' ? '#fcd34d' : kind === 'reasoning' ? '#7dd3fc' : '#94a3b8'
+        svgParts.push(
+          `<rect x="${box.x}" y="${box.y}" width="${box.width}" height="${box.height}" rx="8" ry="8" fill="${fill}" fill-opacity="0.9" stroke="${stroke}" stroke-width="1.5" />`,
         )
       }
 
@@ -502,7 +658,7 @@ export default function WorkflowCanvas({
       `<workflow export_name="${escapeXml(exportBaseName)}">`,
       `  <nodes>`,
       ...flowNodes.map(node => {
-        const kind = node.type === 'operation' ? 'operation' : 'object'
+        const kind = node.data.kind
         return `    <node id="${escapeXml(node.id)}" kind="${kind}" x="${node.position.x}" y="${node.position.y}"><label>${escapeXml(node.data.label)}</label>${node.data.title ? `<title>${escapeXml(node.data.title)}</title>` : ''}</node>`
       }),
       `  </nodes>`,
@@ -542,7 +698,8 @@ export default function WorkflowCanvas({
             nodes={flowNodes}
             edges={flowEdges}
             nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
+            edgeTypes={edgeTypes}
+            onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={(_, node) => setSelectedNodeId(node.id)}
             fitView
@@ -556,7 +713,7 @@ export default function WorkflowCanvas({
             <MiniMap
               pannable
               zoomable
-              nodeColor={node => node.type === 'operation' ? '#8b5cf6' : '#14b8a6'}
+              nodeColor={node => nodeColor((node.data as WorkflowNodeData).kind)}
               maskColor="rgba(9, 9, 11, 0.78)"
             />
             <Controls showInteractive={false} />

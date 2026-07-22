@@ -19,65 +19,12 @@ import {
   saveColPrefs,
   slugifyExportName,
 } from './helpers'
-
-type ProjectionTableRow = Record<string, string>
-type ColumnDataType = 'boolean' | 'number' | 'date' | 'text'
+import {
+  compareText, inferColumnDataType, isBlank, loadSavedPage, parseBoolean, parseDate, parseNumber,
+  savePage, sortArrow, sortLabel, type ColumnDataType, type ProjectionTableRow,
+} from '../../features/projections/tableModel'
 
 const SELECTION_COLUMN_ID = '__projection_selection__'
-
-function isBlank(value: unknown): boolean {
-  return String(value ?? '').trim() === ''
-}
-
-function parseBoolean(value: unknown): number | null {
-  const normalized = String(value ?? '').trim().toLowerCase()
-  if (['true', 'yes', 'y', '1'].includes(normalized)) return 1
-  if (['false', 'no', 'n', '0'].includes(normalized)) return 0
-  return null
-}
-
-function parseNumber(value: unknown): number | null {
-  const normalized = String(value ?? '').trim().replace(/,/g, '')
-  if (!normalized) return null
-  const parsed = Number(normalized)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function parseDate(value: unknown): number | null {
-  const normalized = String(value ?? '').trim()
-  if (!normalized) return null
-  const parsed = Date.parse(normalized)
-  return Number.isNaN(parsed) ? null : parsed
-}
-
-function inferColumnDataType(rows: ProjectionTableRow[], col: string): ColumnDataType {
-  const values = rows.map(row => row[col]).filter(value => !isBlank(value))
-  if (values.length === 0) return 'text'
-  if (values.every(value => parseBoolean(value) !== null)) return 'boolean'
-  if (values.every(value => parseNumber(value) !== null)) return 'number'
-  if (values.every(value => parseDate(value) !== null)) return 'date'
-  return 'text'
-}
-
-function compareText(left: unknown, right: unknown): number {
-  return String(left ?? '').localeCompare(String(right ?? ''), undefined, {
-    numeric: true,
-    sensitivity: 'base',
-  })
-}
-
-function sortLabel(type: ColumnDataType, sorted: false | 'asc' | 'desc'): string {
-  if (!sorted) return 'Click to sort'
-  if (type === 'boolean') return sorted === 'asc' ? 'False → True (click for True → False)' : 'True → False (click to clear)'
-  if (type === 'number') return sorted === 'asc' ? '0 → 9 (click for 9 → 0)' : '9 → 0 (click to clear)'
-  if (type === 'date') return sorted === 'asc' ? 'Old → New (click for New → Old)' : 'New → Old (click to clear)'
-  return sorted === 'asc' ? 'A → Z (click for Z → A)' : 'Z → A (click to clear)'
-}
-
-function sortArrow(sorted: false | 'asc' | 'desc'): string {
-  if (!sorted) return '⇅'
-  return sorted === 'asc' ? '↑' : '↓'
-}
 
 export default function SectionTable({
   name,
@@ -102,7 +49,8 @@ export default function SectionTable({
   onClearSelection: () => void
   reviewDisabled?: boolean
 }) {
-  const [page, setPage] = useState(1)
+  const pageStorageKey = exportBasename ?? name
+  const [page, setPage] = useState(() => loadSavedPage(pageStorageKey))
   const [sorting, setSorting] = useState<SortingState>([])
   const [exportingFormat, setExportingFormat] = useState<'csv' | 'excel' | null>(null)
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
@@ -111,6 +59,14 @@ export default function SectionTable({
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
   }, [page, totalPages])
+
+  useEffect(() => {
+    setPage(loadSavedPage(pageStorageKey))
+  }, [pageStorageKey])
+
+  useEffect(() => {
+    savePage(pageStorageKey, Math.min(page, totalPages))
+  }, [page, pageStorageKey, totalPages])
 
   const allCols = useMemo(() => {
     const seen = new Set<string>()
@@ -128,13 +84,21 @@ export default function SectionTable({
 
   useEffect(() => {
     setPrefs(p => {
-      const merged = Array.from(new Set([...p.known, ...allCols]))
-      if (merged.length === p.known.length) return p
-      const next = { ...p, known: merged }
+      const added = allCols.filter(column => !p.known.includes(column))
+      if (added.length === 0) return p
+      const known = [...p.known, ...added]
+      // New fields can be introduced by a post-processor after the user has
+      // saved column preferences. Reveal them once without re-enabling any
+      // columns the user previously hid.
+      const visible = Array.from(new Set([
+        ...p.visible,
+        ...defaultColumns(added, schemaOrder).filter(column => !p.visible.includes(column)),
+      ]))
+      const next = { ...p, known, visible }
       saveColPrefs(name, next)
       return next
     })
-  }, [allCols, name])
+  }, [allCols, name, schemaOrder])
 
   const visibleCols = prefs.visible.filter(c => prefs.known.includes(c))
 
@@ -209,6 +173,7 @@ export default function SectionTable({
   const cycleSort = (columnId: string) => {
     const current = sorting.find(sort => sort.id === columnId)
     setPage(1)
+    savePage(pageStorageKey, 1)
     if (!current) setSorting([{ id: columnId, desc: false }])
     else if (!current.desc) setSorting([{ id: columnId, desc: true }])
     else setSorting([])
@@ -289,9 +254,11 @@ export default function SectionTable({
     onPaginationChange: updater => {
       const next = functionalUpdate(updater, pagination)
       setPage(next.pageIndex + 1)
+      savePage(pageStorageKey, next.pageIndex + 1)
     },
     onSortingChange: updater => {
       setPage(1)
+      savePage(pageStorageKey, 1)
       setSorting(functionalUpdate(updater, sorting))
     },
     getCoreRowModel: getCoreRowModel(),

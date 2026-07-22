@@ -13,24 +13,25 @@ import uuid
 
 from google.adk.agents import Agent
 
-from mkb.agents._utils import create_llm, sync_agent_run
+from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.projection_fixer import PROJECTION_FIXER_PROMPT
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools import ALL_TOOLS
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.reading import reading_tools
 
 logger = logging.getLogger(__name__)
 
 APP_NAME = "mkb_projection_fixer"
 
 
-def build_fixer_agent(model: str | None = None) -> Agent:
+def build_fixer_agent(runtime: AgentRuntime, model: str | None = None) -> Agent:
     """Create a projection fixer agent with reading + frame tools."""
     llm = create_llm(model)
     return Agent(
         name="projection_fixer",
         model=llm,
         instruction=PROJECTION_FIXER_PROMPT,
-        tools=ALL_TOOLS,  # READING_TOOLS + FRAME_TOOLS
+        tools=reading_tools(runtime),
     )
 
 
@@ -40,9 +41,12 @@ async def _run_fixer_async(
     context: str = "",
     model: str | None = None,
     verbose: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run the fixer sub-agent to re-examine specific fields."""
-    agent = build_fixer_agent(model)
+    if runtime is None:
+        raise ValueError("Projection fixing requires an explicit AgentRuntime")
+    agent = build_fixer_agent(runtime, model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"fixer_{project_id}_{uuid.uuid4().hex[:8]}"
@@ -80,13 +84,22 @@ async def _run_fixer_async(
     }
 
 
-@sync_agent_run
-async def run_fixer(
+def run_fixer(
     project_id: uuid.UUID,
     fields: str,
     context: str = "",
     model: str | None = None,
     verbose: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run fixer on specific fields."""
-    return await _run_fixer_async(project_id, fields, context, model, verbose)
+    return run_async_sync(
+        _run_fixer_async(
+            project_id,
+            fields,
+            context,
+            model,
+            verbose,
+            runtime=runtime,
+        )
+    )

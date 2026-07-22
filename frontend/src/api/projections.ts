@@ -22,7 +22,7 @@ export const reviewProjections = (params: {
   mode?: ReviewMode
   reviewer_id?: string
 }) =>
-  client.post<{ job_id: string }>('/projections/review', params).then(r => r.data)
+  client.post<{ job_id: string; job_ids?: string[] }>('/projections/review', params).then(r => r.data)
 
 export const deleteProjection = (id: string) =>
   client.delete(`/projections/${id}`)

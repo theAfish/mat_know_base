@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-import re
 from collections import Counter
-from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.agents.tools.projection import (
     flag_for_feedback,
     get_frame_content,
     request_frame_clarification,
 )
-from mkb.db.engine import SyncSessionLocal
-from mkb.db.models import KnowledgeFrame, Projection, ProjectionStatus
+from mkb.db.models import Projection, ProjectionStatus
 from mkb.knowledge_graph import ensure_global_kg_space_id
+from mkb.services.normalization import canonical_label
+from mkb.services.agent_tools.persistence import complete_projection
+from mkb.services.agent_tools.queries import projection_context
+from mkb.services.agent_tools.validation import validate_identifier
 
 
 MAX_AGENT_GRAPH_CONCEPTS = 80
@@ -25,8 +27,7 @@ MAX_AGENT_ALIAS_PREVIEW = 3
 
 
 def _normalize_label(value: str) -> str:
-    collapsed = re.sub(r"\s+", " ", str(value or "").strip().lower())
-    return collapsed
+    return canonical_label(value)
 
 
 def _coerce_string_list(value) -> list[str]:
@@ -419,6 +420,8 @@ def get_current_graph_snapshot(
     concept_limit: int = MAX_AGENT_GRAPH_CONCEPTS,
     relation_limit: int = MAX_AGENT_GRAPH_RELATIONS,
     top_connected_limit: int = MAX_AGENT_TOP_CONNECTED_CONCEPTS,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Get merged graph data for redundancy checks before saving."""
     sid = parse_uuidish(space_id)
@@ -432,7 +435,7 @@ def get_current_graph_snapshot(
             return {"error": invalid_identifier_message("exclude_projection_id", exclude_projection_id)}
 
     aggregate = {"concepts": [], "relations": []}
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         q = (
             session.query(Projection)
             .filter(Projection.space_id == sid)
@@ -475,11 +478,17 @@ def get_current_graph_snapshot(
     return result
 
 
-def find_similar_concepts(space_id: str, concept_label: str, limit: int = 10) -> dict:
+def find_similar_concepts(
+    space_id: str,
+    concept_label: str,
+    limit: int = 10,
+    *,
+    runtime: AgentRuntime,
+) -> dict:
     """Find concept labels in the current global graph that are likely duplicates."""
     if not concept_label or not str(concept_label).strip():
         return {"error": "concept_label is required."}
-    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -519,6 +528,8 @@ def search_graph_elements(
     keyword: str | list[str],
     element_type: str = "both",
     limit: int = 20,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Search existing graph concepts and relations by keyword to find likely connection targets."""
     terms = _normalize_search_terms(keyword)
@@ -527,7 +538,7 @@ def search_graph_elements(
     if element_type not in {"concept", "relation", "both"}:
         return {"error": "element_type must be one of: concept, relation, both."}
 
-    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -595,11 +606,13 @@ def save_knowledge_graph(
     data: dict,
     validation_notes: str = "",
     agent_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Save normalized concept-only graph data to a projection row."""
-    pid = parse_uuidish(projection_id)
-    if not pid:
-        return {"error": invalid_identifier_message("projection_id", projection_id)}
+    pid, error = validate_identifier("projection_id", projection_id)
+    if error:
+        return error
 
     normalized, validation = normalize_knowledge_graph_payload(data)
 
@@ -612,13 +625,10 @@ def save_knowledge_graph(
             )
         }
 
-    now = datetime.now(timezone.utc)
-    with SyncSessionLocal() as session:
-        projection = session.query(Projection).filter_by(projection_id=pid).first()
+    with runtime.database.session() as session:
+        projection, frame, _space = projection_context(session, pid)
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
-
-        frame = session.query(KnowledgeFrame).filter_by(frame_id=projection.frame_id).first()
         if frame:
             project_id = str(frame.project_id)
             frame_id = str(frame.frame_id)
@@ -634,12 +644,10 @@ def save_knowledge_graph(
         if validation_notes:
             validation = {**validation, "notes": validation_notes}
 
-        projection.data = normalized
-        projection.validation_result = validation
-        projection.agent_notes = agent_notes
-        projection.status = ProjectionStatus.COMPLETED
-        projection.extracted_at = now
-        session.commit()
+        complete_projection(
+            session, projection, data=normalized,
+            validation=validation, agent_notes=agent_notes,
+        )
 
         return {
             "projection_id": str(projection.projection_id),
@@ -649,13 +657,13 @@ def save_knowledge_graph(
         }
 
 
-def get_global_kg_space() -> dict:
+def get_global_kg_space(*, runtime: AgentRuntime) -> dict:
     """Return global singleton KG space information."""
-    sid = ensure_global_kg_space_id()
+    sid = ensure_global_kg_space_id(runtime.database)
     return {"space_id": str(sid)}
 
 
-KNOWLEDGE_GRAPH_TOOLS = [
+KNOWLEDGE_GRAPH_OPERATIONS = [
     get_global_kg_space,
     get_frame_content,
     get_current_graph_snapshot,
@@ -665,3 +673,28 @@ KNOWLEDGE_GRAPH_TOOLS = [
     request_frame_clarification,
     flag_for_feedback,
 ]
+
+
+def knowledge_graph_tools(runtime: AgentRuntime):
+    """Return graph-native tools bound to one client runtime.
+
+    Projection/clarification helpers are added when those families are bound;
+    they must never be registered here with an implicit database fallback.
+    """
+
+    from mkb.agents.tools.projection import projection_tools
+
+    graph_tools = bind_tools(
+        [
+            get_global_kg_space,
+            get_current_graph_snapshot,
+            search_graph_elements,
+            find_similar_concepts,
+            save_knowledge_graph,
+        ],
+        runtime,
+    )
+    return projection_tools(runtime) + graph_tools
+
+
+KNOWLEDGE_GRAPH_TOOLS = KNOWLEDGE_GRAPH_OPERATIONS

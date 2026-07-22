@@ -4,12 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
+PYTHON="${PYTHON:-$ROOT_DIR/.venv/bin/python}"
+NPM="${NPM:-npm}"
+
+if [[ ! -x "$PYTHON" ]]; then
   echo "Missing Python virtual environment at .venv/."
-  echo "Create it and install dependencies first:"
-  echo "  python3 -m venv .venv"
-  echo "  source .venv/bin/activate"
-  echo "  pip install -e \".[dev]\""
+  echo "Run: make bootstrap"
   exit 1
 fi
 
@@ -42,7 +42,7 @@ SERVER_PID=$!
 
 (
   cd frontend
-  npm run dev
+  "$NPM" run dev
 ) &
 FRONTEND_PID=$!
 

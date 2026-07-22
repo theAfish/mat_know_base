@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import axios from 'axios'
 
 import { getFrame, getFrameHistory } from '../../api/frames'
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
 import { getProject } from '../../api/projects'
-import type { ExtractionPass, Frame, Project } from '../../types'
+import type { ExtractionPass, Frame, Job, Project } from '../../types'
 import StatusBadge from '../StatusBadge'
 import { FrameHeader, FrameSection } from './frameRender'
 
@@ -12,25 +14,63 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
   const [history, setHistory] = useState<ExtractionPass[]>([])
   const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(false)
 
-  useEffect(() => {
-    Promise.all([getFrame(projectId), getFrameHistory(projectId), getProject(projectId)])
-      .then(([f, h, p]) => {
-        setFrame(f)
-        setHistory(h as unknown as ExtractionPass[])
-        setProject(p)
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false))
+  const load = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true)
+    setLoadError(null)
+
+    // The frame is the only request that determines this tab's empty state.
+    // History and project metadata are supplementary and must not hide an
+    // existing frame when either endpoint fails.
+    const [frameResult, historyResult, projectResult] = await Promise.allSettled([
+      getFrame(projectId),
+      getFrameHistory(projectId),
+      getProject(projectId),
+    ])
+
+    if (frameResult.status === 'fulfilled') {
+      setFrame(frameResult.value)
+    } else if (axios.isAxiosError(frameResult.reason) && frameResult.reason.response?.status === 404) {
+      setFrame(null)
+    } else {
+      setLoadError(frameResult.reason instanceof Error ? frameResult.reason.message : 'Could not load knowledge frame')
+    }
+
+    if (historyResult.status === 'fulfilled') setHistory(historyResult.value)
+    if (projectResult.status === 'fulfilled') setProject(projectResult.value)
+    setLoading(false)
   }, [projectId])
 
+  useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        job.project_id === projectId &&
+        ['extract', 'raw_workflow', 'canonical_workflow', 'workflow_maintenance'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load, projectId])
+
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
+  if (loadError) return <p className="text-sm text-red-300">Failed to load knowledge frame: {loadError}</p>
   if (!frame) return <p className="text-sm text-slate-400">No knowledge frame yet. Run Extract to generate one.</p>
 
   const { content, extraction_summary, extraction_version, status, extracted_at, agent_annotations } = frame
   const clarifications = agent_annotations?.clarifications ?? []
   const resolvedFeedback = agent_annotations?.resolved_feedback ?? []
+  const sortedHistory = [...history].sort((a, b) => {
+    const byDate = new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    return byDate || b.pass_number - a.pass_number
+  })
 
   return (
     <div className="space-y-4">
@@ -48,17 +88,20 @@ export default function KnowledgeFrameTab({ projectId }: { projectId: string }) 
       )}
 
       {history.length > 0 && (
-        <div>
-          <p className="text-xs font-medium text-slate-400 mb-1">Extraction passes</p>
-          <div className="space-y-0.5">
-            {history.map((h, i) => (
-              <div key={i} className="text-xs text-slate-500 px-2 py-1 bg-slate-900 rounded">
-                Pass {h.pass_number} ({h.pass_type}) — {h.created_at.slice(0, 10)}
-                {h.changes_made ? ' · changes made' : ''}
+        <details className="group">
+          <summary className="text-xs font-medium text-slate-400 cursor-pointer select-none">
+            Extraction history ({history.length} {history.length === 1 ? 'entry' : 'entries'})
+            <span className="ml-1 text-slate-600 group-open:hidden">· newest v{sortedHistory[0].pass_number}</span>
+          </summary>
+          <div className="space-y-0.5 mt-1 max-h-72 overflow-y-auto pr-1">
+            {sortedHistory.map(h => (
+              <div key={h.pass_id} className="text-xs text-slate-500 px-2 py-1 bg-slate-900 rounded">
+                Version {h.pass_number} ({h.pass_type}) — {new Date(h.created_at).toLocaleString()}
+                {h.changes_made && Object.values(h.changes_made).some(count => count > 0) ? ' · changes made' : ''}
               </div>
             ))}
           </div>
-        </div>
+        </details>
       )}
 
       {content && (

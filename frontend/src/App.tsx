@@ -1,13 +1,16 @@
+import { Suspense, lazy } from 'react'
 import Layout from './components/Layout'
 import { useUiStore } from './store/uiStore'
-import AssistantPage from './pages/AssistantPage'
-import ProjectsPage from './pages/ProjectsPage'
-import FramesPage from './pages/FramesPage'
-import GraphPage from './pages/GraphPage'
-import ProjectionsPage from './pages/ProjectionsPage'
-import SpacesPage from './pages/SpacesPage'
-import FeedbackPage from './pages/FeedbackPage'
-import SettingsPage from './pages/SettingsPage'
+
+const AssistantPage = lazy(() => import('./pages/AssistantPage'))
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage'))
+const FramesPage = lazy(() => import('./pages/FramesPage'))
+const GraphPage = lazy(() => import('./pages/GraphPage'))
+const ProjectionsPage = lazy(() => import('./pages/ProjectionsPage'))
+const SpacesPage = lazy(() => import('./pages/SpacesPage'))
+const SkillsPage = lazy(() => import('./pages/SkillsPage'))
+const FeedbackPage = lazy(() => import('./pages/FeedbackPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 function App() {
   const page = useUiStore(s => s.page)
@@ -20,13 +23,20 @@ function App() {
       case 'graph':       return <GraphPage />
       case 'projections': return <ProjectionsPage />
       case 'spaces':      return <SpacesPage />
+      case 'skills':      return <SkillsPage />
       case 'feedback':    return <FeedbackPage />
       case 'settings':    return <SettingsPage />
       default:            return <AssistantPage />
     }
   }
 
-  return <Layout>{renderPage()}</Layout>
+  return (
+    <Layout>
+      <Suspense fallback={<div className="page-loading">Loading...</div>}>
+        {renderPage()}
+      </Suspense>
+    </Layout>
+  )
 }
 
 export default App

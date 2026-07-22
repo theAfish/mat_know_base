@@ -4,17 +4,36 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
+from contextvars import ContextVar
+from functools import wraps
 from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import ValidationError
 
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
 from mkb.db.models import CanonicalWorkflow, RawWorkflowExtraction, WorkflowIndexEntry
 from mkb.workflows.canonical_contract import CanonicalWorkflowGraph
 from mkb.workflows.schema_library import get_schema_library_payload
 from mkb.workflows.indexing import build_index_entries
-from mkb.workflows.validation import json_safe_validation_errors
+from mkb.workflows.validation import compact_validation_errors
+from mkb.workflows.editing import (
+    compact_value as _compact_value,
+    replace_by_id as _replace_by_id,
+    replace_by_raw_ids as _replace_by_raw_ids,
+)
+
+
+_runtime: ContextVar[AgentRuntime | None] = ContextVar(
+    "workflow_canonicalization_runtime", default=None
+)
+
+
+def _session():
+    runtime = _runtime.get()
+    if runtime is None:
+        raise RuntimeError("Canonicalization tools require a bound AgentRuntime")
+    return runtime.database.session()
 
 
 def _uuid(value: str) -> uuid.UUID | None:
@@ -37,6 +56,64 @@ def _draft_template(row: CanonicalWorkflow, raw: RawWorkflowExtraction) -> dict[
         "granularity_mappings": [],
         "proposed_schema_updates": [],
     }
+
+
+def _raw_graph_context(raw_graph: dict) -> dict:
+    nodes = raw_graph.get("nodes") if isinstance(raw_graph.get("nodes"), list) else []
+    edges = raw_graph.get("edges") if isinstance(raw_graph.get("edges"), list) else []
+    return {
+        "schema_version": raw_graph.get("schema_version"),
+        "paper_id": raw_graph.get("paper_id"),
+        "extraction_id": raw_graph.get("extraction_id"),
+        "nodes": [
+            {
+                "node_id": node.get("node_id"),
+                "raw_name": node.get("raw_name"),
+                "canonical_name": node.get("canonical_name"),
+                "node_kind": node.get("node_kind") or node.get("node_kind_guess"),
+                "semantic_type": node.get("semantic_type"),
+                "parameters": _compact_value(node.get("parameters", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "identity": _compact_value(node.get("identity", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "state": _compact_value(node.get("state", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "role": _compact_value(node.get("role", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "context": _compact_value(node.get("context", {}), string_limit=500, list_limit=15, dict_limit=20),
+                "evidence_text": _compact_value(node.get("evidence_text", ""), string_limit=800),
+                "confidence": node.get("confidence"),
+            }
+            for node in nodes
+            if isinstance(node, dict)
+        ],
+        "edges": [
+            {
+                "edge_id": edge.get("edge_id"),
+                "source_node": edge.get("source_node"),
+                "target_node": edge.get("target_node"),
+                "relation_type": edge.get("relation_type"),
+                "evidence_text": _compact_value(edge.get("evidence_text", ""), string_limit=600),
+                "confidence": edge.get("confidence"),
+            }
+            for edge in edges
+            if isinstance(edge, dict)
+        ],
+        "reproducibility": _compact_value(raw_graph.get("reproducibility", {}), string_limit=600, list_limit=20, dict_limit=20),
+        "unresolved_information": _compact_value(raw_graph.get("unresolved_information", []), string_limit=600, list_limit=30, dict_limit=20),
+        "note": "This is a compact raw workflow context; final validation still uses the full server-side raw graph.",
+    }
+
+
+def _normalize_canonical_payload(payload: dict, row: CanonicalWorkflow, raw: RawWorkflowExtraction) -> dict:
+    normalized = deepcopy(payload if isinstance(payload, dict) else {})
+    normalized["schema_version"] = row.schema_version
+    normalized["canonicalization_id"] = str(row.canonicalization_id)
+    normalized["paper_id"] = str(row.project_id)
+    normalized["raw_extraction_id"] = str(raw.extraction_id)
+    for key in (
+        "nodes", "edges", "raw_to_canonical_mappings", "unmatched_raw_information",
+        "granularity_mappings", "proposed_schema_updates",
+    ):
+        if not isinstance(normalized.get(key), list):
+            normalized[key] = []
+    return normalized
 
 
 def _load_row_and_raw(session, canonicalization_id: str):
@@ -127,33 +204,9 @@ def _save_draft(row: CanonicalWorkflow, draft: dict[str, Any], *, summary: str |
     }
 
 
-def _replace_by_id(items: list[dict[str, Any]], id_key: str, item: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    item_id = item.get(id_key)
-    if not isinstance(item_id, str) or not item_id.strip():
-        raise ValueError(f"{id_key} is required")
-    for index, existing in enumerate(items):
-        if existing.get(id_key) == item_id:
-            items[index] = item
-            return items, "updated"
-    items.append(item)
-    return items, "added"
-
-
-def _replace_by_raw_ids(items: list[dict[str, Any]], item: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    raw_ids = tuple(item.get("raw_node_ids") or [])
-    if not raw_ids:
-        raise ValueError("raw_node_ids is required")
-    for index, existing in enumerate(items):
-        if tuple(existing.get("raw_node_ids") or []) == raw_ids:
-            items[index] = item
-            return items, "updated"
-    items.append(item)
-    return items, "added"
-
-
 def get_canonicalization_context(canonicalization_id: str) -> dict:
     """Load the raw graph and current schema library for a pending run."""
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -162,14 +215,14 @@ def get_canonicalization_context(canonicalization_id: str) -> dict:
             "canonicalization_id": str(row.canonicalization_id),
             "paper_id": str(row.project_id),
             "raw_extraction_id": str(raw.extraction_id),
-            "raw_graph": raw.graph,
+            "raw_graph": _raw_graph_context(raw.graph or {}),
             "schema_library": get_schema_library_payload(row.schema_version),
         }
 
 
 def get_canonical_workflow_checkpoint(canonicalization_id: str) -> dict:
     """Read the latest saved checkpoint for an unfinished canonical workflow."""
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -197,7 +250,7 @@ def checkpoint_canonical_workflow(canonicalization_id: str, summary: str) -> dic
     if not isinstance(summary, str) or not summary.strip():
         return {"error": "summary is required"}
 
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -217,7 +270,7 @@ def upsert_canonical_node(canonicalization_id: str, node: dict) -> dict:
     """Add or replace one draft canonical node by node_id."""
     if not isinstance(node, dict):
         return {"error": "node must be a JSON object"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -238,7 +291,7 @@ def upsert_canonical_edge(canonicalization_id: str, edge: dict) -> dict:
     """Add or replace one draft canonical edge by edge_id."""
     if not isinstance(edge, dict):
         return {"error": "edge must be a JSON object"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -259,7 +312,7 @@ def upsert_raw_to_canonical_mapping(canonicalization_id: str, mapping: dict) -> 
     """Add or replace one draft raw-to-canonical mapping by raw_node_ids."""
     if not isinstance(mapping, dict):
         return {"error": "mapping must be a JSON object"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -283,7 +336,7 @@ def upsert_unmatched_raw_information(canonicalization_id: str, item: dict) -> di
     """Add or replace one unmatched-raw entry by raw_node_ids."""
     if not isinstance(item, dict):
         return {"error": "item must be a JSON object"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -326,7 +379,7 @@ def upsert_canonical_draft_batch(
         return {"error": "granularity_mappings must be a JSON array"}
     if proposed_schema_updates is not None and not isinstance(proposed_schema_updates, list):
         return {"error": "proposed_schema_updates must be a JSON array"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -380,7 +433,7 @@ def replace_granularity_mappings(canonicalization_id: str, items: list[dict]) ->
     """Replace the draft granularity_mappings list."""
     if not isinstance(items, list):
         return {"error": "items must be a JSON array"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -398,7 +451,7 @@ def replace_proposed_schema_updates(canonicalization_id: str, items: list[dict])
     """Replace the draft proposed_schema_updates list."""
     if not isinstance(items, list):
         return {"error": "items must be a JSON array"}
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -414,7 +467,7 @@ def replace_proposed_schema_updates(canonicalization_id: str, items: list[dict])
 
 def save_canonical_workflow(canonicalization_id: str, graph: dict | None = None) -> dict:
     """Validate and finalize one append-only canonical workflow."""
-    with SyncSessionLocal() as session:
+    with _session() as session:
         row, raw, error = _load_row_and_raw(session, canonicalization_id)
         if error:
             return error
@@ -425,13 +478,14 @@ def save_canonical_workflow(canonicalization_id: str, graph: dict | None = None)
         payload = graph if isinstance(graph, dict) else _ensure_draft(row, raw)
         if not isinstance(payload, dict):
             return {"error": "graph must be a JSON object"}
+        payload = _normalize_canonical_payload(payload, row, raw)
 
         try:
             validated = CanonicalWorkflowGraph.model_validate(payload)
         except ValidationError as exc:
             return {
                 "error": "Canonical workflow validation failed",
-                "details": json_safe_validation_errors(exc),
+                "details": compact_validation_errors(exc),
             }
 
         cid = row.canonicalization_id
@@ -507,3 +561,20 @@ CANONICALIZATION_TOOLS = [
     replace_proposed_schema_updates,
     save_canonical_workflow,
 ]
+
+
+def canonicalization_tools(runtime: AgentRuntime):
+    """Bind canonicalization operations to one client-owned database."""
+
+    def bind(operation):
+        @wraps(operation)
+        def tool(*args, **kwargs):
+            token = _runtime.set(runtime)
+            try:
+                return operation(*args, **kwargs)
+            finally:
+                _runtime.reset(token)
+
+        return tool
+
+    return [bind(operation) for operation in CANONICALIZATION_TOOLS]

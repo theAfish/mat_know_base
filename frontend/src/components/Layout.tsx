@@ -11,6 +11,7 @@ const NAV_ITEMS: { page: Page; label: string; icon: string }[] = [
   { page: 'graph',       label: 'Dataset Graph',       icon: '🕸️' },
   { page: 'projections', label: 'Projections',         icon: '📊' },
   { page: 'spaces',      label: 'Spaces',              icon: '🗂️' },
+  { page: 'skills',      label: 'Skills',              icon: '🧠' },
   { page: 'feedback',    label: 'Feedback',            icon: '💬' },
   { page: 'settings',    label: 'Settings',            icon: '⚙️' },
 ]

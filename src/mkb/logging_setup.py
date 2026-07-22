@@ -10,8 +10,9 @@ Two modes are supported, selected via ``MKB_LOG_LEVEL`` (or
   clamped to WARNING; MinerU's loguru sink is suppressed except for
   warnings/errors.
 
-In both modes ``mkb.log`` always records the full DEBUG stream on disk
-(rotating), so post-mortem inspection is always available.
+``mkb.log`` records at the configured level and is retained across restarts
+using size-based rotation. Common credentials and signed URL parameters are
+redacted from every configured handler.
 MinerU / PDF processor output (both local loguru and API stdlib) is
 additionally written to ``mineru.log``.
 """
@@ -21,6 +22,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,8 +48,38 @@ _NOISY_LIBS = (
 # Loggers that we always want to surface from our own code.
 _APP_LOGGERS = ("mkb",)
 
+_REDACTION_PATTERNS = (
+    re.compile(
+        r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?)([^\s\"',;}]+)"
+    ),
+    re.compile(
+        r"(?i)((?:api[_-]?key|access[_-]?key|token|password|secret|credential)"
+        r"[\"']?\s*[:=]\s*[\"']?)([^\s\"',;}]+)"
+    ),
+    re.compile(r"(?i)(https?://[^\s/:@]+:)([^\s/@]+)(@)"),
+    re.compile(
+        r"(?i)([?&](?:x-amz-signature|x-amz-credential|signature|token)=)([^&\s]+)"
+    ),
+)
 
-def _coerce_level(value: str | int | None, default: int = logging.DEBUG) -> int:
+
+def redact_sensitive(value: str) -> str:
+    """Redact recognizable secrets without mutating the underlying record."""
+    redacted = value
+    for pattern in _REDACTION_PATTERNS:
+        if pattern.groups == 3:
+            redacted = pattern.sub(r"\1[REDACTED]\3", redacted)
+        else:
+            redacted = pattern.sub(r"\1[REDACTED]", redacted)
+    return redacted
+
+
+class RedactingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_sensitive(super().format(record))
+
+
+def _coerce_level(value: str | int | None, default: int = logging.INFO) -> int:
     if value is None:
         return default
     if isinstance(value, int):
@@ -82,7 +114,7 @@ def setup_logging(
             configured_level = settings.log_level
     else:
         configured_level = level
-    resolved_level = _coerce_level(configured_level, logging.DEBUG)
+    resolved_level = _coerce_level(configured_level, logging.INFO)
     resolved_dir = Path(log_dir or settings.log_dir).resolve()
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,32 +135,24 @@ def setup_logging(
     # call ``basicConfig`` and leave handlers behind.
     for h in list(root.handlers):
         root.removeHandler(h)
-    root.setLevel(logging.DEBUG)  # capture everything; handlers filter.
+    root.setLevel(resolved_level)
 
     console = logging.StreamHandler(stream=sys.stderr)
     console.setLevel(resolved_level)
-    console.setFormatter(logging.Formatter(console_fmt))
+    console.setFormatter(RedactingFormatter(console_fmt))
     root.addHandler(console)
 
-    # Single rolling file always captures the full DEBUG stream; the
-    # console handler applies the user-selected level for on-screen output.
+    # Rolling logs append across restarts and obey the configured level.
     max_bytes = max(1, int(settings.log_file_max_mb)) * 1024 * 1024
     backups = max(0, int(settings.log_file_backup_count))
-    # RotatingFileHandler forces mode='a' when maxBytes>0, so truncate
-    # the files explicitly here so each startup begins with a clean slate.
-    for _fname in ("mkb.log", "mineru.log"):
-        try:
-            (resolved_dir / _fname).open("w").close()
-        except OSError:
-            pass
     main_file = logging.handlers.RotatingFileHandler(
         resolved_dir / "mkb.log",
         maxBytes=max_bytes,
         backupCount=backups,
         encoding="utf-8",
     )
-    main_file.setLevel(logging.DEBUG)
-    main_file.setFormatter(logging.Formatter(file_fmt))
+    main_file.setLevel(resolved_level)
+    main_file.setFormatter(RedactingFormatter(file_fmt))
     root.addHandler(main_file)
 
     # Application loggers — explicit level so child loggers behave.
@@ -158,7 +182,7 @@ def setup_logging(
         encoding="utf-8",
     )
     mineru_handler.setLevel(logging.DEBUG if is_debug else logging.WARNING)
-    mineru_handler.setFormatter(logging.Formatter(file_fmt))
+    mineru_handler.setFormatter(RedactingFormatter(file_fmt))
     # mkb.processors covers the MinerU API backend logger.
     logging.getLogger("mkb.processors").addHandler(mineru_handler)
 

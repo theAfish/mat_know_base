@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import (
     FrameStatus,
     KnowledgeFrame,
@@ -97,6 +97,8 @@ def save_knowledge_frame(
     project_id: str,
     content: dict,
     summary: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Save or update a knowledge frame for a research project.
 
@@ -132,13 +134,13 @@ def save_knowledge_frame(
     for w in warnings:
         logger.warning("Frame validation: %s (project %s)", w, project_id)
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         project = session.query(ResearchProject).filter_by(project_id=pid).first()
         if not project:
             return {"error": f"Project {project_id} not found."}
 
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
-        asset_ids = [str(l.asset_id) for l in links]
+        asset_ids = [str(link.asset_id) for link in links]
         source_meta = {
             "project_label": project.label,
             "source_path": project.source_path,
@@ -176,7 +178,7 @@ def save_knowledge_frame(
         return {"frame_id": str(frame.frame_id), "status": "created"}
 
 
-def get_existing_frame(project_id: str) -> dict:
+def get_existing_frame(project_id: str, *, runtime: AgentRuntime) -> dict:
     """Get the existing knowledge frame for a project, if any.
 
     Returns the frame content and metadata, or an indication that none exists.
@@ -186,7 +188,7 @@ def get_existing_frame(project_id: str) -> dict:
     if not pid:
         return {"exists": False, "error": invalid_identifier_message("project_id", project_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if not frame:
             return {"exists": False}
@@ -209,6 +211,8 @@ def update_knowledge_frame(
     modifications: list | None = None,
     removals: list | None = None,
     review_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Apply incremental updates to an existing knowledge frame.
 
@@ -248,7 +252,7 @@ def update_knowledge_frame(
         except (json.JSONDecodeError, TypeError):
             removals = None
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if not frame:
             return {"error": f"No frame found for project {project_id}."}
@@ -322,8 +326,21 @@ def update_knowledge_frame(
         }
 
 
-FRAME_TOOLS = [
+FRAME_OPERATIONS = [
     save_knowledge_frame,
     get_existing_frame,
     update_knowledge_frame,
 ]
+
+
+def frame_tools(runtime: AgentRuntime):
+    """Return frame tools bound to one client-owned database."""
+
+    return bind_tools(FRAME_OPERATIONS, runtime)
+
+
+# Compatibility export for callers that have not yet been converted to the
+# per-client factory.  It deliberately contains unbound operations: registering
+# these directly is rejected by ADK rather than silently selecting a process
+# global database.
+FRAME_TOOLS = FRAME_OPERATIONS

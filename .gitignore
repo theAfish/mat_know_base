@@ -17,16 +17,14 @@ build/
 *.swo
 *~
 
+.vscode/
+
 # Environment
 .env
 
 # Data
-data/inbox/*
-!data/inbox/.gitkeep
-
-data/processed/*
-data/papers/*
-data/uploads/*
+data/
+migration-snapshots/
 
 # Docker volumes
 docker_volumes/

@@ -2,6 +2,7 @@ import json
 import uuid
 from unittest.mock import MagicMock, patch
 
+from mkb.agents.runtime import AgentRuntime
 from mkb.agents.tools.feedback import get_pending_feedback
 from mkb.agents.tools.projection import _compact_json_payload
 from mkb.agents.tools.reading import read_image_metadata
@@ -9,13 +10,27 @@ from mkb.db.models import KnowledgeFrame, Projection
 
 
 def test_get_pending_feedback_handles_invalid_project_identifier_gracefully():
-    result = get_pending_feedback("project_id=not-a-uuid")
+    from mkb.agents.runtime import AgentRuntime
+
+    result = get_pending_feedback(
+        "project_id=not-a-uuid",
+        runtime=AgentRuntime(database=object()),
+    )
 
     assert result == [{"error": "Invalid project_id: 'project_id=not-a-uuid'"}]
 
 
 def test_read_image_metadata_handles_invalid_asset_identifier_gracefully():
-    result = read_image_metadata("Figure 1B from the AMTN paper")
+    from mkb.agents.runtime import AgentRuntime
+
+    session = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = session
+    context.__exit__.return_value = False
+    result = read_image_metadata(
+        "Figure 1B from the AMTN paper",
+        runtime=AgentRuntime(database=MagicMock(session=lambda: context)),
+    )
 
     assert result == "Invalid asset_id: 'Figure 1B from the AMTN paper'"
 
@@ -75,20 +90,18 @@ def test_request_frame_clarification_appends_well_formed_annotation():
         "clarification_summary": "Added missing synthesis temperature of 800 °C.",
     }
 
+    runtime = AgentRuntime(database=MagicMock(session=session_factory_side_effect))
     with patch(
-        "mkb.agents.tools.projection.SyncSessionLocal",
-        side_effect=session_factory_side_effect,
+        "mkb.agents.clarification.run_clarification_in_thread",
+        return_value=clarification_result,
     ):
-        with patch(
-            "mkb.agents.clarification.run_clarification_in_thread",
-            return_value=clarification_result,
-        ):
-            result = request_frame_clarification(
-                projection_id=str(projection_id),
-                question="What is the synthesis temperature?",
-                context="Paper mentions a synthesis step.",
-                field="synthesis.temperature",
-            )
+        result = request_frame_clarification(
+            projection_id=str(projection_id),
+            question="What is the synthesis temperature?",
+            context="Paper mentions a synthesis step.",
+            field="synthesis.temperature",
+            runtime=runtime,
+        )
 
     assert result == clarification_result
 
@@ -158,18 +171,16 @@ def test_request_frame_clarification_skips_annotation_when_frame_missing():
 
     clarification_result = {"updated": False, "clarification_summary": "No change needed."}
 
+    runtime = AgentRuntime(database=MagicMock(session=session_factory_side_effect))
     with patch(
-        "mkb.agents.tools.projection.SyncSessionLocal",
-        side_effect=session_factory_side_effect,
+        "mkb.agents.clarification.run_clarification_in_thread",
+        return_value=clarification_result,
     ):
-        with patch(
-            "mkb.agents.clarification.run_clarification_in_thread",
-            return_value=clarification_result,
-        ):
-            result = request_frame_clarification(
-                projection_id=str(projection_id),
-                question="Is there a control group?",
-            )
+        result = request_frame_clarification(
+            projection_id=str(projection_id),
+            question="Is there a control group?",
+            runtime=runtime,
+        )
 
     # Should still return the clarification result despite the missing frame
     assert result == clarification_result
@@ -208,7 +219,7 @@ def test_compact_json_payload_trims_large_strings_lists_and_dicts():
 
 
 def _make_update_projection_session(fake_projection, fake_frame):
-    """Return a context-manager mock for SyncSessionLocal."""
+    """Return a session context manager for an injected database adapter."""
 
     def query_side_effect(cls):
         q = MagicMock()
@@ -247,12 +258,12 @@ def test_update_projection_parses_json_string_inputs():
 
     additions_str = json.dumps({"records": [{"name": "new_item"}]})
 
-    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
-        with patch("mkb.agents.tools.projection.write_projection_trace"):
-            result = update_projection(
-                projection_id=str(projection_id),
-                additions=additions_str,
-            )
+    with patch("mkb.agents.tools.projection.write_projection_trace"):
+        result = update_projection(
+            projection_id=str(projection_id),
+            additions=additions_str,
+            runtime=AgentRuntime(database=MagicMock(session=lambda: cm)),
+        )
 
     assert result["changes_made"]["additions"] == 1
     assert result["changes_made"]["removals"] == 0
@@ -277,12 +288,12 @@ def test_update_projection_additions_append_to_existing_list():
 
     cm, session = _make_update_projection_session(fake_projection, fake_frame)
 
-    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
-        with patch("mkb.agents.tools.projection.write_projection_trace"):
-            update_projection(
-                projection_id=str(projection_id),
-                additions={"records": [{"name": "beta"}, {"name": "gamma"}]},
-            )
+    with patch("mkb.agents.tools.projection.write_projection_trace"):
+        update_projection(
+            projection_id=str(projection_id),
+            additions={"records": [{"name": "beta"}, {"name": "gamma"}]},
+            runtime=AgentRuntime(database=MagicMock(session=lambda: cm)),
+        )
 
     updated_data = fake_projection.data
     assert len(updated_data["records"]) == 3
@@ -316,12 +327,12 @@ def test_update_projection_removals_applied_in_descending_index_order():
         {"key": "records", "index": 3, "reason": "irrelevant"},
     ]
 
-    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
-        with patch("mkb.agents.tools.projection.write_projection_trace"):
-            result = update_projection(
-                projection_id=str(projection_id),
-                removals=removals,
-            )
+    with patch("mkb.agents.tools.projection.write_projection_trace"):
+        result = update_projection(
+            projection_id=str(projection_id),
+            removals=removals,
+            runtime=AgentRuntime(database=MagicMock(session=lambda: cm)),
+        )
 
     assert result["changes_made"]["removals"] == 2
     remaining_names = [r["name"] for r in fake_projection.data["records"]]
@@ -348,12 +359,12 @@ def test_update_projection_injects_source_project_id_when_frame_exists():
 
     cm, session = _make_update_projection_session(fake_projection, fake_frame)
 
-    with patch("mkb.agents.tools.projection.SyncSessionLocal", return_value=cm):
-        with patch("mkb.agents.tools.projection.write_projection_trace"):
-            update_projection(
-                projection_id=str(projection_id),
-                additions={"records": [{"name": "item_a"}]},
-            )
+    with patch("mkb.agents.tools.projection.write_projection_trace"):
+        update_projection(
+            projection_id=str(projection_id),
+            additions={"records": [{"name": "item_a"}]},
+            runtime=AgentRuntime(database=MagicMock(session=lambda: cm)),
+        )
 
     records = fake_projection.data["records"]
     assert len(records) == 1

@@ -17,10 +17,10 @@ RAW_WORKFLOW_SCHEMA_VERSION = "workflow-cards/2.0"
 LEGACY_RAW_WORKFLOW_SCHEMA_VERSION = "raw-workflow/1.0"
 EXTRACTOR_VERSION = "workflow-extractor/2.0"
 
-NodeKind = Literal["object", "operation", "unknown"]
+NodeKind = Literal["object", "operation", "planning", "reasoning", "unknown"]
 RelationType = Literal[
     "input_to", "produces", "same_as", "part_of", "has_part",
-    "expands_to", "summarized_by",
+    "expands_to", "summarized_by", "motivates", "leads_to",
 ]
 
 
@@ -74,7 +74,7 @@ class RawWorkflowNode(BaseModel):
     ontology_status: Literal["matched", "candidate", "unmapped"] = "unmapped"
 
     # Evidence/provenance stays on every instance. These compatibility fields
-    # also make all previously stored v1 graphs readable.
+    # are filled automatically for new graphs and keep old v1 graphs readable.
     raw_name: str = Field(min_length=1)
     node_kind_guess: NodeKind
     attributes_explicitly_mentioned: dict[str, Any] = Field(default_factory=dict)
@@ -89,7 +89,9 @@ class RawWorkflowNode(BaseModel):
             return value
         data = dict(value)
         data.setdefault("canonical_name", data.get("short_name_guess") or data.get("raw_name"))
+        data.setdefault("raw_name", data.get("canonical_name") or data.get("label") or data.get("node_id"))
         data.setdefault("node_kind", data.get("node_kind_guess"))
+        data.setdefault("node_kind_guess", data.get("node_kind"))
         data.setdefault("semantic_type", data.get("node_category_guess") or data.get("node_kind_guess"))
         data.setdefault("parameters", data.get("parameter_fields") or data.get("attributes_explicitly_mentioned") or {})
         data.setdefault("identity", data.get("identity_fields") or {})
@@ -167,14 +169,28 @@ class RawWorkflowGraph(BaseModel):
             if edge.source_node not in by_id or edge.target_node not in by_id:
                 raise ValueError(f"edge {edge.edge_id} references an unknown node")
             source, target = by_id[edge.source_node], by_id[edge.target_node]
+            source_kind, target_kind = source.node_kind, target.node_kind
+            if (
+                edge.relation_type not in {"same_as", "part_of", "has_part", "expands_to", "summarized_by"}
+                and source_kind not in {"planning", "reasoning"}
+                and (source_kind, target_kind) not in {("object", "operation"), ("operation", "object")}
+            ):
+                raise ValueError(
+                    f"illegal workflow edge: {source_kind} -> {target_kind}; "
+                    "only object -> operation, operation -> object, or planning/reasoning -> * are allowed"
+                )
             if edge.relation_type == "input_to" and not (
-                source.node_kind == "object" and target.node_kind == "operation"
+                source_kind == "object" and target_kind == "operation"
             ):
                 raise ValueError("input_to must connect object -> operation")
             if edge.relation_type == "produces" and not (
-                source.node_kind == "operation" and target.node_kind == "object"
+                source_kind == "operation" and target_kind == "object"
             ):
                 raise ValueError("produces must connect operation -> object")
+            if edge.relation_type in {"motivates", "leads_to"} and source_kind not in {
+                "planning", "reasoning",
+            }:
+                raise ValueError(f"{edge.relation_type} must start from planning or reasoning")
         return self
 
 
@@ -190,5 +206,5 @@ ID_CONVENTIONS = {
     "extraction": "UUID",
     "node_instance": "raw:<extraction UUID>:n<zero-padded integer>",
     "edge_instance": "raw:<extraction UUID>:e<zero-padded integer>",
-    "ontology_card": "card:<ontology version>:<object|operation>:<slug>",
+    "ontology_card": "card:<ontology version>:<object|operation|planning|reasoning>:<slug>",
 }

@@ -19,6 +19,12 @@ def audit_raw_graph(graph: dict, *, low_confidence_threshold: float = 0.5, later
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     by_id = {node.get("node_id"): node for node in nodes}
+    if len(nodes) > 1 and not edges:
+        flags.append({
+            "type": "missing_workflow_edges",
+            "item_type": "graph",
+            "item_id": graph.get("extraction_id"),
+        })
     for item_type, items, id_key in (("node", nodes, "node_id"), ("edge", edges, "edge_id")):
         for item in items:
             if float(item.get("confidence", 0)) < low_confidence_threshold:
@@ -37,10 +43,13 @@ def audit_raw_graph(graph: dict, *, low_confidence_threshold: float = 0.5, later
         source, target = by_id.get(edge.get("source_node")), by_id.get(edge.get("target_node"))
         relation = edge.get("relation_type")
         impossible = not source or not target
-        impossible |= relation == "input_to" and (source or {}).get("node_kind_guess") != "object"
-        impossible |= relation == "input_to" and (target or {}).get("node_kind_guess") != "operation"
-        impossible |= relation == "produces" and (source or {}).get("node_kind_guess") != "operation"
-        impossible |= relation == "produces" and (target or {}).get("node_kind_guess") != "object"
+        source_kind = (source or {}).get("node_kind") or (source or {}).get("node_kind_guess")
+        target_kind = (target or {}).get("node_kind") or (target or {}).get("node_kind_guess")
+        impossible |= relation == "input_to" and source_kind != "object"
+        impossible |= relation == "input_to" and target_kind != "operation"
+        impossible |= relation == "produces" and source_kind != "operation"
+        impossible |= relation == "produces" and target_kind != "object"
+        impossible |= relation in {"motivates", "leads_to"} and source_kind not in {"planning", "reasoning"}
         if impossible:
             flags.append({"type": "impossible_edge", "item_type": "edge", "item_id": edge.get("edge_id")})
     granular_pairs = {(e.get("source_node"), e.get("target_node")) for e in edges if e.get("relation_type") in {"part_of", "has_part", "expands_to", "summarized_by"}}

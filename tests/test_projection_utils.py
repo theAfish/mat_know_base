@@ -1,13 +1,13 @@
 from mkb.agents.tools.projection import _inject_source_project_references
 from mkb.spaces.schema_utils import normalize_extraction_schema, normalize_projection_data
-from mkb.ui.pages.projections import (
-    _build_projection_section_rows,
-    _default_visible_columns,
-    _filter_latest_projections,
-    _mapping_to_rows,
-    _paginate_table_rows,
-    _paper_folder_name,
-    _projection_to_section_rows,
+from mkb.services.projection_views import (
+    build_projection_section_rows as _build_projection_section_rows,
+    default_visible_columns as _default_visible_columns,
+    filter_latest_projections as _filter_latest_projections,
+    mapping_to_rows as _mapping_to_rows,
+    paginate_table_rows as _paginate_table_rows,
+    paper_folder_name as _paper_folder_name,
+    projection_to_section_rows as _projection_to_section_rows,
 )
 
 

@@ -48,7 +48,7 @@ def build_projection_prompt(
     domain: str,
     system_prompt: str,
     extraction_schema: dict,
-    field_descriptions: dict,
+    field_descriptions: dict | None = None,
     purpose: str | None = None,
     source_type: str = "frame",
     source_id: str | None = None,
@@ -59,8 +59,9 @@ def build_projection_prompt(
     Args:
         domain: Research domain name.
         system_prompt: Domain-specific instructions.
-        extraction_schema: JSON schema defining what fields to extract.
-        field_descriptions: Per-field extraction guidance.
+        extraction_schema: JSON schema defining what fields to extract. Field
+            guidance should live in schema ``description`` values.
+        field_descriptions: Legacy guidance field. Ignored by the prompt.
         purpose: Space purpose (tabular_database | qa_benchmark | skill_cards | freeform).
             When ``qa_benchmark`` is supplied, a per-question isolation addendum is
             appended so each emitted item is a standalone mat_agent_bench task.
@@ -73,7 +74,6 @@ def build_projection_prompt(
         Complete prompt string for the projection agent.
     """
     schema_str = json.dumps(extraction_schema, indent=2)
-    field_desc_str = "\n".join(f"- **{k}**: {v}" for k, v in field_descriptions.items())
 
     source_kind = (source_type or "frame").strip().lower()
     project_id_for_images = project_id or (source_id if source_kind == "markdown" else None) or ""
@@ -192,10 +192,6 @@ Domain: {domain}
 ```json
 {schema_str}
 ```
-
-# Field Guidance
-
-{field_desc_str}
 
 ---
 

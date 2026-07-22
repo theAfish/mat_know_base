@@ -6,7 +6,6 @@ import any router from here (would create cycles).
 """
 from __future__ import annotations
 
-import ctypes
 import queue
 import threading
 import uuid
@@ -14,11 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from mkb import api
 from mkb.agents._utils import JobCancelled
 from mkb.agents.orchestrator import create_orchestrator_runner
 from mkb.agents.tools.orchestrator_tools import get_pending_workflows
 from mkb.config import settings
+from mkb.jobs import JobStore, MemoryJobStore
+from mkb.web.job_actions import action_for_workflow_kind, start_job_action
 
 _EVENT_LIMIT = 60
 
@@ -53,14 +53,21 @@ class AssistantSession:
 
 
 class JobManager:
-    def __init__(self, max_concurrent: int | None = None) -> None:
+    def __init__(self, max_concurrent: int | None = None, store: JobStore | None = None) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._queues: dict[str, queue.Queue] = {}
         self._lock = threading.Lock()
         self._cancelled: set[str] = set()
-        self._threads: dict[str, int] = {}  # job_id -> thread ident
+        self._store = store or MemoryJobStore()
         limit = max_concurrent if max_concurrent is not None else settings.max_concurrent_jobs
         self._semaphore = threading.Semaphore(max(1, limit))
+
+    def bind_store(self, store: JobStore) -> None:
+        """Bind persistence before the server begins accepting jobs."""
+        with self._lock:
+            if self._queues:
+                raise RuntimeError("Cannot replace the job store while jobs are active")
+            self._store = store
 
     def start_job(
         self,
@@ -71,25 +78,48 @@ class JobManager:
         project_id: str | None = None,
         args: tuple[Any, ...] | None = None,
         kwargs: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        active_key: str | None = None,
+        retryable: bool = False,
+        max_attempts: int = 1,
     ) -> str:
         job_id = str(uuid.uuid4())
         q: queue.Queue = queue.Queue()
 
+        now = _now_iso()
+        row = {
+            "job_id": job_id,
+            "kind": kind,
+            "label": label,
+            "status": "QUEUED",
+            "project_id": project_id,
+            "request_id": None,
+            "idempotency_key": idempotency_key,
+            "active_key": active_key,
+            "attempt_count": 0,
+            "max_attempts": max(1, max_attempts),
+            "retryable": retryable,
+            "cancel_requested": False,
+            "result": None,
+            "error": None,
+            "error_category": None,
+            "current_message": "Queued",
+            "events": [],
+            "created_at": now,
+            "queued_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": now,
+        }
+        try:
+            from mkb.web.request_context import request_id_var
+            row["request_id"] = request_id_var.get()
+        except ImportError:
+            pass
+        created = self._store.create(row)
         with self._lock:
             self._queues[job_id] = q
-            self._jobs[job_id] = {
-                "job_id": job_id,
-                "kind": kind,
-                "label": label,
-                "status": "QUEUED",
-                "project_id": project_id,
-                "result": None,
-                "error": None,
-                "current_message": "Queued",
-                "events": [],
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-            }
+            self._jobs[job_id] = created
 
         worker_args = args or ()
         worker_kwargs = dict(kwargs or {})
@@ -97,7 +127,8 @@ class JobManager:
         def progress_callback(event: dict[str, Any] | str) -> None:
             # Cooperative cancellation: raise before queuing any more work so
             # the worker unwinds at the next inter-step boundary.
-            if job_id in self._cancelled:
+            persisted = self._store.get(job_id)
+            if job_id in self._cancelled or (persisted and persisted.get("cancel_requested")):
                 raise JobCancelled()
             if isinstance(event, str):
                 q.put({"type": "progress", "message": event})
@@ -115,8 +146,6 @@ class JobManager:
                 if job_id in self._cancelled:
                     q.put({"type": "cancelled"})
                     return
-                with self._lock:
-                    self._threads[job_id] = threading.current_thread().ident  # type: ignore[assignment]
                 q.put({"type": "running"})
                 q.put({"type": "progress", "message": f"Started {label.lower()}"})
                 result = target(*worker_args, **worker_kwargs)
@@ -127,8 +156,6 @@ class JobManager:
                 q.put({"type": "error", "error": str(exc)})
             finally:
                 self._semaphore.release()
-                with self._lock:
-                    self._threads.pop(job_id, None)
 
         threading.Thread(target=runner, daemon=True).start()
         return job_id
@@ -161,6 +188,8 @@ class JobManager:
                     if et == "running":
                         job["status"] = "RUNNING"
                         job["current_message"] = "Running"
+                        job["started_at"] = _now_iso()
+                        job["attempt_count"] = int(job.get("attempt_count") or 0) + 1
                     elif et == "progress":
                         message = event.get("message") or event.get("label") or "Working"
                         job["current_message"] = str(message)
@@ -211,29 +240,41 @@ class JobManager:
                         if len(job["events"]) > _EVENT_LIMIT:
                             job["events"] = job["events"][-_EVENT_LIMIT:]
                         self._queues.pop(job_id, None)
+                        job["active_key"] = None
+                        job["finished_at"] = _now_iso()
                     elif et == "error":
                         job["status"] = "FAILED"
                         job["error"] = event.get("error") or "Unknown error"
                         job["current_message"] = job["error"]
                         self._queues.pop(job_id, None)
+                        job["active_key"] = None
+                        job["finished_at"] = _now_iso()
+                        job["error_category"] = "worker_error"
                     elif et == "cancelled":
                         job["status"] = "CANCELLED"
                         job["current_message"] = "Cancelled"
                         self._queues.pop(job_id, None)
+                        job["active_key"] = None
+                        job["finished_at"] = _now_iso()
                     job["updated_at"] = _now_iso()
+                    self._store.update(job_id, **{key: value for key, value in job.items() if key != "job_id"})
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         self._drain()
         with self._lock:
             job = self._jobs.get(job_id)
-            return dict(job) if job else None
+            if job is None:
+                job = self._store.get(job_id)
+                if job is not None:
+                    self._jobs[job_id] = job
+        return dict(job) if job else self._store.get(job_id)
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a QUEUED or RUNNING job.
 
         Returns True if the job was found and a cancellation was initiated.
-        QUEUED jobs are marked CANCELLED immediately; RUNNING jobs receive an
-        async exception via ctypes so the worker thread can clean up.
+        QUEUED jobs are marked CANCELLED immediately; RUNNING jobs observe the
+        request at cooperative progress/cancellation checkpoints.
         """
         self._drain()
         with self._lock:
@@ -248,21 +289,18 @@ class JobManager:
             # the user's intent immediately. The worker thread will still
             # unwind asynchronously; the drain loop ignores late events for
             # jobs already in a terminal state.
-            job["status"] = "CANCELLED"
+            job["status"] = "CANCELLED" if status == "QUEUED" else "CANCELLING"
+            job["cancel_requested"] = True
+            if status == "QUEUED":
+                job["active_key"] = None
+                job["finished_at"] = _now_iso()
             job["current_message"] = "Cancelled"
             job["updated_at"] = _now_iso()
             if status == "QUEUED":
                 # Thread is blocked on semaphore — the runner will see the
                 # cancellation flag when it wakes up and exit cleanly.
                 self._queues.pop(job_id, None)
-            thread_id = self._threads.get(job_id)
-
-        if thread_id is not None:
-            # Best-effort: raise JobCancelled in the worker thread.
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                ctypes.c_ulong(thread_id),
-                ctypes.py_object(JobCancelled),
-            )
+            self._store.update(job_id, **{key: value for key, value in job.items() if key != "job_id"})
         return True
 
     def cancel_all_active(self, *, project_id: str | None = None) -> list[str]:
@@ -285,44 +323,36 @@ class JobManager:
 
     def list_jobs(self, *, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         self._drain()
-        with self._lock:
-            rows = list(self._jobs.values())
-        if project_id is not None:
-            rows = [j for j in rows if j.get("project_id") == project_id]
-        _active = {"QUEUED", "RUNNING"}
-        rows.sort(
-            key=lambda j: (
-                0 if j.get("status") in _active else 1,
-                j.get("updated_at") or "",
-            ),
-            reverse=False,
-        )
-        # active jobs first (ascending order within active), then completed desc
-        active = [j for j in rows if j.get("status") in _active]
-        inactive = sorted(
-            [j for j in rows if j.get("status") not in _active],
-            key=lambda j: j.get("updated_at") or "",
-            reverse=True,
-        )
-        rows = active + inactive
-        return [dict(j) for j in rows[:limit]]
+        return self._store.list(limit=limit, project_id=project_id)
 
     def find_active_job(self, *, project_id: str | None = None, kind: str | None = None) -> dict[str, Any] | None:
         self._drain()
-        with self._lock:
-            for job in self._jobs.values():
-                if job.get("status") not in {"QUEUED", "RUNNING"}:
-                    continue
-                if project_id is not None and job.get("project_id") != project_id:
-                    continue
-                if kind is not None and job.get("kind") != kind:
-                    continue
-                return dict(job)
-        return None
+        try:
+            return self._store.find_active(project_id=project_id, kind=kind)
+        except Exception:
+            # Starting the job still requires a successful durable create, so
+            # this fallback cannot execute unpersisted work. It only keeps
+            # isolated adapters/tests able to inspect their local cache.
+            with self._lock:
+                for job in self._jobs.values():
+                    if job.get("status") not in {"QUEUED", "RUNNING", "CANCELLING"}:
+                        continue
+                    if project_id is not None and job.get("project_id") != project_id:
+                        continue
+                    if kind is not None and job.get("kind") != kind:
+                        continue
+                    return dict(job)
+            return None
+
+    def recover_interrupted(self) -> int:
+        """Mark work owned by a dead application process explicitly interrupted."""
+        return self._store.recover_interrupted()
 
 
 # ── Singletons shared by every router ────────────────────────────────────────
 
+# The web composition root replaces this temporary store with a
+# DatabaseJobStore built from the owning KnowledgeBase before accepting work.
 jobs = JobManager()
 assistant_lock = threading.Lock()
 assistant_session: AssistantSession | None = None
@@ -341,47 +371,9 @@ def _dispatch_pending_workflows() -> None:
     pending = get_pending_workflows()
     for req in pending:
         kind = req.get("kind", "workflow")
+        action = req.get("action") or action_for_workflow_kind(kind)
         pid = req.get("project_id")
         kwargs = req.get("kwargs", {})
         label = req.get("label", kind)
 
-        if kind == "extraction":
-            jobs.start_job(kind="extract", label=label, project_id=pid, target=api.extract, kwargs=kwargs)
-        elif kind == "projection":
-            proj_kwargs = {
-                "space_id": kwargs["space_id"],
-                "project_id": kwargs["project_id"],
-            }
-            if "source_type" in kwargs:
-                proj_kwargs["source_type"] = kwargs["source_type"]
-            jobs.start_job(
-                kind="project",
-                label=label,
-                project_id=pid,
-                target=api.project,
-                kwargs=proj_kwargs,
-            )
-        elif kind == "kg_extraction":
-            jobs.start_job(
-                kind="knowledge_graph",
-                label=label,
-                project_id=pid,
-                target=api.extract_knowledge_graph,
-                kwargs={"project_id": kwargs["project_id"]},
-            )
-        elif kind == "feedback_review":
-            jobs.start_job(
-                kind="feedback_review",
-                label=label,
-                project_id=pid,
-                target=api.review_feedback,
-                kwargs={"project_id": kwargs["project_id"]},
-            )
-        elif kind == "projection_review":
-            jobs.start_job(
-                kind="projection_review",
-                label=label,
-                project_id=pid,
-                target=api.review_projections,
-                kwargs={"space_id": kwargs["space_id"], "project_id": kwargs["project_id"]},
-            )
+        start_job_action(jobs, action, job_project_id=pid, label=label, **kwargs)

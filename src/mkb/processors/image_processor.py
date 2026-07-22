@@ -6,9 +6,7 @@ Extracts metadata and optionally performs OCR.
 import io
 import json
 import logging
-from pathlib import Path
 
-from mkb.db.models import ProcessingType
 from mkb.processors.base import ImageProcessor, ProcessingResult
 
 logger = logging.getLogger(__name__)

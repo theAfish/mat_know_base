@@ -16,8 +16,9 @@ from google.adk.agents import Agent
 from mkb.agents._utils import JobCancelled, create_llm, run_async_sync
 from mkb.agents.prompts.kb_extraction import EXTRACTION_PROMPT
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools import ALL_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.frames import frame_tools
+from mkb.agents.tools.reading import reading_tools
 from mkb.db.models import FrameStatus, KnowledgeFrame
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,13 @@ APP_NAME = "mkb_extraction"
 # =====================================================================
 
 
-def build_extraction_agent(model: str | None = None) -> Agent:
+def build_extraction_agent(runtime: AgentRuntime, model: str | None = None) -> Agent:
     """Create a configured extraction agent with all tools."""
     return Agent(
         name="knowledge_extractor",
         model=create_llm(model),
         instruction=EXTRACTION_PROMPT,
-        tools=ALL_TOOLS,
+        tools=reading_tools(runtime) + frame_tools(runtime),
     )
 
 
@@ -51,6 +52,7 @@ async def _run_extraction_async(
     verbose: bool = False,
     max_passes: int = 1,
     progress_callback=None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Core async extraction loop for one project."""
 
@@ -58,7 +60,9 @@ async def _run_extraction_async(
         if progress_callback:
             progress_callback({"message": message, **extra})
 
-    agent = build_extraction_agent(model)
+    if runtime is None:
+        raise ValueError("Extraction requires an explicit AgentRuntime")
+    agent = build_extraction_agent(runtime, model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"extract_{project_id}"
@@ -70,7 +74,7 @@ async def _run_extraction_async(
     frame_was_in_progress = False
 
     # Mark frame as in-progress
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         from mkb.db.models import ResearchProject
         project = db.query(ResearchProject).filter_by(project_id=project_id).first()
         if not project:
@@ -114,7 +118,7 @@ async def _run_extraction_async(
 
         if not result.success:
             _emit("Extraction failed", stage="failed", status="FAILED")
-            _mark_frame_failed(project_id, result.error)
+            _mark_frame_failed(project_id, result.error, runtime=runtime)
             return {
                 "status": "error",
                 "project_id": str(project_id),
@@ -123,7 +127,7 @@ async def _run_extraction_async(
 
         # Save initial extraction pass
         _emit("Initial extraction pass completed", stage="initial_pass")
-        _save_extraction_pass(project_id, pass_number=1, pass_type="initial")
+        _save_extraction_pass(project_id, pass_type="initial", runtime=runtime)
 
         # Passes 2..N: Review passes
         if max_passes > 1:
@@ -132,7 +136,12 @@ async def _run_extraction_async(
             for pass_num in range(2, max_passes + 1):
                 logger.info("Running review pass %d/%d for project %s", pass_num, max_passes, project_id)
                 _emit(f"Running review pass {pass_num}/{max_passes}", stage="review_pass")
-                review_result = await run_review_pass(project_id, model=model, verbose=verbose)
+                review_result = await run_review_pass(
+                    project_id,
+                    model=model,
+                    verbose=verbose,
+                    runtime=runtime,
+                )
 
                 if review_result.get("no_changes"):
                     logger.info("Review pass %d: no significant changes needed, stopping early", pass_num)
@@ -140,7 +149,7 @@ async def _run_extraction_async(
                     break
 
         # Check result
-        with SyncSessionLocal() as db:
+        with runtime.database.session() as db:
             frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
             frame_status = frame.status.value if frame else "unknown"
             content_keys = list((frame.content or {}).keys()) if frame else []
@@ -157,7 +166,7 @@ async def _run_extraction_async(
     except JobCancelled:
         # Revert the frame to PENDING so it can be re-extracted cleanly.
         if frame_was_in_progress:
-            with SyncSessionLocal() as db:
+            with runtime.database.session() as db:
                 frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
                 if frame and frame.status == FrameStatus.IN_PROGRESS:
                     frame.status = FrameStatus.PENDING
@@ -166,9 +175,14 @@ async def _run_extraction_async(
         raise
 
 
-def _mark_frame_failed(project_id: uuid.UUID, error: str | None):
+def _mark_frame_failed(
+    project_id: uuid.UUID,
+    error: str | None,
+    *,
+    runtime: AgentRuntime,
+):
     """Mark a frame as failed with error metadata."""
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
         if frame:
             frame.status = FrameStatus.FAILED
@@ -179,17 +193,25 @@ def _mark_frame_failed(project_id: uuid.UUID, error: str | None):
             db.commit()
 
 
-def _save_extraction_pass(project_id: uuid.UUID, pass_number: int, pass_type: str):
+def _save_extraction_pass(
+    project_id: uuid.UUID,
+    pass_type: str,
+    *,
+    runtime: AgentRuntime,
+):
     """Save an ExtractionPass record for audit trail."""
     from mkb.db.models import ExtractionPass
 
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         frame = db.query(KnowledgeFrame).filter_by(project_id=project_id).first()
         if frame:
             pass_record = ExtractionPass(
                 pass_id=uuid.uuid4(),
                 frame_id=frame.frame_id,
-                pass_number=pass_number,
+                # Frame versions are cumulative across re-extraction runs.  Using
+                # a literal 1 here made every later initial pass look as though
+                # it happened before the existing review history.
+                pass_number=frame.extraction_version,
                 pass_type=pass_type,
                 content_snapshot=frame.content,
                 agent_notes=frame.extraction_summary,
@@ -204,6 +226,7 @@ def run_extraction(
     verbose: bool = False,
     max_passes: int = 1,
     progress_callback=None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Synchronous wrapper — run extraction on one project."""
     return run_async_sync(
@@ -213,6 +236,7 @@ def run_extraction(
             verbose,
             max_passes,
             progress_callback=progress_callback,
+            runtime=runtime,
         )
     )
 
@@ -222,9 +246,12 @@ def run_extraction_all(
     model: str | None = None,
     verbose: bool = False,
     max_passes: int = 1,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run extraction on all projects that don't have a completed frame."""
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Extraction requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         from mkb.db.models import ResearchProject
         completed_project_ids = [
             f.project_id for f in
@@ -243,7 +270,13 @@ def run_extraction_all(
     results = []
     for pid in project_ids:
         logger.info("Extracting project %s ...", pid)
-        result = run_extraction(pid, model=model, verbose=verbose, max_passes=max_passes)
+        result = run_extraction(
+            pid,
+            model=model,
+            verbose=verbose,
+            max_passes=max_passes,
+            runtime=runtime,
+        )
         results.append(result)
         logger.info("  → %s", result.get("status", "unknown"))
 

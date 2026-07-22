@@ -7,7 +7,7 @@ from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Literal
+from typing import Callable
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.agents.tools.knowledge_graph import (
@@ -16,9 +16,10 @@ from mkb.agents.tools.knowledge_graph import (
     get_current_graph_snapshot,
     normalize_knowledge_graph_payload,
 )
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import GraphElementReview, Projection, ProjectionStatus
-from mkb.knowledge_graph import ensure_global_kg_space_id
+from mkb.services.normalization import merge_aliases as normalized_aliases
+from mkb.services.normalization import preserve_evidence, unique_strings
 
 
 MAX_DETAIL_RELATIONS = 120
@@ -86,13 +87,13 @@ def _mark_modified(key: str) -> None:
 # ── Read tools ─────────────────────────────────────────────────────────────────
 
 
-def get_concept_details(space_id: str, concept_label: str) -> dict:
+def get_concept_details(space_id: str, concept_label: str, *, runtime: AgentRuntime) -> dict:
     """Get full details for a single concept: its record plus all incoming and outgoing relations."""
     if not concept_label or not str(concept_label).strip():
         return {"error": "concept_label is required."}
 
     _fire_progress({"tool": "get_concept_details", "element_type": "concept", "label": concept_label})
-    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -126,13 +127,13 @@ def get_concept_details(space_id: str, concept_label: str) -> dict:
     }
 
 
-def get_concept_neighbors(space_id: str, concept_label: str) -> dict:
+def get_concept_neighbors(space_id: str, concept_label: str, *, runtime: AgentRuntime) -> dict:
     """Get a concept and its immediate neighbors (all concepts connected by one hop)."""
     if not concept_label or not str(concept_label).strip():
         return {"error": "concept_label is required."}
 
     _fire_progress({"tool": "get_concept_neighbors", "element_type": "concept", "label": concept_label})
-    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -188,10 +189,10 @@ def get_concept_neighbors(space_id: str, concept_label: str) -> dict:
     }
 
 
-def get_relation_type_distribution(space_id: str, limit: int = 50) -> dict:
+def get_relation_type_distribution(space_id: str, limit: int = 50, *, runtime: AgentRuntime) -> dict:
     """Get the distribution of relation type/label names across the entire knowledge graph."""
     _fire_progress({"tool": "get_relation_type_distribution", "element_type": "relation", "label": "full graph"})
-    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -218,6 +219,8 @@ def search_graph_elements(
     keyword: str,
     element_type: str = "both",
     limit: int = 30,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Search for concepts and/or relations matching a keyword in labels, aliases, or relation names.
 
@@ -227,7 +230,7 @@ def search_graph_elements(
         return {"error": "keyword is required."}
 
     _fire_progress({"tool": "search_graph_elements", "element_type": element_type, "label": keyword})
-    snapshot = get_current_graph_snapshot(space_id, full_graph=True)
+    snapshot = get_current_graph_snapshot(space_id, full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -268,9 +271,9 @@ def search_graph_elements(
 # ── Mutation tools ─────────────────────────────────────────────────────────────
 
 
-def _load_kg_projections(space_id: uuid.UUID) -> list:
+def _load_kg_projections(space_id: uuid.UUID, *, runtime: AgentRuntime) -> list:
     """Load all active (non-deleted COMPLETED/REVIEWED) projections for the global KG space."""
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         return (
             session.query(Projection)
             .filter(
@@ -287,6 +290,8 @@ def merge_concepts(
     labels_to_merge: list[str],
     canonical_label: str,
     aliases: list[str] | None = None,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Merge multiple concepts into one canonical concept across all knowledge graph projections.
 
@@ -303,7 +308,7 @@ def merge_concepts(
 
     canonical_label = str(canonical_label).strip()
     canonical_norm = _normalize_label(canonical_label)
-    norm_to_merge = {_normalize_label(l) for l in labels_to_merge if str(l).strip()}
+    norm_to_merge = {_normalize_label(label) for label in labels_to_merge if str(label).strip()}
     extra_aliases: list[str] = list(aliases or [])
 
     _fire_progress({"tool": "merge_concepts", "element_type": "concept", "label": canonical_label, "action": "merge", "merging": labels_to_merge})
@@ -312,7 +317,7 @@ def merge_concepts(
     total_concept_merges = 0
     total_relation_updates = 0
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projections = (
             session.query(Projection)
             .filter(
@@ -361,25 +366,23 @@ def merge_concepts(
             )
             if canonical_existing is not None:
                 existing_aliases = canonical_existing.get("aliases", [])
-                from mkb.agents.tools.knowledge_graph import _coerce_string_list
-                canonical_existing["aliases"] = _coerce_string_list(existing_aliases + merge_aliases)
-                canonical_existing["source_project_ids"] = _coerce_string_list(
+                canonical_existing["aliases"] = normalized_aliases(canonical_label, existing_aliases, merge_aliases)
+                canonical_existing["source_project_ids"] = unique_strings(
                     canonical_existing.get("source_project_ids", []) + merge_project_ids
                 )
-                canonical_existing["source_frame_ids"] = _coerce_string_list(
+                canonical_existing["source_frame_ids"] = unique_strings(
                     canonical_existing.get("source_frame_ids", []) + merge_frame_ids
                 )
-                canonical_existing["knowledge_refs"] = (
-                    canonical_existing.get("knowledge_refs", []) + merge_refs
-                )[:50]
+                canonical_existing["knowledge_refs"] = preserve_evidence(
+                    canonical_existing.get("knowledge_refs", []), merge_refs,
+                )
             else:
-                from mkb.agents.tools.knowledge_graph import _coerce_string_list
                 kept_concepts.append({
                     "label": canonical_label,
-                    "aliases": _coerce_string_list(merge_aliases),
-                    "source_project_ids": _coerce_string_list(merge_project_ids),
-                    "source_frame_ids": _coerce_string_list(merge_frame_ids),
-                    "knowledge_refs": merge_refs[:50],
+                    "aliases": normalized_aliases(canonical_label, merge_aliases),
+                    "source_project_ids": unique_strings(merge_project_ids),
+                    "source_frame_ids": unique_strings(merge_frame_ids),
+                    "knowledge_refs": preserve_evidence(merge_refs),
                 })
 
             # Re-point relations
@@ -422,6 +425,8 @@ def standardize_relation_name(
     space_id: str,
     old_names: list[str],
     canonical_name: str,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Rename all relations matching any of old_names to canonical_name across all KG projections.
 
@@ -443,7 +448,7 @@ def standardize_relation_name(
     projections_updated = 0
     relations_renamed = 0
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projections = (
             session.query(Projection)
             .filter(
@@ -490,7 +495,7 @@ def standardize_relation_name(
     }
 
 
-def delete_concept(space_id: str, label: str, reason: str = "") -> dict:
+def delete_concept(space_id: str, label: str, reason: str = "", *, runtime: AgentRuntime) -> dict:
     """Delete a concept from the knowledge graph. The concept must have no relations.
 
     If the concept still has relations, the operation is rejected; delete or merge
@@ -507,7 +512,7 @@ def delete_concept(space_id: str, label: str, reason: str = "") -> dict:
 
     _fire_progress({"tool": "delete_concept", "element_type": "concept", "label": label, "action": "delete"})
     # Check for relations in merged graph
-    snapshot = get_current_graph_snapshot(str(sid), full_graph=True)
+    snapshot = get_current_graph_snapshot(str(sid), full_graph=True, runtime=runtime)
     if snapshot.get("error"):
         return snapshot
 
@@ -527,7 +532,7 @@ def delete_concept(space_id: str, label: str, reason: str = "") -> dict:
     projections_updated = 0
     removed = 0
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projections = (
             session.query(Projection)
             .filter(
@@ -567,6 +572,8 @@ def delete_relation(
     relation: str,
     target: str,
     reason: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Delete a specific directed relation from all knowledge graph projections.
 
@@ -591,7 +598,7 @@ def delete_relation(
     projections_updated = 0
     removed = 0
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projections = (
             session.query(Projection)
             .filter(
@@ -637,7 +644,9 @@ def delete_relation(
 # ── Orchestration helpers (not exposed to agent) ───────────────────────────────
 
 
-def _flush_review_session_to_db(space_id: uuid.UUID, review_session: _ReviewSession) -> dict:
+def _flush_review_session_to_db(
+    space_id: uuid.UUID, review_session: _ReviewSession, *, runtime: AgentRuntime
+) -> dict:
     """Write accumulated examined/modified counts to the graph_element_reviews table."""
     now = datetime.now(timezone.utc)
 
@@ -652,7 +661,7 @@ def _flush_review_session_to_db(space_id: uuid.UUID, review_session: _ReviewSess
     if not all_keys:
         return {"examined": 0, "modified": 0}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         for raw_key in all_keys:
             parsed = _element_type_and_key(raw_key)
             if not parsed:
@@ -691,16 +700,18 @@ def _flush_review_session_to_db(space_id: uuid.UUID, review_session: _ReviewSess
     }
 
 
-def _get_least_examined_concepts(space_id: uuid.UUID, count: int) -> list[str]:
+def _get_least_examined_concepts(
+    space_id: uuid.UUID, count: int, *, runtime: AgentRuntime
+) -> list[str]:
     """Return up to `count` concept labels with the lowest times_examined, with random tie-breaking."""
     import random
 
-    snapshot = get_current_graph_snapshot(str(space_id), full_graph=True)
+    snapshot = get_current_graph_snapshot(str(space_id), full_graph=True, runtime=runtime)
     all_concepts = snapshot.get("graph", {}).get("concepts", [])
     if not all_concepts:
         return []
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         review_rows = session.query(GraphElementReview).filter_by(
             space_id=space_id,
             element_type="concept",
@@ -721,7 +732,7 @@ def _get_least_examined_concepts(space_id: uuid.UUID, count: int) -> list[str]:
 from mkb.agents.tools.knowledge_graph import get_global_kg_space  # noqa: E402
 from mkb.agents.tools.projection import get_frame_content  # noqa: E402
 
-GRAPH_REVIEW_COMMON_TOOLS = [
+GRAPH_REVIEW_COMMON_OPERATIONS = [
     get_global_kg_space,
     find_similar_concepts,
     get_concept_details,
@@ -734,6 +745,23 @@ GRAPH_REVIEW_COMMON_TOOLS = [
     delete_relation,
 ]
 
-GRAPH_REVIEW_LOCAL_TOOLS = GRAPH_REVIEW_COMMON_TOOLS + [
-    get_frame_content,
-]
+
+def graph_review_tools(mode: str, runtime: AgentRuntime):
+    """Return review tools bound to one client runtime.
+
+    Local review's frame reader is supplied by the projection tool family once
+    that family is runtime-bound; registering an unbound reader here would
+    reintroduce the hidden database fallback this module removes.
+    """
+
+    operations = list(GRAPH_REVIEW_COMMON_OPERATIONS)
+    if mode == "local":
+        from mkb.agents.tools.projection import projection_reader_tools
+
+        return bind_tools(operations, runtime) + projection_reader_tools(runtime)
+    return bind_tools(operations, runtime)
+
+
+# Compatibility metadata only.  Runtime execution must use graph_review_tools.
+GRAPH_REVIEW_COMMON_TOOLS = GRAPH_REVIEW_COMMON_OPERATIONS
+GRAPH_REVIEW_LOCAL_TOOLS = GRAPH_REVIEW_COMMON_OPERATIONS + [get_frame_content]

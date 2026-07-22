@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
 import { listAssets, listProcessedAssets } from '../../api/projects'
 import { uploadProcessedAsset } from '../../api/upload'
-import type { Asset, ProcessedAsset } from '../../types'
+import type { Asset, Job, ProcessedAsset } from '../../types'
 
 
 function UploadProcessedModal({
@@ -143,6 +144,21 @@ export default function ProjectAssetsPanel({ projectId }: { projectId: string })
   }, [projectId])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        job.project_id === projectId &&
+        ['process', 'upload'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load, projectId])
 
   const processedByAsset = new Map(processed.map(p => [p.asset_id, p]))
 

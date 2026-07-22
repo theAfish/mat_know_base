@@ -31,7 +31,9 @@ def test_api_run_upload_ingest_moves_files_from_session_temp(tmp_path, monkeypat
 
     monkeypatch.setattr(mod, "_UPLOAD_TEMP", tmp_path / "_temp")
     monkeypatch.setattr(mod, "_create_unique_project_dir", fake_create_unique_project_dir)
-    monkeypatch.setattr(mod, "api", DummyApi)
+    monkeypatch.setattr(
+        "mkb.web.dependencies.get_knowledge_base", lambda: DummyApi
+    )
 
     payload = [
         mod.UploadProject.model_validate(
@@ -141,7 +143,9 @@ def test_api_run_upload_ingest_honors_custom_grouping(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "_UPLOAD_TEMP", tmp_path / "_temp")
     monkeypatch.setattr(mod, "_create_unique_project_dir", fake_create_unique_project_dir)
-    monkeypatch.setattr(mod, "api", DummyApi)
+    monkeypatch.setattr(
+        "mkb.web.dependencies.get_knowledge_base", lambda: DummyApi
+    )
 
     # User chose "leaf folder" grouping: docs/ -> project "docs",
     # then moved loose.txt into the same project; b.pdf was excluded.
@@ -204,7 +208,9 @@ def test_api_run_upload_ingest_extracts_zip_archive(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "_UPLOAD_TEMP", tmp_path / "_temp")
     monkeypatch.setattr(mod, "_create_unique_project_dir", fake_create_unique_project_dir)
-    monkeypatch.setattr(mod, "api", DummyApi)
+    monkeypatch.setattr(
+        "mkb.web.dependencies.get_knowledge_base", lambda: DummyApi
+    )
 
     # Step 1: expand (what the new POST /api/upload/expand does)
     expanded = mod._expand_temp_dir(temp_root)

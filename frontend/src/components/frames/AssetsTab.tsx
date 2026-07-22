@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
+import { JOB_FINISHED_EVENT } from '../../api/jobPolling'
 import { listAssets, listProcessedAssets } from '../../api/projects'
-import type { Asset, ProcessedAsset } from '../../types'
+import type { Asset, Job, ProcessedAsset } from '../../types'
 import AssetPreviewModal from './AssetPreviewModal'
 
 type Preview = {
@@ -16,11 +17,29 @@ export default function AssetsTab({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true)
   const [preview, setPreview] = useState<Preview | null>(null)
 
-  useEffect(() => {
+  const load = useCallback((showLoading = false) => {
+    if (showLoading) setLoading(true)
     Promise.all([listAssets(projectId), listProcessedAssets(projectId)])
       .then(([a, p]) => { setAssets(a); setProcessed(p) })
       .finally(() => setLoading(false))
   }, [projectId])
+
+  useEffect(() => { load(true) }, [load])
+
+  useEffect(() => {
+    const refreshOnFinishedJob = (event: Event) => {
+      const job = (event as CustomEvent<Job>).detail
+      if (
+        job.status === 'COMPLETED' &&
+        job.project_id === projectId &&
+        ['process', 'upload'].includes(job.kind)
+      ) {
+        load()
+      }
+    }
+    window.addEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+    return () => window.removeEventListener(JOB_FINISHED_EVENT, refreshOnFinishedJob)
+  }, [load, projectId])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
   if (assets.length === 0) return <p className="text-sm text-slate-400">No assets ingested yet.</p>

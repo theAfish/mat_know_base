@@ -19,9 +19,9 @@ from google.adk.agents import Agent
 from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.frame_clarification import build_clarification_prompt
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.frames import FRAME_TOOLS
-from mkb.agents.tools.reading import READING_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.frames import frame_tools
+from mkb.agents.tools.reading import reading_tools
 from mkb.db.models import KnowledgeFrame
 
 logger = logging.getLogger(__name__)
@@ -31,11 +31,9 @@ APP_NAME = "mkb_clarification"
 # The clarification agent needs reading tools (to inspect source files) and
 # frame tools (to apply targeted updates).  It intentionally does NOT get
 # projection tools — it only modifies the knowledge frame.
-CLARIFICATION_TOOLS = READING_TOOLS + FRAME_TOOLS
-
-
 def build_clarification_agent(
     question: str,
+    runtime: AgentRuntime,
     context: str = "",
     field: str = "",
     model: str | None = None,
@@ -47,7 +45,7 @@ def build_clarification_agent(
         name="clarification_agent",
         model=llm,
         instruction=prompt,
-        tools=CLARIFICATION_TOOLS,
+        tools=reading_tools(runtime) + frame_tools(runtime),
     )
 
 
@@ -59,6 +57,7 @@ async def run_clarification_async(
     field: str = "",
     model: str | None = None,
     verbose: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run the clarification agent and return the result.
 
@@ -66,7 +65,15 @@ async def run_clarification_async(
     ``ThreadPoolExecutor``) so it gets its own event loop and does not
     interfere with the caller's async context.
     """
-    agent = build_clarification_agent(question=question, context=context, field=field, model=model)
+    if runtime is None:
+        raise ValueError("Clarification requires an explicit AgentRuntime")
+    agent = build_clarification_agent(
+        question=question,
+        context=context,
+        field=field,
+        model=model,
+        runtime=runtime,
+    )
     runner = AgentRunner(agent=agent, app_name=APP_NAME, max_llm_calls=15)
 
     session_id = f"clarify_{frame_id}_{uuid.uuid4().hex[:8]}"
@@ -93,7 +100,7 @@ async def run_clarification_async(
         }
 
     # Read back the (potentially updated) frame to return its current content.
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         frame = db.query(KnowledgeFrame).filter_by(frame_id=frame_id).first()
         updated_content = dict(frame.content) if frame and frame.content else {}
 
@@ -112,6 +119,7 @@ def run_clarification_in_thread(
     field: str = "",
     model: str | None = None,
     verbose: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run the clarification agent synchronously in a dedicated thread.
 
@@ -127,5 +135,6 @@ def run_clarification_in_thread(
             field=field,
             model=model,
             verbose=verbose,
+            runtime=runtime,
         )
     )

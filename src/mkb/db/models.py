@@ -63,6 +63,43 @@ class FeedbackStatus(str, enum.Enum):
     DEV_ISSUE = "DEV_ISSUE"
 
 
+class BackgroundJob(Base):
+    """Durable execution record for web/agent background work."""
+
+    __tablename__ = "background_jobs"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # Non-null only while active; the unique constraint is the cross-process lock.
+    active_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    current_message: Mapped[str] = mapped_column(Text, nullable=False, default="Queued")
+    events: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    result: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index("ix_background_jobs_status_updated", "status", "updated_at"),
+        Index("ix_background_jobs_project_kind", "project_id", "kind"),
+    )
+
+
 # ── Research Projects ──────────────────────────────────────────
 # One project = one research package (paper + supplementary data).
 # Maps to a subfolder under the data root directory.
@@ -547,6 +584,50 @@ class Space(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+# ── Custom agent skills ─────────────────────────────────────────
+
+
+class CustomSkill(Base):
+    __tablename__ = "custom_skills"
+
+    skill_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    skill_md: Mapped[str] = mapped_column(Text, nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+# ── Deterministic post-processor scripts ───────────────────────
+
+
+class PostProcessorScript(Base):
+    __tablename__ = "post_processor_scripts"
+
+    script_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

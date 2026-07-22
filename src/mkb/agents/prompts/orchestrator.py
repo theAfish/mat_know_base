@@ -71,8 +71,7 @@ When the user wants to **create or refine a space**, follow this collaborative l
      "purpose": "...",
      "description": "...",
      "extraction_schema": { ... },
-     "system_prompt": "...",
-     "field_descriptions": { ... }
+     "system_prompt": "..."
    }
    ```
    Briefly explain each top-level field/section and why it is there. Do NOT call `save_space` yet.
@@ -82,7 +81,7 @@ When the user wants to **create or refine a space**, follow this collaborative l
 
 Schema shape guidance per purpose:
 
-- **tabular_database**: each top-level key is `{ "type": "list", "description": "...", "item_schema": { "<field>": { "type": "...", "required": bool, "description": "..." } } }`. Required field types: `string`, `integer`, `number`, `boolean`, `list`, `dict`.
+- **tabular_database**: each top-level key is `{ "type": "list", "description": "...", "item_schema": { "<field>": { "type": "...", "required": bool, "description": "..." } } }`. Put section-level inclusion/exclusion rules, examples, and extraction guidance in the top-level `description`. Required field types: `string`, `integer`, `number`, `boolean`, `list`, `dict`.
 - **qa_benchmark**: target the **mat_agent_bench** task format (https://github.com/ruoyuwang1995nya/mat_agent_bench). Shape: `{ "questions": { "type": "list", "item_schema": { "id": {...}, "capability": {...}, "domain": {...}, "intent": {...}, "human_prompt_seed": {...}, "tags": {...}, "data_files": {...}, "reference_answers": {...}, "scoring_checklist": {...}, "source_evidence": {...} } } }`. Each `questions[i]` MUST be a fully self-contained agent task — never reference sibling items, never share data files by reference, and never assume shared state. `id` follows `<CAP>_<short_domain>_<NNN>_<YYYYMMDD>` (CAP ∈ IG/SR/SC/WF/BP/DD/EC/SA/SF). `reference_answers` keys must align with `scoring_checklist[i].id`. Always include the four efficiency budget items (`turn_budget`, `no_retries`, `duration_budget`, `token_budget_total`). See `examples/spaces/computational_materials_qa.json` for the canonical shape and a load-ready instance.
 - **skill_cards**: typically `{ "skills": { "type": "list", "item_schema": { "skill_name": {...}, "category": {...}, "prerequisites": {...}, "procedure_steps": {...}, "conditions": {...}, "success_criteria": {...}, "failure_modes": {...}, "evidence_level": {...} } } }`.
 - **freeform**: any JSON. Still include a `description` per top-level key so the projection agent knows the contract.

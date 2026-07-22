@@ -29,16 +29,15 @@ import logging
 from pathlib import Path
 
 from mkb.agents._utils import ensure_llm_env
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
 from mkb.config import settings
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Asset,
     ProcessedAsset,
     ProcessingType,
     ProjectAsset,
 )
-from mkb.storage.s3 import download_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,9 @@ def _iter_project_images(session, project_id):
                 yield processed, asset, relpath
 
 
-def _read_artifact_bytes(processed: ProcessedAsset, relpath: str) -> bytes:
+def _read_artifact_bytes(
+    processed: ProcessedAsset, relpath: str, *, runtime: AgentRuntime
+) -> bytes:
     """Read an artifact for a processed asset; try local first, then S3."""
     metadata = processed.conversion_metadata or {}
     local_dir = metadata.get("local_dir")
@@ -89,20 +90,22 @@ def _read_artifact_bytes(processed: ProcessedAsset, relpath: str) -> bytes:
             return local_path.read_bytes()
 
     s3_prefix = processed.s3_key.rsplit("/", 1)[0]
-    return download_bytes(processed.s3_bucket, f"{s3_prefix}/{relpath}")
+    if runtime.object_store is None:
+        raise RuntimeError("Image tools require an object store")
+    return runtime.object_store.get_bytes(processed.s3_bucket, f"{s3_prefix}/{relpath}")
 
 
-def _resolve_project_image(project_id, image_ref: str):
+def _resolve_project_image(project_id, image_ref: str, *, runtime: AgentRuntime):
     """Find an image artifact across a project by basename match."""
     target = _normalize_image_ref(image_ref)
     if not target:
         return None
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         for processed, asset, relpath in _iter_project_images(session, project_id):
             if Path(relpath).name.lower() == target:
                 try:
-                    blob = _read_artifact_bytes(processed, relpath)
+                    blob = _read_artifact_bytes(processed, relpath, runtime=runtime)
                 except Exception as exc:
                     logger.warning(
                         "Failed to read image %s for asset %s: %s",
@@ -136,7 +139,9 @@ def _mime_for_ext(relpath: str) -> str:
 # =====================================================================
 
 
-def list_project_images(project_id: str, max_results: int = 200) -> dict:
+def list_project_images(
+    project_id: str, max_results: int = 200, *, runtime: AgentRuntime
+) -> dict:
     """List every image artifact extracted from the project's papers.
 
     Use this before calling ``read_image_with_ocr`` or
@@ -162,7 +167,7 @@ def list_project_images(project_id: str, max_results: int = 200) -> dict:
     entries: list[dict] = []
     total = 0
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         for processed, asset, relpath in _iter_project_images(session, pid):
             total += 1
             if len(entries) >= limit:
@@ -182,7 +187,9 @@ def list_project_images(project_id: str, max_results: int = 200) -> dict:
     }
 
 
-def read_image_with_ocr(project_id: str, image_ref: str) -> dict:
+def read_image_with_ocr(
+    project_id: str, image_ref: str, *, runtime: AgentRuntime
+) -> dict:
     """Run Tesseract OCR on a project image and return the extracted text.
 
     Use this when the image is likely text-rich (protein sequences,
@@ -202,7 +209,7 @@ def read_image_with_ocr(project_id: str, image_ref: str) -> dict:
     if not pid:
         return {"error": invalid_identifier_message("project_id", project_id)}
 
-    image = _resolve_project_image(pid, image_ref)
+    image = _resolve_project_image(pid, image_ref, runtime=runtime)
     if image is None:
         return {"error": f"Image {image_ref!r} not found in project {project_id}."}
 
@@ -237,6 +244,8 @@ def read_image_with_vision(
     image_ref: str,
     question: str,
     model: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Ask a multimodal LLM a focused question about a project image.
 
@@ -268,7 +277,7 @@ def read_image_with_vision(
     if not (question or "").strip():
         return {"error": "question must be a non-empty string."}
 
-    image = _resolve_project_image(pid, image_ref)
+    image = _resolve_project_image(pid, image_ref, runtime=runtime)
     if image is None:
         return {"error": f"Image {image_ref!r} not found in project {project_id}."}
 
@@ -323,3 +332,9 @@ VISION_TOOLS = [
     read_image_with_ocr,
     read_image_with_vision,
 ]
+
+
+def vision_tools(runtime: AgentRuntime):
+    """Return image tools bound to one client runtime."""
+
+    return bind_tools(VISION_TOOLS, runtime)

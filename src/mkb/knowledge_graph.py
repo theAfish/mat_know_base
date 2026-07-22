@@ -9,8 +9,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import KnowledgeFrame, Projection, Space
+from mkb.ports import Database
 
 GLOBAL_KG_SPACE_NAME = "__global_concept_graph__"
 GLOBAL_KG_SPACE_DOMAIN = "cross-domain-concept-graph"
@@ -26,6 +26,7 @@ LEGACY_KG_SPACE_NAMES = {
 GLOBAL_KG_SPACE_SCHEMA = {
     "concepts": {
         "type": "list",
+        "description": "Concept nodes with optional aliases and references to frame/database context.",
         "item_schema": {
             "label": {"type": "string", "required": True},
             "aliases": {"type": "list", "item_type": "string"},
@@ -44,6 +45,7 @@ GLOBAL_KG_SPACE_SCHEMA = {
     },
     "relations": {
         "type": "list",
+        "description": "Directed concept-to-concept relations with evidence level and source references.",
         "item_schema": {
             "source": {"type": "string", "required": True},
             "relation": {"type": "string", "required": True},
@@ -70,11 +72,6 @@ GLOBAL_KG_SYSTEM_PROMPT = (
     "references, not as extra nodes."
 )
 
-GLOBAL_KG_FIELD_DESCRIPTIONS = {
-    "concepts": "Concept nodes with optional aliases and references to frame/database context.",
-    "relations": "Directed concept-to-concept relations with evidence level and source references.",
-}
-
 LEGACY_FRAME_GRAPH_KEYS = {
     "knowledge_graph",
     "knowledge_graphs",
@@ -83,9 +80,9 @@ LEGACY_FRAME_GRAPH_KEYS = {
 }
 
 
-def ensure_global_kg_space() -> Space:
+def ensure_global_kg_space(database: Database) -> Space:
     """Create or return the singleton global knowledge-graph space."""
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         space = session.query(Space).filter_by(name=GLOBAL_KG_SPACE_NAME).first()
         if space:
             return space
@@ -97,7 +94,7 @@ def ensure_global_kg_space() -> Space:
             domain=GLOBAL_KG_SPACE_DOMAIN,
             extraction_schema=GLOBAL_KG_SPACE_SCHEMA,
             system_prompt=GLOBAL_KG_SYSTEM_PROMPT,
-            field_descriptions=GLOBAL_KG_FIELD_DESCRIPTIONS,
+            field_descriptions={},
             version=1,
         )
         session.add(space)
@@ -106,15 +103,17 @@ def ensure_global_kg_space() -> Space:
         return space
 
 
-def ensure_global_kg_space_id() -> uuid.UUID:
+def ensure_global_kg_space_id(database: Database) -> uuid.UUID:
     """Return the singleton global knowledge-graph space ID."""
-    return ensure_global_kg_space().space_id
+    return ensure_global_kg_space(database).space_id
 
 
 def clear_knowledge_graph_projections(
     project_id: uuid.UUID | None = None,
     frame_id: uuid.UUID | None = None,
     include_legacy_spaces: bool = True,
+    *,
+    database: Database,
 ) -> dict:
     """Soft-delete existing knowledge-graph projections.
 
@@ -123,7 +122,7 @@ def clear_knowledge_graph_projections(
     """
     now = datetime.now(timezone.utc)
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         candidate_spaces = session.query(Space).all()
         if include_legacy_spaces:
             target_space_ids = {
@@ -167,7 +166,11 @@ def clear_knowledge_graph_projections(
         }
 
 
-def purge_legacy_graph_sections(project_id: uuid.UUID | None = None) -> dict:
+def purge_legacy_graph_sections(
+    project_id: uuid.UUID | None = None,
+    *,
+    database: Database,
+) -> dict:
     """Remove legacy graph sections from knowledge-frame content if present."""
 
     def _looks_like_graph_payload(value) -> bool:
@@ -179,7 +182,7 @@ def purge_legacy_graph_sections(project_id: uuid.UUID | None = None) -> dict:
             or {"concepts", "relations"}.issubset(keys)
         )
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         q = session.query(KnowledgeFrame)
         if project_id:
             q = q.filter(KnowledgeFrame.project_id == project_id)

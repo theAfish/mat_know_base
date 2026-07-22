@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "lint": "tsc -b --noEmit",
+    "build": "tsc -b && vite build && npm run check:bundle",
+    "check:bundle": "node scripts/check-bundle-budgets.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@tanstack/react-table": "^8.21.3",
     "axios": "^1.15.2",
     "pdfjs-dist": "^6.0.227",

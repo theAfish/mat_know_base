@@ -10,8 +10,6 @@ export interface Project {
   frame_status: string | null
   workflow_status: string
   workflow_version: number | null
-  canonical_workflow_status: string
-  canonical_workflow_version: number | null
   created_at: string
   group_id?: string | null
 }
@@ -80,7 +78,7 @@ export interface ExtractionPass {
   pass_id: string
   pass_number: number
   pass_type: string
-  changes_made: boolean
+  changes_made: Record<string, number> | null
   agent_notes: string | null
   created_at: string
 }
@@ -131,7 +129,37 @@ export interface PostProcessorProfile {
   description?: string
   prompt?: string | null
   tool_groups: string[]
+  skill_ids?: string[]
+  script?: {
+    script_id: string
+    timeout_seconds?: number
+  } | null
+  output_columns?: Array<{ name: string; description?: string }>
   enabled?: boolean
+}
+
+export interface PostProcessorScript {
+  script_id: string
+  name: string
+  filename: string
+  created_at?: string | null
+}
+
+export interface CustomSkill {
+  skill_id: string
+  name: string
+  slug: string
+  description: string | null
+  source_type: string
+  file_count: number
+  metadata: {
+    files?: string[]
+    [key: string]: unknown
+  }
+  skill_md?: string
+  storage_path?: string
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export interface SpaceCreatePayload {
@@ -139,7 +167,7 @@ export interface SpaceCreatePayload {
   domain: string
   extraction_schema: Record<string, unknown>
   system_prompt: string
-  field_descriptions: Record<string, unknown>
+  field_descriptions?: Record<string, unknown>
   description?: string
   purpose?: string
   review_prompt?: string | null
@@ -230,10 +258,10 @@ export interface GraphPayload {
 export interface RawWorkflowNode {
   node_id: string
   raw_name: string
-  node_kind_guess: 'object' | 'operation' | 'unknown'
+  node_kind_guess: 'object' | 'operation' | 'planning' | 'reasoning' | 'unknown'
   canonical_name?: string
   card_id?: string | null
-  node_kind?: 'object' | 'operation' | 'unknown'
+  node_kind?: 'object' | 'operation' | 'planning' | 'reasoning' | 'unknown'
   semantic_type?: string | null
   parameters?: Record<string, unknown>
   identity?: Record<string, unknown>
@@ -286,6 +314,7 @@ export interface RawWorkflowVersion {
   model: string | null
   provenance: Record<string, unknown>
   error: string | null
+  review_flags?: Array<{ type: string; item_type?: string; item_id?: string }>
   created_at: string | null
   extracted_at: string | null
   has_checkpoint?: boolean
@@ -445,4 +474,4 @@ export interface UploadExpandResponse {
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
-export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces' | 'settings'
+export type Page = 'assistant' | 'projects' | 'frames' | 'graph' | 'projections' | 'feedback' | 'spaces' | 'skills' | 'settings'

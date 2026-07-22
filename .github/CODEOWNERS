@@ -1,0 +1,14 @@
+# Default review owner.
+* @theAfish
+
+# Database access requires database review.
+/src/mkb/db/ @theAfish
+
+# Authentication, uploads, executable content, and deployment boundaries require security review.
+/src/mkb/web/security.py @theAfish
+/src/mkb/web/uploads.py @theAfish
+/src/mkb/config.py @theAfish
+/src/mkb/post_processors/ @theAfish
+/docker-compose.yaml @theAfish
+/SECURITY.md @theAfish
+/docs/security.md @theAfish

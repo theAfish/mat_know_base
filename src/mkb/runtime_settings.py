@@ -10,6 +10,8 @@ and merged on top of the environment-based defaults on every read.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -60,9 +62,27 @@ def _load_raw() -> dict[str, Any]:
 
 
 def _save_raw(data: dict[str, Any]) -> None:
+    """Atomically replace the settings file with owner-only permissions."""
     path = _settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    payload = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def get_overrides() -> dict[str, Any]:
@@ -103,6 +123,12 @@ def update_settings(updates: dict[str, Any]) -> dict[str, Any]:
     log_level = updates.get("log_level")
     if log_level is not None and log_level.upper() not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
         raise ValueError(f"Invalid log_level: {log_level!r}")
+    if (
+        log_level is not None
+        and settings.deployment_mode.value == "production"
+        and log_level.upper() == "DEBUG"
+    ):
+        raise ValueError("DEBUG logging is forbidden in production")
 
     max_jobs = updates.get("max_concurrent_jobs")
     if max_jobs is not None and (not isinstance(max_jobs, int) or max_jobs < 1):
@@ -144,4 +170,6 @@ def public_view(values: dict[str, Any] | None = None) -> dict[str, Any]:
             val = data[key]
             data[key] = "" if not val else "********"
             data[f"{key}_set"] = bool(val)
+    data["deployment_mode"] = settings.deployment_mode.value
+    data["allow_uploaded_python"] = settings.allow_uploaded_python
     return data

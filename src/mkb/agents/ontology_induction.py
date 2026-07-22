@@ -18,10 +18,10 @@ from mkb.agents.prompts.ontology_induction import (
     WORKFLOW_REVIEW_LOCAL_PROMPT,
 )
 from mkb.agents.runner import AgentRunner
+from mkb.agents.runtime import AgentRuntime
 from mkb.agents.tools.schema_curator import (
-    SCHEMA_CURATOR_TOOLS, reset_curator_author, set_curator_author,
+    reset_curator_author, schema_curator_tools, set_curator_author,
 )
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import SchemaProposal, SchemaProposalRevision
 
 APP_NAME = "mkb_ontology_induction"
@@ -29,6 +29,7 @@ APP_NAME = "mkb_ontology_induction"
 
 def build_ontology_induction_agent(
     mode: Literal["global", "local"],
+    runtime: AgentRuntime,
     model: str | None = None,
 ) -> Agent:
     return Agent(
@@ -39,7 +40,7 @@ def build_ontology_induction_agent(
             if mode == "local"
             else WORKFLOW_REVIEW_GLOBAL_PROMPT
         ),
-        tools=SCHEMA_CURATOR_TOOLS,
+        tools=schema_curator_tools(runtime),
     )
 
 
@@ -53,7 +54,10 @@ async def run_ontology_induction(
     model: str | None = None,
     verbose: bool = False,
     progress_callback=None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
+    if runtime is None:
+        raise ValueError("Ontology induction requires an explicit AgentRuntime")
     if model is None:
         from mkb.runtime_settings import get_setting
         model = get_setting("extraction_model")
@@ -64,13 +68,13 @@ async def run_ontology_induction(
     else:
         return {"status": "error", "message": f"Unknown review mode '{mode}'"}
     attributed_author = f"workflow-review-agent/{resolved_mode}/{model} requested-by/{author}"
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         before = session.query(SchemaProposal).count()
         revisions_before = session.query(SchemaProposalRevision).count()
     token = set_curator_author(attributed_author)
     try:
         runner = AgentRunner(
-            agent=build_ontology_induction_agent(resolved_mode, model),
+            agent=build_ontology_induction_agent(resolved_mode, runtime, model),
             app_name=APP_NAME,
             max_llm_calls=30,
         )
@@ -92,7 +96,7 @@ async def run_ontology_induction(
         reset_curator_author(token)
     if not result.success:
         return {"status": "error", "message": result.error or "Ontology induction failed"}
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         after = session.query(SchemaProposal).count()
         revisions_after = session.query(SchemaProposalRevision).count()
     return {

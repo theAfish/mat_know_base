@@ -9,7 +9,7 @@ export interface SpaceDraft {
   description?: string
   extraction_schema: Record<string, unknown>
   system_prompt: string
-  field_descriptions: Record<string, unknown>
+  field_descriptions?: Record<string, unknown>
 }
 
 interface Props {
@@ -43,9 +43,9 @@ export default function SpaceDraftCard({ draft, existing, onSaved }: Props) {
           domain: draft.domain,
           purpose: draft.purpose,
           description: draft.description ?? '',
-          extraction_schema: draft.extraction_schema,
+          extraction_schema: mergeLegacyFieldDescriptions(draft.extraction_schema, draft.field_descriptions),
           system_prompt: draft.system_prompt,
-          field_descriptions: draft.field_descriptions,
+          field_descriptions: {},
         }
         const res = await createSpace(payload)
         if ((res as unknown as { error?: string }).error) {
@@ -58,9 +58,9 @@ export default function SpaceDraftCard({ draft, existing, onSaved }: Props) {
           domain: draft.domain,
           purpose: draft.purpose,
           description: draft.description ?? '',
-          extraction_schema: draft.extraction_schema,
+          extraction_schema: mergeLegacyFieldDescriptions(draft.extraction_schema, draft.field_descriptions),
           system_prompt: draft.system_prompt,
-          field_descriptions: draft.field_descriptions,
+          field_descriptions: {},
         })
         setSavedAs(existing.space_id)
         onSaved?.({ space_id: existing.space_id, name: `${existing.name} (v${res.version})` })
@@ -173,9 +173,9 @@ export function extractDraftsFromText(text: string): SpaceDraft[] {
           domain: obj.domain ?? '',
           purpose: obj.purpose ?? 'tabular_database',
           description: obj.description ?? '',
-          extraction_schema: obj.extraction_schema,
+          extraction_schema: mergeLegacyFieldDescriptions(obj.extraction_schema, obj.field_descriptions),
           system_prompt: obj.system_prompt ?? '',
-          field_descriptions: obj.field_descriptions ?? {},
+          field_descriptions: {},
         })
       }
     } catch {
@@ -183,4 +183,35 @@ export function extractDraftsFromText(text: string): SpaceDraft[] {
     }
   }
   return drafts
+}
+
+function stringifyLegacyDescription(value: unknown) {
+  return typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
+}
+
+function mergeLegacyFieldDescriptions(
+  schemaValue: unknown,
+  descriptionsValue: unknown,
+): Record<string, unknown> {
+  if (!schemaValue || typeof schemaValue !== 'object' || Array.isArray(schemaValue)) return {}
+  const schema = { ...(schemaValue as Record<string, unknown>) }
+  const descriptions =
+    descriptionsValue && typeof descriptionsValue === 'object' && !Array.isArray(descriptionsValue)
+      ? (descriptionsValue as Record<string, unknown>)
+      : {}
+
+  for (const [key, rawDescription] of Object.entries(descriptions)) {
+    const description = stringifyLegacyDescription(rawDescription).trim()
+    const node = schema[key]
+    if (!description || !node || typeof node !== 'object' || Array.isArray(node)) continue
+    const section = { ...(node as Record<string, unknown>) }
+    const existing = typeof section.description === 'string' ? section.description.trim() : ''
+    if (!existing.includes(description)) {
+      section.description = existing
+        ? `${existing}\n\nExtraction guidance: ${description}`
+        : description
+    }
+    schema[key] = section
+  }
+  return schema
 }

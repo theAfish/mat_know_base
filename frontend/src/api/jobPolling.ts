@@ -7,10 +7,21 @@ const MAX_CONSECUTIVE_ERRORS = 6
 
 /** Statuses that mean the job is still running and we should keep polling. */
 export const ACTIVE_JOB_STATUSES = new Set(['QUEUED', 'PENDING', 'RUNNING'])
+export const JOB_FINISHED_EVENT = 'mkb:job-finished'
 
 /** Returns true when the job has reached a terminal state and polling should stop. */
 export function isJobTerminal(status: string): boolean {
   return !ACTIVE_JOB_STATUSES.has(status)
+}
+
+const announcedFinishedJobs = new Set<string>()
+
+export function announceJobFinished(job: Job): void {
+  if (!isJobTerminal(job.status) || announcedFinishedJobs.has(job.job_id)) return
+  announcedFinishedJobs.add(job.job_id)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<Job>(JOB_FINISHED_EVENT, { detail: job }))
+  }
 }
 
 /**
@@ -109,6 +120,7 @@ export function startJobPolling(opts: StartJobPollingOptions): JobPollHandle {
       useJobsStore.getState().upsertJob(job)
       onUpdate?.(job)
       if (isJobTerminal(job.status)) {
+        announceJobFinished(job)
         if (job.status === 'COMPLETED') {
           onComplete?.(job)
         } else {

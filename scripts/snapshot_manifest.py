@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Create/verify snapshot manifests and safely extract archives."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import tarfile
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+
+
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def write_manifest(root: Path, revision: str, app_version: str) -> None:
+    files = {str(path.relative_to(root)): {"sha256": digest(path), "bytes": path.stat().st_size}
+             for path in sorted(root.rglob("*")) if path.is_file() and path.name != "manifest.json"}
+    manifest = {"format_version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
+                "schema_revision": revision, "application_version": app_version, "files": files}
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def safe_extract(archive: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = bundle.getmembers()
+        if len(members) > 100_000:
+            raise ValueError("snapshot contains too many members")
+        for member in members:
+            name = PurePosixPath(member.name)
+            if name.is_absolute() or ".." in name.parts or member.issym() or member.islnk() or member.isdev():
+                raise ValueError(f"unsafe snapshot member: {member.name}")
+        bundle.extractall(destination, members=members, filter="data")
+    manifest_path = destination / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("snapshot has no versioned manifest")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format_version") != 1:
+        raise ValueError("unsupported snapshot format")
+    for name, metadata in manifest.get("files", {}).items():
+        path = destination / name
+        if not path.is_file() or digest(path) != metadata.get("sha256"):
+            raise ValueError(f"snapshot checksum failed: {name}")
+
+
+def enrich_inventory_with_manifest(
+    inventory: dict,
+    manifest: dict,
+) -> dict:
+    """Attach archive SHA-256 values to a historical storage inventory."""
+    result = copy.deepcopy(inventory)
+    files = manifest.get("files", {})
+    archived: dict[str, dict[str, dict]] = {}
+    for name, metadata in files.items():
+        parts = Path(name).parts
+        if len(parts) < 3 or parts[0] != "minio":
+            continue
+        bucket = parts[1]
+        key = Path(*parts[2:]).as_posix()
+        archived.setdefault(bucket, {})[key] = metadata
+
+    buckets = result.setdefault("object_storage", {}).setdefault("buckets", {})
+    for bucket, archived_objects in archived.items():
+        bucket_record = buckets.setdefault(bucket, {})
+        objects = {
+            str(item.get("key")): item
+            for item in bucket_record.setdefault("objects", [])
+        }
+        for key, metadata in archived_objects.items():
+            record = objects.setdefault(key, {"key": key})
+            record["bytes"] = int(metadata["bytes"])
+            record["sha256"] = str(metadata["sha256"])
+        ordered = [objects[key] for key in sorted(objects)]
+        bucket_record["objects"] = ordered
+        bucket_record["object_count"] = len(ordered)
+        bucket_record["total_bytes"] = sum(int(item.get("bytes") or 0) for item in ordered)
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    create = sub.add_parser("create")
+    create.add_argument("root", type=Path)
+    create.add_argument("--revision", required=True)
+    create.add_argument("--app-version", default=os.environ.get("MKB_APP_VERSION", "0.1.0"))
+    extract = sub.add_parser("extract")
+    extract.add_argument("archive", type=Path)
+    extract.add_argument("destination", type=Path)
+    enrich = sub.add_parser("enrich-inventory")
+    enrich.add_argument("inventory", type=Path)
+    enrich.add_argument("manifest", type=Path)
+    enrich.add_argument("output", type=Path)
+    args = parser.parse_args()
+    if args.command == "create":
+        write_manifest(args.root, args.revision, args.app_version)
+    elif args.command == "extract":
+        safe_extract(args.archive, args.destination)
+    else:
+        if args.output.exists():
+            raise FileExistsError(f"Refusing to overwrite {args.output}")
+        inventory = json.loads(args.inventory.read_text(encoding="utf-8"))
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        enriched = enrich_inventory_with_manifest(inventory, manifest)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(enriched, indent=2) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

@@ -5,16 +5,14 @@ Provides two categories:
 - Status/inspection tools: read-only DB queries via mkb.api
 - Action tools: queue background workflow jobs for the assistant UI to dispatch
 
-The workflow queue is a module-level thread-safe Queue. The assistant page
-drains it on each Streamlit rerun and starts proper start_job background jobs.
+The workflow queue is a module-level thread-safe Queue. The web job manager drains it
+and starts durable background jobs.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import queue as _queue
-import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +24,7 @@ _workflow_queue: _queue.Queue = _queue.Queue()
 
 
 def get_pending_workflows() -> list[dict]:
-    """Drain and return all pending workflow requests (called by the UI page)."""
+    """Drain and return all pending workflow requests for the web job manager."""
     pending: list[dict] = []
     while True:
         try:
@@ -279,6 +277,7 @@ def trigger_extraction(project_id: str, max_passes: int = 1) -> dict:
         max_passes: Number of extraction passes (1 = initial only, 2+ includes review).
     """
     _workflow_queue.put({
+        "action": "extract_project",
         "kind": "extraction",
         "project_id": project_id,
         "kwargs": {"project_id": project_id, "max_passes": max_passes},
@@ -300,6 +299,7 @@ def trigger_projection(project_id: str, space_id: str) -> dict:
         space_id: UUID string of the Space to project onto.
     """
     _workflow_queue.put({
+        "action": "project_to_space",
         "kind": "projection",
         "project_id": project_id,
         "kwargs": {"project_id": project_id, "space_id": space_id},
@@ -321,6 +321,7 @@ def trigger_knowledge_graph_extraction(project_id: str) -> dict:
         project_id: UUID string of the project.
     """
     _workflow_queue.put({
+        "action": "extract_knowledge_graph",
         "kind": "kg_extraction",
         "project_id": project_id,
         "kwargs": {"project_id": project_id},
@@ -342,6 +343,7 @@ def trigger_feedback_review(project_id: str) -> dict:
         project_id: UUID string of the project.
     """
     _workflow_queue.put({
+        "action": "review_feedback",
         "kind": "feedback_review",
         "project_id": project_id,
         "kwargs": {"project_id": project_id},
@@ -364,6 +366,7 @@ def trigger_projection_review(project_id: str, space_id: str) -> dict:
         space_id: UUID string of the Space.
     """
     _workflow_queue.put({
+        "action": "review_projection",
         "kind": "projection_review",
         "project_id": project_id,
         "kwargs": {"project_id": project_id, "space_id": space_id},
@@ -406,7 +409,7 @@ def save_space(
     purpose: str,
     extraction_schema: dict,
     system_prompt: str,
-    field_descriptions: dict,
+    field_descriptions: dict | None = None,
     description: str = "",
 ) -> dict:
     """Persist a NEW projection space (schema) co-designed with the user.
@@ -419,9 +422,11 @@ def save_space(
         name: Unique short identifier (snake_case), e.g. "catalysis_qa".
         domain: Research domain string, e.g. "heterogeneous catalysis".
         purpose: One of "tabular_database", "qa_benchmark", "skill_cards", "freeform".
-        extraction_schema: The JSON schema (shape depends on purpose).
+        extraction_schema: The JSON schema (shape depends on purpose). Put
+            field and section guidance in schema ``description`` values.
         system_prompt: Domain-specific instructions for the projection agent.
-        field_descriptions: Per-top-level-field extraction guidance.
+        field_descriptions: Legacy guidance field; merged into top-level schema
+            descriptions if provided.
         description: Optional human-readable description.
     """
     from mkb import api

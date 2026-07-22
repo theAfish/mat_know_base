@@ -7,45 +7,40 @@ from fastapi import HTTPException
 from mkb.web.routers import projects
 
 
-class _FakeQuery:
-    def __init__(self, row):
+class _FakeContentService:
+    def __init__(self, row, content):
         self.row = row
+        self.content = content
 
-    def join(self, *args, **kwargs):
-        return self
-
-    def filter(self, *args, **kwargs):
-        return self
-
-    def first(self):
+    def get(self, _identifier):
         return self.row
 
+    def read_bytes(self, _identifier):
+        return self.content
 
-class _FakeSession:
-    def __init__(self, row):
-        self.row = row
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-    def query(self, *args):
-        return _FakeQuery(self.row)
+def _kb(*, source=None, artifact=None, content=b""):
+    return SimpleNamespace(
+        sources=_FakeContentService(source, content),
+        artifacts=_FakeContentService(artifact, content),
+    )
 
 
 def test_get_project_asset_content_returns_inline_pdf(monkeypatch):
+    project_id = uuid4()
     row = SimpleNamespace(
+        id=uuid4(),
         filename="论文.pdf",
-        mime_type="application/pdf",
-        s3_bucket="raw",
-        s3_key="paper.pdf",
+        media_type="application/pdf",
+        collection_ids=(project_id,),
     )
-    monkeypatch.setattr(projects, "SyncSessionLocal", lambda: _FakeSession(row))
-    monkeypatch.setattr(projects, "download_bytes", lambda bucket, key: b"%PDF-test")
+    monkeypatch.setattr(
+        projects,
+        "get_knowledge_base",
+        lambda: _kb(source=row, content=b"%PDF-test"),
+    )
 
-    response = projects.get_project_asset_content(str(uuid4()), str(uuid4()))
+    response = projects.get_project_asset_content(str(project_id), str(row.id))
 
     assert response.body == b"%PDF-test"
     assert response.media_type == "application/pdf"
@@ -54,16 +49,23 @@ def test_get_project_asset_content_returns_inline_pdf(monkeypatch):
 
 
 def test_get_project_processed_asset_content_returns_markdown(monkeypatch):
-    row = SimpleNamespace(
-        conversion_metadata={"primary_relpath": "paper.md"},
-        output_format="md",
-        s3_bucket="processed",
-        s3_key="paper.md",
+    project_id = uuid4()
+    source = SimpleNamespace(id=uuid4(), collection_ids=(project_id,))
+    artifact = SimpleNamespace(
+        id=uuid4(),
+        source_id=source.id,
+        primary_path="paper.md",
+        format="md",
     )
-    monkeypatch.setattr(projects, "SyncSessionLocal", lambda: _FakeSession(row))
-    monkeypatch.setattr(projects, "download_bytes", lambda bucket, key: b"# Paper\n")
+    monkeypatch.setattr(
+        projects,
+        "get_knowledge_base",
+        lambda: _kb(source=source, artifact=artifact, content=b"# Paper\n"),
+    )
 
-    response = projects.get_project_processed_asset_content(str(uuid4()), str(uuid4()))
+    response = projects.get_project_processed_asset_content(
+        str(project_id), str(artifact.id)
+    )
 
     assert response.body == b"# Paper\n"
     assert response.media_type == "text/markdown"
@@ -71,7 +73,11 @@ def test_get_project_processed_asset_content_returns_markdown(monkeypatch):
 
 
 def test_get_project_asset_content_rejects_unlinked_asset(monkeypatch):
-    monkeypatch.setattr(projects, "SyncSessionLocal", lambda: _FakeSession(None))
+    monkeypatch.setattr(
+        projects,
+        "get_knowledge_base",
+        lambda: _kb(source=None),
+    )
 
     with pytest.raises(HTTPException) as exc:
         projects.get_project_asset_content(str(uuid4()), str(uuid4()))

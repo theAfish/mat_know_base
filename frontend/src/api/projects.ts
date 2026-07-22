@@ -1,5 +1,5 @@
 import client from './client'
-import type { Project, Asset, ProcessedAsset, Job, RawWorkflowVersion, CanonicalWorkflowVersion } from '../types'
+import type { Project, Asset, ProcessedAsset, Job, RawWorkflowVersion } from '../types'
 
 export const listProjects = (limit = 100) =>
   client.get<Project[]>('/projects', { params: { limit } }).then(r => r.data)
@@ -55,24 +55,6 @@ export const getProjectWorkflow = (id: string, version?: number) =>
 export const deleteProjectWorkflowVersion = (id: string, version: number) =>
   client.delete<{ status: string; project_id: string; version: number; extraction_id: string }>(
     `/projects/${id}/workflows/${version}`,
-  ).then(r => r.data)
-
-export const canonicalizeProjectWorkflow = (id: string, rawExtractionId?: string) =>
-  client.post<{ job_id: string }>(`/projects/${id}/workflows/canonicalize`, {
-    raw_extraction_id: rawExtractionId ?? null,
-  }).then(r => r.data)
-
-export const listCanonicalWorkflows = (id: string) =>
-  client.get<CanonicalWorkflowVersion[]>(`/projects/${id}/canonical-workflows`).then(r => r.data)
-
-export const getCanonicalWorkflow = (id: string, version?: number) =>
-  client.get<CanonicalWorkflowVersion>(
-    `/projects/${id}/canonical-workflows/${version == null ? 'latest' : version}`,
-  ).then(r => r.data)
-
-export const deleteCanonicalWorkflowVersion = (id: string, version: number) =>
-  client.delete<{ status: string; project_id: string; version: number; canonicalization_id: string }>(
-    `/projects/${id}/canonical-workflows/${version}`,
   ).then(r => r.data)
 
 export const getProjectJobs = (id: string) =>

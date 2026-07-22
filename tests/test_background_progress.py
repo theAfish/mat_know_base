@@ -20,15 +20,28 @@ def test_api_process_forwards_progress_callback(monkeypatch):
     fake_context_manager.__enter__.return_value = fake_session
     fake_context_manager.__exit__.return_value = False
 
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_context_manager)
+    database = SimpleNamespace(session=lambda: fake_context_manager)
+    object_store = SimpleNamespace()
 
-    def fake_process_asset(aid, progress_callback=None):
+    def fake_process_asset(aid, *, database, object_store, processed_bucket, progress_callback=None):
         assert aid == asset_id
+        assert processed_bucket == "processed"
         assert progress_callback is not None
         progress_callback({"message": "Downloaded paper.pdf", "asset_id": str(aid)})
         return {"asset_id": str(aid), "status": "SUCCESS"}
 
     monkeypatch.setattr("mkb.processors.coordinator.process_asset", fake_process_asset)
+    from mkb.services.content_operations import ContentOperations
+
+    monkeypatch.setattr(
+        "mkb.services.compatibility_resources.content_operations",
+        lambda: ContentOperations(
+            database,
+            object_store,
+            raw_bucket="raw",
+            processed_bucket="processed",
+        ),
+    )
 
     result = api.process(project_id=project_id, progress_callback=events.append)
 
@@ -165,4 +178,7 @@ def test_agent_runner_reports_retry_progress_for_transient_errors():
 def test_retryable_provider_error_includes_tool_call_json_parse_failures():
     assert _is_retryable_provider_error(
         "JSONDecodeError: Expecting ',' delimiter while parsing tool call arguments"
+    ) is True
+    assert _is_retryable_provider_error(
+        "Expecting property name enclosed in double quotes: line 1 column 3401"
     ) is True

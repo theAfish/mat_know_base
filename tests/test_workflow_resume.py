@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from mkb import api
+from mkb.agents.runtime import AgentRuntime
 from mkb.agents.tools import workflow_canonicalization as canonical_tools
 from mkb.agents.tools import workflows as workflow_tools
 from mkb.agents.workflow_canonicalization import canonicalization_call_budget
@@ -27,11 +28,14 @@ def test_extract_raw_workflow_returns_preflight_error_when_no_markdown(monkeypat
 
 def test_project_workflow_extract_rejects_active_job(monkeypatch):
     project_id = str(uuid.uuid4())
-
     monkeypatch.setattr(
-        projects_router.jobs,
-        "find_active_job",
-        lambda **_kwargs: {"job_id": "j1", "status": "RUNNING"},
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(
+                find_active=lambda **_kwargs: SimpleNamespace(status="RUNNING")
+            )
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -44,11 +48,20 @@ def test_project_workflow_extract_rejects_active_job(monkeypatch):
 def test_project_workflow_extract_rejects_when_not_ready(monkeypatch):
     project_id = str(uuid.uuid4())
 
-    monkeypatch.setattr(projects_router.jobs, "find_active_job", lambda **_kwargs: None)
     monkeypatch.setattr(
-        projects_router.api,
-        "get_raw_workflow_extraction_readiness",
-        lambda _project_id: {"ready": False, "message": "Run Process first"},
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(find_active=lambda **_kwargs: None),
+            materials=SimpleNamespace(
+                workflows=SimpleNamespace(
+                    readiness=lambda _project_id: {
+                        "ready": False,
+                        "message": "Run Process first",
+                    }
+                )
+            ),
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -62,9 +75,13 @@ def test_delete_raw_workflow_version_rejects_active_job(monkeypatch):
     project_id = str(uuid.uuid4())
 
     monkeypatch.setattr(
-        projects_router.jobs,
-        "find_active_job",
-        lambda **_kwargs: {"job_id": "j1", "status": "RUNNING"},
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(
+                find_active=lambda **_kwargs: SimpleNamespace(status="RUNNING")
+            )
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -95,10 +112,13 @@ def test_delete_raw_workflow_version_removes_unfinished_row(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
+    from mkb.services.workflows.extraction import delete_raw_workflow_version
 
-    result = api.delete_raw_workflow_version(project_id, 4)
+    result = delete_raw_workflow_version(
+        project_id,
+        4,
+        database=MagicMock(session=lambda: fake_cm),
+    )
 
     assert result == {
         "status": "deleted",
@@ -131,62 +151,22 @@ def test_delete_raw_workflow_version_rejects_when_canonical_depends_on_it(monkey
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
+    from mkb.services.workflows.extraction import delete_raw_workflow_version
 
-    result = api.delete_raw_workflow_version(project_id, 2)
+    result = delete_raw_workflow_version(
+        project_id,
+        2,
+        database=MagicMock(session=lambda: fake_cm),
+    )
 
     assert result == {"error": "Raw workflow v2 cannot be deleted because canonical workflow v5 still depends on it"}
     fake_session.delete.assert_not_called()
     fake_session.commit.assert_not_called()
 
 
-def test_delete_canonical_workflow_version_removes_indexes_and_tasks(monkeypatch):
-    project_id = uuid.uuid4()
-    canonicalization_id = uuid.uuid4()
-    fake_row = SimpleNamespace(
-        canonicalization_id=canonicalization_id,
-        project_id=project_id,
-        version=3,
-    )
-
-    fake_query = MagicMock()
-    fake_query.filter.return_value.first.return_value = fake_row
-    fake_session = MagicMock()
-    fake_session.query.return_value = fake_query
-    fake_cm = MagicMock()
-    fake_cm.__enter__.return_value = fake_session
-    fake_cm.__exit__.return_value = False
-
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
-
-    result = api.delete_canonical_workflow_version(project_id, 3)
-
-    assert result == {
-        "status": "deleted",
-        "project_id": str(project_id),
-        "version": 3,
-        "canonicalization_id": str(canonicalization_id),
-    }
-    fake_session.delete.assert_called_once_with(fake_row)
-    fake_session.commit.assert_called_once()
-
-
-def test_delete_canonical_workflow_version_rejects_active_job(monkeypatch):
-    project_id = str(uuid.uuid4())
-
-    monkeypatch.setattr(
-        projects_router.jobs,
-        "find_active_job",
-        lambda **_kwargs: {"job_id": "j1", "status": "RUNNING"},
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        projects_router.delete_project_canonical_workflow_version(project_id, 2)
-
-    assert exc.value.status_code == 409
-    assert "currently running" in exc.value.detail.lower()
+def test_canonical_workflow_mutation_paths_are_retired():
+    assert not hasattr(api, "delete_canonical_workflow_version")
+    assert not hasattr(projects_router, "delete_project_canonical_workflow_version")
 
 
 def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):
@@ -208,12 +188,13 @@ def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(workflow_tools, "SyncSessionLocal", lambda: fake_cm)
+    from mkb.agents.runtime import AgentRuntime
 
     result = workflow_tools.checkpoint_raw_workflow(
         str(extraction_id),
         "Read methods section; synthesis branch drafted, characterization remains.",
         graph={"nodes": [{"node_id": "draft-1"}], "edges": []},
+        runtime=AgentRuntime(database=MagicMock(session=lambda: fake_cm)),
     )
 
     assert result["status"] == "checkpointed"
@@ -222,12 +203,19 @@ def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):
 
 def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
     captured = {}
+    job_id = uuid.uuid4()
 
-    def _start_job(**kwargs):
-        captured.update(kwargs)
-        return "job-123"
+    def _submit_action(action, **kwargs):
+        captured.update(action=action, **kwargs)
+        return SimpleNamespace(id=job_id)
 
-    monkeypatch.setattr(projects_router.jobs, "start_job", _start_job)
+    monkeypatch.setattr(
+        projects_router,
+        "get_knowledge_base",
+        lambda: SimpleNamespace(
+            jobs=SimpleNamespace(submit_action=_submit_action)
+        ),
+    )
 
     body = projects_router.SchemaCurateRequest(
         min_support=3,
@@ -240,18 +228,14 @@ def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
 
     result = projects_router.curate_schema(body)
 
-    assert result == {"job_id": "job-123"}
-    assert captured["kind"] == "ontology_induction"
-    assert captured["kwargs"]["mode"] == "local"
-    assert captured["kwargs"]["sample_size"] == 12
-    assert captured["kwargs"]["min_support"] == 3
-    assert fake_row.checkpoint["summary"].startswith("Read methods section")
-    assert fake_row.checkpoint["graph"] == {"nodes": [{"node_id": "draft-1"}], "edges": []}
-    assert fake_row.provenance["checkpoint_count"] == 1
-    fake_session.commit.assert_called_once()
+    assert result == {"job_id": str(job_id)}
+    assert captured["action"] == "curate_workflow_schema"
+    assert captured["mode"] == "local"
+    assert captured["sample_size"] == 12
+    assert captured["min_support"] == 3
 
 
-def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):
+def test_checkpoint_canonical_workflow_updates_unfinished_row():
     canonicalization_id = uuid.uuid4()
     raw_extraction_id = uuid.uuid4()
     fake_row = SimpleNamespace(
@@ -275,9 +259,11 @@ def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(canonical_tools, "SyncSessionLocal", lambda: fake_cm)
-
-    result = canonical_tools.checkpoint_canonical_workflow(
+    tools = canonical_tools.canonicalization_tools(
+        AgentRuntime(database=MagicMock(session=lambda: fake_cm))
+    )
+    checkpoint = next(tool for tool in tools if tool.__name__ == "checkpoint_canonical_workflow")
+    result = checkpoint(
         str(canonicalization_id),
         "Mapped data objects and one operation; edge drafting remains.",
     )
@@ -290,7 +276,7 @@ def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):
     fake_session.commit.assert_called_once()
 
 
-def test_upsert_canonical_node_persists_draft_graph(monkeypatch):
+def test_upsert_canonical_node_persists_draft_graph():
     canonicalization_id = uuid.uuid4()
     raw_extraction_id = uuid.uuid4()
     project_id = uuid.uuid4()
@@ -316,9 +302,11 @@ def test_upsert_canonical_node_persists_draft_graph(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(canonical_tools, "SyncSessionLocal", lambda: fake_cm)
-
-    result = canonical_tools.upsert_canonical_node(
+    tools = canonical_tools.canonicalization_tools(
+        AgentRuntime(database=MagicMock(session=lambda: fake_cm))
+    )
+    upsert_node = next(tool for tool in tools if tool.__name__ == "upsert_canonical_node")
+    result = upsert_node(
         str(canonicalization_id),
         {
             "node_id": f"canonical:{canonicalization_id}:n0001",
@@ -376,58 +364,5 @@ def test_resume_manifest_omits_heavy_draft_attributes_and_tracks_remaining_raw_n
     assert len(json.dumps(manifest)) < 2_000
 
 
-def test_global_recanonicalization_batch_runs_pending_tasks(monkeypatch):
-    task_ids = [uuid.uuid4(), uuid.uuid4()]
-    fake_query = MagicMock()
-    fake_query.filter_by.return_value.order_by.return_value.all.return_value = [
-        SimpleNamespace(
-            task_id=task_id, project_id=uuid.uuid4(), status="pending", result={},
-        ) for task_id in task_ids
-    ]
-    fake_session = MagicMock()
-    fake_session.query.return_value = fake_query
-    fake_cm = MagicMock()
-    fake_cm.__enter__.return_value = fake_session
-    fake_cm.__exit__.return_value = False
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
-    monkeypatch.setattr(
-        api, "run_workflow_maintenance_task",
-        lambda task_id, **_kwargs: {"task_id": str(task_id), "status": "completed"},
-    )
-
-    result = api.run_pending_recanonicalizations()
-
-    assert result["task_count"] == 2
-    assert result["completed"] == 2
-    assert result["failed"] == 0
-
-
-def test_global_recanonicalization_batch_coalesces_duplicate_project_tasks(monkeypatch):
-    project_id = uuid.uuid4()
-    newest = SimpleNamespace(
-        task_id=uuid.uuid4(), project_id=project_id, status="pending", result={},
-    )
-    older = SimpleNamespace(
-        task_id=uuid.uuid4(), project_id=project_id, status="pending", result={},
-    )
-    fake_query = MagicMock()
-    fake_query.filter_by.return_value.order_by.return_value.all.return_value = [newest, older]
-    fake_session = MagicMock()
-    fake_session.query.return_value = fake_query
-    fake_cm = MagicMock()
-    fake_cm.__enter__.return_value = fake_session
-    fake_cm.__exit__.return_value = False
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
-    monkeypatch.setattr(
-        api, "run_workflow_maintenance_task",
-        lambda task_id, **_kwargs: {"task_id": str(task_id), "status": "completed"},
-    )
-
-    result = api.run_pending_recanonicalizations()
-
-    assert result["task_count"] == 1
-    assert result["duplicate_tasks_coalesced"] == 1
-    assert older.status == "superseded"
-    assert older.result["superseded_by_task_id"] == str(newest.task_id)
+def test_recanonicalization_batch_launch_is_retired():
+    assert not hasattr(api, "run_pending_recanonicalizations")

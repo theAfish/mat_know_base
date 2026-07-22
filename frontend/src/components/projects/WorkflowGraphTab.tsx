@@ -4,6 +4,12 @@ import { deleteProjectWorkflowVersion, getProjectWorkflow, listProjectWorkflows 
 import type { RawWorkflowVersion } from '../../types'
 import WorkflowCanvas, { type WorkflowCanvasEdge, type WorkflowCanvasNode } from './WorkflowCanvas'
 
+function workflowNodeKind(node: { node_kind?: string; node_kind_guess: string }): WorkflowCanvasNode['kind'] {
+  const kind = node.node_kind ?? node.node_kind_guess
+  if (kind === 'operation' || kind === 'planning' || kind === 'reasoning' || kind === 'unknown') return kind
+  return 'object'
+}
+
 function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
   const graph = workflow.graph
 
@@ -12,7 +18,7 @@ function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
   const nodes: WorkflowCanvasNode[] = graph.nodes.map(node => ({
     id: node.node_id,
     label: node.canonical_name ?? node.raw_name,
-    kind: (node.node_kind ?? node.node_kind_guess) === 'operation' ? 'operation' : 'object',
+    kind: workflowNodeKind(node),
     title: `${node.canonical_name ?? node.raw_name}\nsource term: ${node.raw_name}\n${node.semantic_type ?? node.node_kind_guess} · confidence ${node.confidence.toFixed(2)}\n\n${node.evidence_text}`,
     details: {
       card_id: node.card_id,
@@ -39,6 +45,11 @@ function RawWorkflowCanvas({ workflow }: { workflow: RawWorkflowVersion }) {
   }))
 
   return <WorkflowCanvas nodes={nodes} edges={edges} exportBaseName={`raw-workflow-v${workflow.version}`} />
+}
+
+function formatReviewFlag(flag: { type: string; item_type?: string; item_id?: string }) {
+  const label = flag.type.replace(/_/g, ' ')
+  return flag.item_id ? `${label}: ${flag.item_id}` : label
 }
 
 export default function WorkflowGraphTab({
@@ -124,6 +135,12 @@ export default function WorkflowGraphTab({
       </div>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {selected?.error && <p className="text-sm text-red-400">{selected.error}</p>}
+      {selected?.review_flags && selected.review_flags.length > 0 && (
+        <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+          {selected.review_flags.slice(0, 4).map(flag => formatReviewFlag(flag)).join(' · ')}
+          {selected.review_flags.length > 4 ? ` · ${selected.review_flags.length - 4} more` : ''}
+        </div>
+      )}
       {selected && !selected.graph && selected.resumable && (
         <div className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
           {selected.has_checkpoint
@@ -133,7 +150,7 @@ export default function WorkflowGraphTab({
         </div>
       )}
       {selected?.graph ? <RawWorkflowCanvas workflow={selected} /> : null}
-      <p className="text-xs text-slate-500">Purple rectangles are operations; teal parallelograms are objects. Drag nodes freely to tidy the canvas and hover nodes for evidence.</p>
+      <p className="text-xs text-slate-500">Purple rectangles are operations; teal parallelograms are objects; amber and blue rectangles are planning and reasoning. Drag nodes freely to tidy the canvas and hover nodes for evidence.</p>
     </div>
   )
 }

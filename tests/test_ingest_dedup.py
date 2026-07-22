@@ -68,9 +68,15 @@ def test_repeated_project_reuses_existing_project_without_creating_row(tmp_path,
     asset = SimpleNamespace(asset_id=asset_id, sha256=digest)
     session = _Session(asset, existing_project_id)
 
-    monkeypatch.setattr(worker, "SyncSessionLocal", lambda: session)
+    database = SimpleNamespace(session=lambda: session)
+    object_store = SimpleNamespace()
 
-    result = worker.ingest_directory(tmp_path)
+    result = worker.ingest_directory(
+        tmp_path,
+        database=database,
+        object_store=object_store,
+        raw_bucket="raw",
+    )
 
     assert result == {
         "total": 1,
@@ -106,7 +112,9 @@ def test_upload_handler_removes_directory_for_reused_project(tmp_path, monkeypat
 
     monkeypatch.setattr(api_server, "_UPLOAD_TEMP", tmp_path / "_temp")
     monkeypatch.setattr(api_server, "_create_unique_project_dir", create_project_dir)
-    monkeypatch.setattr(api_server, "api", _Api)
+    monkeypatch.setattr(
+        "mkb.web.dependencies.get_knowledge_base", lambda: _Api
+    )
 
     payload = [
         api_server.UploadProject.model_validate(
