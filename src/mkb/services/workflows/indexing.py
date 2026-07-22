@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from mkb.services._api_common import (
-    SyncSessionLocal,
-    init_db,
-    uuid,
-)
+from mkb.services._api_common import uuid
+from mkb.ports import Database
 
-def rebuild_workflow_indexes(project_id: str | uuid.UUID | None = None) -> dict:
+def rebuild_workflow_indexes(project_id: str | uuid.UUID | None = None, *, database: Database) -> dict:
     from mkb.db.models import CanonicalWorkflow, RawWorkflowExtraction, WorkflowIndexEntry
     from mkb.workflows.indexing import build_index_entries
     from mkb.workflows.schema_library import get_schema_library_payload
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         query = session.query(CanonicalWorkflow).filter_by(status="COMPLETED")
         if project_id:
             query = query.filter_by(project_id=uuid.UUID(str(project_id)))
@@ -30,7 +26,7 @@ def rebuild_workflow_indexes(project_id: str | uuid.UUID | None = None) -> dict:
         session.commit()
         return {"workflows_indexed": len(rows), "entries_created": count}
 
-def search_canonical_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "strict", limit: int = 100) -> list[dict]:
+def search_canonical_workflows(source: str | None = None, operation: str | None = None, target: str | None = None, mode: str = "strict", limit: int = 100, *, database: Database) -> list[dict]:
     """Search persisted workflow indexes and return evidence-rich explanations."""
     from mkb.db.models import CanonicalWorkflow, WorkflowIndexEntry
     from mkb.workflows.indexing import QUERY_MODES, match_index_entry, normalize
@@ -39,10 +35,9 @@ def search_canonical_workflows(source: str | None = None, operation: str | None 
     mode = legacy_modes.get(mode, mode)
     if mode not in QUERY_MODES:
         raise ValueError(f"Unsupported query mode: {mode}")
-    init_db()
     results = []
     seen_paths = set()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         completed = session.query(CanonicalWorkflow).filter_by(status="COMPLETED").order_by(CanonicalWorkflow.project_id, CanonicalWorkflow.version.desc()).all()
         latest = {}
         for row in completed:

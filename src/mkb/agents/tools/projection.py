@@ -17,11 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.services.agent_tools.persistence import complete_projection, fail_projection
 from mkb.services.agent_tools.queries import projection_context
 from mkb.services.agent_tools.validation import validate_identifier
 from mkb.config import settings
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     Feedback,
     FeedbackStatus,
@@ -65,6 +65,12 @@ _CORE_STUDY_FALSE_MARKERS = {
     "testing",
     "validation",
 }
+
+
+def _require_object_store(runtime: AgentRuntime):
+    if runtime.object_store is None:
+        raise RuntimeError("Projection markdown access requires an object store")
+    return runtime.object_store
 
 
 def _extract_json_from_text(value: str):
@@ -328,6 +334,8 @@ def get_frame_content(
     max_list_items: int = DEFAULT_FRAME_CONTENT_MAX_LIST_ITEMS,
     max_dict_items: int = DEFAULT_FRAME_CONTENT_MAX_DICT_ITEMS,
     max_string_chars: int = DEFAULT_FRAME_CONTENT_MAX_STRING_CHARS,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Read the knowledge frame content for projection.
 
@@ -337,7 +345,7 @@ def get_frame_content(
     if not fid:
         return {"error": invalid_identifier_message("frame_id", frame_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(frame_id=fid).first()
         if not frame:
             return {"error": f"Frame {frame_id} not found."}
@@ -404,6 +412,8 @@ def save_projection(
     data: dict,
     validation_notes: str = "",
     agent_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Save extracted projection data.
 
@@ -420,7 +430,7 @@ def save_projection(
     if error:
         return error
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projection, frame, space = projection_context(session, pid)
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
@@ -516,6 +526,8 @@ def request_frame_clarification(
     question: str,
     context: str = "",
     field: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Ask the extraction agent to clarify or update the knowledge frame in real time.
 
@@ -546,7 +558,7 @@ def request_frame_clarification(
     if not pid:
         return {"error": invalid_identifier_message("projection_id", projection_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projection = session.query(Projection).filter_by(projection_id=pid).first()
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
@@ -583,6 +595,7 @@ def request_frame_clarification(
         question=question,
         context=context,
         field=field,
+        runtime=runtime,
     )
 
     # Record the clarification in the frame's agent_annotations so future
@@ -595,7 +608,7 @@ def request_frame_clarification(
         "frame_updated": result.get("updated", False),
         "resolved_at": now.isoformat(),
     }
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(frame_id=frame_id).first()
         if frame:
             annotations = dict(frame.agent_annotations or {})
@@ -614,6 +627,8 @@ def flag_for_feedback(
     issue: str,
     question: str,
     context: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Record a fundamental pipeline or architectural issue encountered during projection.
 
@@ -645,7 +660,7 @@ def flag_for_feedback(
     if not pid:
         return {"error": invalid_identifier_message("projection_id", projection_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projection = session.query(Projection).filter_by(projection_id=pid).first()
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
@@ -694,6 +709,8 @@ def get_project_markdown(
     project_id: str,
     max_chars: int = 40000,
     max_files: int = 10,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Read concatenated Markdown of all processed assets for a project.
 
@@ -716,12 +733,11 @@ def get_project_markdown(
         return {"error": invalid_identifier_message("project_id", project_id)}
 
     from mkb.db.models import Asset, ProcessedAsset, ProcessingType, ProjectAsset
-    from mkb.storage.s3 import download_bytes
 
     safe_max_chars = max(2000, min(int(max_chars), 400000))
     safe_max_files = max(1, min(int(max_files), 100))
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
         asset_ids = [link.asset_id for link in links]
         if not asset_ids:
@@ -764,7 +780,7 @@ def get_project_markdown(
             truncated = True
             break
         try:
-            data = download_bytes(processed.s3_bucket, processed.s3_key)
+            data = _require_object_store(runtime).get_bytes(processed.s3_bucket, processed.s3_key)
             text = data.decode("utf-8", errors="replace")
         except Exception as exc:
             logger.warning(
@@ -816,6 +832,8 @@ def get_project_markdown(
 def mark_projection_not_relevant(
     projection_id: str,
     reason: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Mark a projection as NOT_RELEVANT and stop extraction.
 
@@ -839,7 +857,7 @@ def mark_projection_not_relevant(
     if not pid:
         return {"error": invalid_identifier_message("projection_id", projection_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projection = session.query(Projection).filter_by(projection_id=pid).first()
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
@@ -863,7 +881,7 @@ def mark_projection_not_relevant(
 # =====================================================================
 
 
-def list_project_markdown_files(project_id: str) -> dict:
+def list_project_markdown_files(project_id: str, *, runtime: AgentRuntime) -> dict:
     """List every processed-Markdown file attached to a project.
 
     Returns one entry per file with its asset_id, filename, total character
@@ -876,9 +894,8 @@ def list_project_markdown_files(project_id: str) -> dict:
         return {"error": invalid_identifier_message("project_id", project_id)}
 
     from mkb.db.models import Asset, ProcessedAsset, ProcessingType, ProjectAsset
-    from mkb.storage.s3 import download_bytes
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         links = session.query(ProjectAsset).filter_by(project_id=pid).all()
         asset_ids = [link.asset_id for link in links]
         if not asset_ids:
@@ -903,7 +920,7 @@ def list_project_markdown_files(project_id: str) -> dict:
             "heading_count": None,
         }
         try:
-            data = download_bytes(processed.s3_bucket, processed.s3_key)
+            data = _require_object_store(runtime).get_bytes(processed.s3_bucket, processed.s3_key)
             text = data.decode("utf-8", errors="replace")
             entry["total_chars"] = len(text)
             entry["heading_count"] = sum(
@@ -923,6 +940,8 @@ _PROJECT_MD_CHUNK = 80_000
 def read_project_markdown_file(
     asset_id: str,
     start_char: int = 0,
+    *,
+    runtime: AgentRuntime,
 ) -> str:
     """Read a single processed-Markdown file for projection, with paging.
 
@@ -935,7 +954,7 @@ def read_project_markdown_file(
     # Reuse the extraction reading tool to avoid duplicating logic.
     from mkb.agents.tools.reading import read_processed_markdown
 
-    return read_processed_markdown(asset_id, start_char=start_char)
+    return read_processed_markdown(asset_id, start_char=start_char, runtime=runtime)
 
 
 # =====================================================================
@@ -949,6 +968,8 @@ def update_projection(
     modifications: list | str | None = None,
     removals: list | str | None = None,
     agent_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Apply incremental edits to an existing projection's `data` payload.
 
@@ -990,7 +1011,7 @@ def update_projection(
 
     now = datetime.now(timezone.utc)
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         projection = session.query(Projection).filter_by(projection_id=pid).first()
         if not projection:
             return {"error": f"Projection {projection_id} not found."}
@@ -1072,7 +1093,7 @@ def update_projection(
         }
 
 
-PROJECTION_TOOLS = [
+PROJECTION_OPERATIONS = [
     get_frame_content,
     get_project_markdown,
     list_project_markdown_files,
@@ -1083,3 +1104,19 @@ PROJECTION_TOOLS = [
     request_frame_clarification,
     flag_for_feedback,
 ]
+
+
+def projection_reader_tools(runtime: AgentRuntime):
+    """Return the runtime-bound projection reader shared by graph agents."""
+
+    return bind_tools([get_frame_content], runtime)
+
+
+def projection_tools(runtime: AgentRuntime):
+    """Return all projection tools bound to a client-owned runtime."""
+
+    return bind_tools(PROJECTION_OPERATIONS, runtime)
+
+
+# Compatibility metadata only; agent execution must use projection_tools.
+PROJECTION_TOOLS = PROJECTION_OPERATIONS

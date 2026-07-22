@@ -6,7 +6,7 @@ import uuid
 from collections import Counter
 
 
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import (
     CanonicalWorkflow, RawWorkflowExtraction, SchemaProposal,
     ResearchProject, WorkflowSchemaVersion,
@@ -43,11 +43,13 @@ def reset_curator_author(token) -> None:
     CURATOR_AUTHOR.reset(token)
 
 
-def get_schema_curator_context(min_support: int = 2, max_workflows: int = 40) -> dict:
+def get_schema_curator_context(
+    min_support: int = 2, max_workflows: int = 40, *, runtime: AgentRuntime
+) -> dict:
     """Load global schema, deterministic discovery signals, and bounded evidence."""
     min_support = max(1, int(min_support))
     max_workflows = min(80, max(1, int(max_workflows)))
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         active = session.query(WorkflowSchemaVersion).filter_by(status="active").order_by(
             WorkflowSchemaVersion.version.desc()
         ).first()
@@ -142,6 +144,8 @@ def get_workflow_review_overview(
     mode: str = "global",
     sample_size: int = 8,
     min_support: int = 2,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Return bounded, mode-specific context for the workflow review agent."""
     resolved_mode = str(mode or "global").strip().lower()
@@ -149,7 +153,7 @@ def get_workflow_review_overview(
         return {"error": "mode must be 'local' or 'global'"}
     min_support = max(1, int(min_support))
     sample_size = max(1, min(int(sample_size), 30))
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         latest_rows = _latest_reviewable_workflows(session)
         labels = _project_labels_by_id(session, [row.project_id for row in latest_rows])
         selected = (
@@ -199,11 +203,13 @@ def get_workflow_review_overview(
         }
 
 
-def search_existing_workflows(query: str = "", limit: int = 10) -> dict:
+def search_existing_workflows(
+    query: str = "", limit: int = 10, *, runtime: AgentRuntime
+) -> dict:
     """Search the newest available workflow for each project."""
     effective_limit = max(1, min(int(limit), 30))
     needle = _normalize_text(query)
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         rows = _latest_reviewable_workflows(session)
         labels = _project_labels_by_id(session, [row.project_id for row in rows])
         matched = []
@@ -220,13 +226,13 @@ def search_existing_workflows(query: str = "", limit: int = 10) -> dict:
         }
 
 
-def get_existing_workflow(workflow_id: str) -> dict:
+def get_existing_workflow(workflow_id: str, *, runtime: AgentRuntime) -> dict:
     """Retrieve one newest workflow by ID, with bounded but editable graph detail."""
     try:
         wid = uuid.UUID(str(workflow_id))
     except (TypeError, ValueError, AttributeError):
         return {"error": "workflow_id must be a UUID"}
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         row = session.query(RawWorkflowExtraction).filter_by(extraction_id=wid).first()
         if not row or row.status != "COMPLETED":
             return {"error": "workflow not found"}
@@ -299,6 +305,8 @@ def search_similar_workflow_nodes(
     query: str,
     node_kind: str | None = None,
     limit: int = 20,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Search similar nodes across the newest workflow of each project."""
     text = _normalize_text(query)
@@ -307,7 +315,7 @@ def search_similar_workflow_nodes(
     if node_kind not in SEARCHABLE_NODE_KINDS:
         return {"error": "node_kind must be one of object, operation, planning, reasoning, unknown, or omitted"}
     effective_limit = max(1, min(int(limit), 50))
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         rows = _latest_reviewable_workflows(session)
         labels = _project_labels_by_id(session, [row.project_id for row in rows])
         matches = []
@@ -345,10 +353,12 @@ def search_similar_workflow_nodes(
         return {"query": query, "results": matches[:effective_limit]}
 
 
-def get_workflow_review_statistics(min_support: int = 2) -> dict:
+def get_workflow_review_statistics(
+    min_support: int = 2, *, runtime: AgentRuntime
+) -> dict:
     """Global statistics for similarity, unmapped nodes, and review risk."""
     min_support = max(1, int(min_support))
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         rows = _latest_reviewable_workflows(session)
         labels = _project_labels_by_id(session, [row.project_id for row in rows])
         label_counts: Counter[str] = Counter()
@@ -399,3 +409,9 @@ SCHEMA_CURATOR_TOOLS = [
     submit_schema_proposal,
     revise_schema_proposal,
 ]
+
+
+def schema_curator_tools(runtime: AgentRuntime):
+    """Return ontology-curation tools bound to one client runtime."""
+
+    return bind_tools(SCHEMA_CURATOR_TOOLS, runtime)

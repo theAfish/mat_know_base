@@ -7,12 +7,6 @@ from botocore.exceptions import ClientError
 from mkb.config import settings
 
 
-def _bound_store():
-    from mkb.legacy_context import object_store_var
-
-    return object_store_var.get()
-
-
 def get_s3_client():
     return boto3.client(
         "s3",
@@ -38,10 +32,6 @@ def ensure_bucket_exists(bucket: str) -> None:
 
 
 def upload_bytes(data: bytes, bucket: str, key: str) -> None:
-    store = _bound_store()
-    if store is not None:
-        store.put_bytes(bucket, key, data)
-        return
     client = get_s3_client()
     try:
         client.put_object(Bucket=bucket, Key=key, Body=data)
@@ -56,18 +46,12 @@ def upload_bytes(data: bytes, bucket: str, key: str) -> None:
 
 
 def download_bytes(bucket: str, key: str) -> bytes:
-    store = _bound_store()
-    if store is not None:
-        return store.get_bytes(bucket, key)
     client = get_s3_client()
     response = client.get_object(Bucket=bucket, Key=key)
     return response["Body"].read()
 
 
 def object_exists(bucket: str, key: str) -> bool:
-    store = _bound_store()
-    if store is not None:
-        return store.exists(bucket, key)
     client = get_s3_client()
     try:
         client.head_object(Bucket=bucket, Key=key)
@@ -77,22 +61,12 @@ def object_exists(bucket: str, key: str) -> bool:
 
 
 def delete_object(bucket: str, key: str) -> None:
-    store = _bound_store()
-    if store is not None:
-        store.delete(bucket, key)
-        return
     client = get_s3_client()
     client.delete_object(Bucket=bucket, Key=key)
 
 
 def delete_prefix(bucket: str, prefix: str) -> int:
     """Delete all objects under a prefix. Returns number of deleted objects."""
-    store = _bound_store()
-    if store is not None:
-        objects = list(store.list(bucket, prefix))
-        for item in objects:
-            store.delete(bucket, item.key)
-        return len(objects)
     client = get_s3_client()
     paginator = client.get_paginator("list_objects_v2")
     deleted = 0

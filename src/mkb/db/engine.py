@@ -44,15 +44,6 @@ def _global_sync_sessions():
     return sessionmaker(_legacy_sync_engine(), class_=Session, expire_on_commit=False)
 
 
-def _legacy_sync_sessions():
-    from mkb.legacy_context import database_var
-
-    database = database_var.get()
-    if database is not None:
-        return database.session
-    return _global_sync_sessions()
-
-
 class _LazyCompatibilityResource:
     """Resolve a legacy engine or factory only when it is actually used."""
 
@@ -70,7 +61,7 @@ class _LazyCompatibilityResource:
 async_engine = _LazyCompatibilityResource(_legacy_async_engine)
 AsyncSessionLocal = _LazyCompatibilityResource(_legacy_async_sessions)
 sync_engine = _LazyCompatibilityResource(_legacy_sync_engine)
-SyncSessionLocal = _LazyCompatibilityResource(_legacy_sync_sessions)
+SyncSessionLocal = _LazyCompatibilityResource(_global_sync_sessions)
 
 
 def init_db() -> None:

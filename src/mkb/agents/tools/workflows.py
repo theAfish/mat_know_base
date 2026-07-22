@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pydantic import ValidationError
 
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import RawWorkflowExtraction
 from mkb.workflows.contract import RawWorkflowGraph
 from mkb.workflows.review import audit_raw_graph
@@ -18,14 +18,18 @@ from mkb.workflows.editing import (
     search_workflow_cards,
 )
 
-def get_raw_workflow_checkpoint(extraction_id: str) -> dict:
+def get_raw_workflow_checkpoint(
+    extraction_id: str,
+    *,
+    runtime: AgentRuntime,
+) -> dict:
     """Read the latest saved checkpoint for an unfinished raw workflow."""
     try:
         eid = uuid.UUID(extraction_id)
     except (TypeError, ValueError, AttributeError):
         return {"error": f"Invalid extraction_id: {extraction_id}"}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         row = session.query(RawWorkflowExtraction).filter_by(extraction_id=eid).first()
         if not row:
             return {"error": f"Extraction {eid} not found"}
@@ -50,6 +54,8 @@ def checkpoint_raw_workflow(
     extraction_id: str,
     summary: str,
     graph: dict | None = None,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Persist a resumable checkpoint for an unfinished raw workflow."""
     try:
@@ -62,7 +68,7 @@ def checkpoint_raw_workflow(
     if graph is not None and not isinstance(graph, dict):
         return {"error": "graph must be a JSON object when provided"}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         row = session.query(RawWorkflowExtraction).filter_by(extraction_id=eid).first()
         if not row:
             return {"error": f"Extraction {eid} not found"}
@@ -91,14 +97,19 @@ def checkpoint_raw_workflow(
         }
 
 
-def save_raw_workflow(extraction_id: str, graph: dict) -> dict:
+def save_raw_workflow(
+    extraction_id: str,
+    graph: dict,
+    *,
+    runtime: AgentRuntime,
+) -> dict:
     """Validate and immutably save one raw workflow extraction graph."""
     try:
         eid = uuid.UUID(extraction_id)
     except (TypeError, ValueError, AttributeError):
         return {"error": f"Invalid extraction_id: {extraction_id}"}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         row = session.query(RawWorkflowExtraction).filter_by(extraction_id=eid).first()
         if not row:
             return {"error": f"Extraction {eid} not found"}
@@ -162,10 +173,28 @@ def save_raw_workflow(extraction_id: str, graph: dict) -> dict:
         }
 
 
-WORKFLOW_EXTRACTION_TOOLS = [
+WORKFLOW_EXTRACTION_OPERATIONS = [
     get_active_workflow_card_library,
     search_workflow_cards,
     get_raw_workflow_checkpoint,
     checkpoint_raw_workflow,
     save_raw_workflow,
 ]
+
+
+def workflow_extraction_tools(runtime: AgentRuntime):
+    return [
+        get_active_workflow_card_library,
+        search_workflow_cards,
+        *bind_tools(
+            [
+                get_raw_workflow_checkpoint,
+                checkpoint_raw_workflow,
+                save_raw_workflow,
+            ],
+            runtime,
+        ),
+    ]
+
+
+WORKFLOW_EXTRACTION_TOOLS = WORKFLOW_EXTRACTION_OPERATIONS

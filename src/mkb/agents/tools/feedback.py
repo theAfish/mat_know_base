@@ -11,13 +11,13 @@ import logging
 from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import Feedback, FeedbackStatus, KnowledgeFrame
 
 logger = logging.getLogger(__name__)
 
 
-def get_pending_feedback(project_id: str) -> list[dict]:
+def get_pending_feedback(project_id: str, *, runtime: AgentRuntime) -> list[dict]:
     """Get all open feedback items for a project.
 
     Used by the KB extraction agent during feedback review to see
@@ -27,7 +27,7 @@ def get_pending_feedback(project_id: str) -> list[dict]:
     if not pid:
         return [{"error": invalid_identifier_message("project_id", project_id)}]
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         items = (
             session.query(Feedback)
             .filter_by(target_project_id=pid, status=FeedbackStatus.OPEN)
@@ -51,6 +51,8 @@ def resolve_feedback_item(
     feedback_id: str,
     status: str,
     resolution_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Resolve a feedback item.
 
@@ -71,7 +73,7 @@ def resolve_feedback_item(
     except ValueError:
         return {"error": f"Invalid status: {status!r}"}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         fb = session.query(Feedback).filter_by(feedback_id=fid).first()
         if not fb:
             return {"error": f"Feedback {feedback_id} not found."}
@@ -105,7 +107,14 @@ def resolve_feedback_item(
         return {"feedback_id": str(fb.feedback_id), "status": fb.status.value}
 
 
-FEEDBACK_TOOLS = [
+FEEDBACK_OPERATIONS = [
     get_pending_feedback,
     resolve_feedback_item,
 ]
+
+
+def feedback_tools(runtime: AgentRuntime):
+    return bind_tools(FEEDBACK_OPERATIONS, runtime)
+
+
+FEEDBACK_TOOLS = FEEDBACK_OPERATIONS

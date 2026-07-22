@@ -6,12 +6,16 @@ from mkb.services._api_common import (
     Path,
     uuid,
 )
+from mkb.ports import Database, ObjectStore
 
 
 def ingest(
     directory: str | Path,
     label: str | None = None,
     *,
+    database: Database,
+    object_store: ObjectStore,
+    raw_bucket: str,
     user_named: bool = False,
 ) -> dict:
     """Ingest a single project directory.
@@ -27,9 +31,22 @@ def ingest(
     """
     from mkb.ingest.worker import ingest_directory
 
-    return ingest_directory(directory, label=label, user_named=user_named)
+    return ingest_directory(
+        directory,
+        label=label,
+        user_named=user_named,
+        database=database,
+        object_store=object_store,
+        raw_bucket=raw_bucket,
+    )
 
-def sync(root_dir: str | Path) -> dict:
+def sync(
+    root_dir: str | Path,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    raw_bucket: str,
+) -> dict:
     """Sync all project subfolders under *root_dir*.
 
     Each immediate subdirectory of *root_dir* is treated as one research
@@ -40,9 +57,20 @@ def sync(root_dir: str | Path) -> dict:
     """
     from mkb.ingest.worker import sync_root
 
-    return sync_root(root_dir)
+    return sync_root(
+        root_dir,
+        database=database,
+        object_store=object_store,
+        raw_bucket=raw_bucket,
+    )
 
-def sync_project(project_id: str | uuid.UUID) -> dict:
+def sync_project(
+    project_id: str | uuid.UUID,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    raw_bucket: str,
+) -> dict:
     """Re-scan a single project's source directory for new files.
 
     Returns a summary dict with counts of newly ingested files.
@@ -50,8 +78,12 @@ def sync_project(project_id: str | uuid.UUID) -> dict:
     from mkb.ingest.worker import sync_project as _sync_project
 
     pid = uuid.UUID(str(project_id))
-    return _sync_project(pid)
+    return _sync_project(
+        pid,
+        database=database,
+        object_store=object_store,
+        raw_bucket=raw_bucket,
+    )
 
 
 # ── Processing ───────────────────────────────────────────────────
-

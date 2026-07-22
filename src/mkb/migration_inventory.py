@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from sqlalchemy import func, select, text
 
+from mkb.ports import Database, ObjectStore
 
 DEFAULT_LOCAL_PATHS = (
     Path("data/papers"),
@@ -67,16 +68,12 @@ def local_inventory(paths: Iterable[Path] = DEFAULT_LOCAL_PATHS) -> dict[str, An
     }
 
 
-def database_inventory(session_factory=None) -> dict[str, Any]:
+def database_inventory(*, database: Database) -> dict[str, Any]:
     """Count every mapped table and record its complete primary-key set."""
-    if session_factory is None:
-        from mkb.db.engine import SyncSessionLocal
-
-        session_factory = SyncSessionLocal
     from mkb.db.models import Base
 
     tables: dict[str, Any] = {}
-    with session_factory() as session:
+    with database.session() as session:
         database_version = session.execute(text("select version()")).scalar_one()
         for table in Base.metadata.sorted_tables:
             primary_key = list(table.primary_key.columns)
@@ -102,12 +99,9 @@ def object_storage_inventory(
     buckets: Iterable[str] | None = None,
     *,
     include_checksums: bool = False,
+    object_store: ObjectStore | None = None,
 ) -> dict[str, Any]:
     """List object identity, optionally streaming every object for SHA-256."""
-    if client is None:
-        from mkb.storage.s3 import get_s3_client
-
-        client = get_s3_client()
     if buckets is None:
         from mkb.config import settings
 
@@ -116,6 +110,14 @@ def object_storage_inventory(
             settings.s3_bucket_processed,
             settings.s3_bucket_archive,
             settings.s3_bucket_temp,
+        )
+    if client is None:
+        if object_store is None:
+            raise ValueError("object_store is required when no S3 client is supplied")
+        return _object_store_inventory(
+            object_store,
+            buckets,
+            include_checksums=include_checksums,
         )
 
     result: dict[str, Any] = {}
@@ -142,6 +144,34 @@ def object_storage_inventory(
                         body.close()
                     record["sha256"] = digest.hexdigest()
                 objects.append(record)
+        objects.sort(key=lambda item: item["key"])
+        result[str(bucket)] = {
+            "object_count": len(objects),
+            "total_bytes": sum(item["bytes"] for item in objects),
+            "objects": objects,
+        }
+    return {"buckets": result}
+
+
+def _object_store_inventory(store, buckets: Iterable[str], *, include_checksums: bool) -> dict[str, Any]:
+    """Inventory an ObjectStore without assuming the S3/boto client API."""
+    result: dict[str, Any] = {}
+    for bucket in buckets:
+        objects: list[dict[str, Any]] = []
+        for item in store.list(bucket):
+            record = {
+                "key": item.key,
+                "bytes": int(item.size),
+                "etag": item.etag or "",
+                "last_modified": _json_value(item.last_modified),
+            }
+            if include_checksums:
+                digest = hashlib.sha256()
+                with store.open(bucket, item.key) as body:
+                    while chunk := body.read(1024 * 1024):
+                        digest.update(chunk)
+                record["sha256"] = digest.hexdigest()
+            objects.append(record)
         objects.sort(key=lambda item: item["key"])
         result[str(bucket)] = {
             "object_count": len(objects),
@@ -235,18 +265,20 @@ def safe_configuration() -> dict[str, Any]:
 
 def migration_inventory(
     *,
-    session_factory=None,
     s3_client=None,
+    database: Database,
+    object_store: ObjectStore | None = None,
     local_paths: Iterable[Path] = DEFAULT_LOCAL_PATHS,
     root: Path | None = None,
     include_object_checksums: bool = False,
 ) -> dict[str, Any]:
     """Build a deterministic, read-only preservation baseline for local migrations."""
     project_root = root or Path(__file__).resolve().parents[2]
-    database = database_inventory(session_factory)
+    database_data = database_inventory(database=database)
     storage = object_storage_inventory(
         s3_client,
         include_checksums=include_object_checksums,
+        object_store=object_store,
     )
     return {
         "format_version": 1,
@@ -258,7 +290,7 @@ def migration_inventory(
         },
         "configuration": safe_configuration(),
         "infrastructure": compose_manifest(project_root),
-        "database": database,
+        "database": database_data,
         "object_storage": storage,
         "local_files": local_inventory(local_paths),
     }

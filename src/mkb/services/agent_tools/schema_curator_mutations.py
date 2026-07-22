@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from sqlalchemy import func
 
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
 from mkb.db.models import (
     CanonicalWorkflow,
     RawWorkflowExtraction,
@@ -24,6 +24,8 @@ def submit_schema_proposal(
     evidence_workflow_ids: list[str],
     rationale: str,
     analysis: dict | None = None,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Validate and save one LLM-authored proposal for human review."""
     if not rationale.strip():
@@ -33,7 +35,7 @@ def submit_schema_proposal(
     except (TypeError, ValueError, AttributeError):
         return {"error": "evidence_workflow_ids must contain canonicalization UUIDs"}
     author = CURATOR_AUTHOR.get()
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         active = session.query(WorkflowSchemaVersion).filter_by(status="active").order_by(
             WorkflowSchemaVersion.version.desc()
         ).first()
@@ -98,6 +100,8 @@ def revise_schema_proposal(
     evidence_workflow_ids: list[str],
     rationale: str,
     response_to_review: str,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Respond to human revision notes with a validated agent-authored revision."""
     try:
@@ -108,7 +112,7 @@ def revise_schema_proposal(
     if not rationale.strip() or not response_to_review.strip():
         return {"error": "rationale and response_to_review are required"}
     author = CURATOR_AUTHOR.get()
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         proposal = session.query(SchemaProposal).filter_by(proposal_id=pid).first()
         if not proposal or proposal.status != "revision_requested":
             return {"error": "Revision-requested proposal not found"}
@@ -173,6 +177,8 @@ def submit_workflow_review(
     evidence: str,
     affected_nodes: list[str] | None = None,
     affected_edges: list[str] | None = None,
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Persist an immutable reviewed workflow revision with edited nodes/edges."""
     if not reason.strip() or not evidence.strip():
@@ -182,7 +188,7 @@ def submit_workflow_review(
     except (TypeError, ValueError, AttributeError):
         return {"error": "workflow_id must be a UUID"}
     author = CURATOR_AUTHOR.get()
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         source = session.query(RawWorkflowExtraction).filter_by(extraction_id=wid).first()
         if not source or source.status != "COMPLETED":
             return {"error": "completed workflow not found"}
@@ -242,5 +248,3 @@ def submit_workflow_review(
             "version": version,
             "review_flags": flags,
         }
-
-

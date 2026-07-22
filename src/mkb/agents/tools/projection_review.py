@@ -14,7 +14,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 
 from mkb.agents.tools._ids import invalid_identifier_message, parse_uuidish
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime, bind_tools
 from mkb.db.models import (
     KnowledgeFrame,
     Projection,
@@ -181,7 +181,9 @@ def _apply_projection_review_save(
     }
 
 
-def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
+def get_all_projections_for_review(
+    space_id: str, project_id: str, *, runtime: AgentRuntime
+) -> dict:
     """Get all projection data for a space+project combination.
 
     Returns all non-deleted projection runs (grouped by timestamp) so the
@@ -201,7 +203,7 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
     if not pid:
         return {"error": invalid_identifier_message("project_id", project_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         space = session.query(Space).filter_by(space_id=sid).first()
         if not space:
             return {"error": f"Space {space_id} not found."}
@@ -264,7 +266,7 @@ def get_all_projections_for_review(space_id: str, project_id: str) -> dict:
         }
 
 
-def get_frame_for_review(project_id: str) -> dict:
+def get_frame_for_review(project_id: str, *, runtime: AgentRuntime) -> dict:
     """Get the knowledge frame content for cross-referencing during review.
 
     Args:
@@ -277,7 +279,7 @@ def get_frame_for_review(project_id: str) -> dict:
     if not pid:
         return {"error": invalid_identifier_message("project_id", project_id)}
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if not frame:
             return {"error": f"No knowledge frame found for project {project_id}."}
@@ -295,6 +297,8 @@ def save_reviewed_projection(
     winning_projection_id: str,
     data: dict,
     review_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Save the reviewed projection.
 
@@ -323,7 +327,7 @@ def save_reviewed_projection(
 
     now = datetime.now(timezone.utc)
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         winner = session.query(Projection).filter_by(projection_id=wid).first()
         if not winner:
             return {"error": f"Projection {winning_projection_id} not found."}
@@ -335,6 +339,8 @@ def save_reviewed_projection_patch(
     winning_projection_id: str,
     updates: list[dict],
     review_notes: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Save a reviewed projection by applying only the changed fields.
 
@@ -367,7 +373,7 @@ def save_reviewed_projection_patch(
 
     now = datetime.now(timezone.utc)
 
-    with SyncSessionLocal() as session:
+    with runtime.database.session() as session:
         winner = session.query(Projection).filter_by(projection_id=wid).first()
         if not winner:
             return {"error": f"Projection {winning_projection_id} not found."}
@@ -405,6 +411,8 @@ def request_re_extraction(
     project_id: str,
     fields: str,
     context: str = "",
+    *,
+    runtime: AgentRuntime,
 ) -> dict:
     """Request the fixer sub-agent to re-examine specific fields against source data.
 
@@ -430,6 +438,7 @@ def request_re_extraction(
             project_id=pid,
             fields=fields,
             context=context,
+            runtime=runtime,
         )
         return result
     except Exception as exc:
@@ -440,10 +449,19 @@ def request_re_extraction(
         }
 
 
-PROJECTION_REVIEW_TOOLS = [
+PROJECTION_REVIEW_OPERATIONS = [
     get_all_projections_for_review,
     get_frame_for_review,
     save_reviewed_projection,
     save_reviewed_projection_patch,
     request_re_extraction,
 ]
+
+
+def projection_review_tools(runtime: AgentRuntime):
+    """Return projection-review tools bound to a client runtime."""
+
+    return bind_tools(PROJECTION_REVIEW_OPERATIONS, runtime)
+
+
+PROJECTION_REVIEW_TOOLS = PROJECTION_REVIEW_OPERATIONS

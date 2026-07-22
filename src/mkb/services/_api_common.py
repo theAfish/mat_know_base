@@ -12,6 +12,10 @@ from typing import Any
 from mkb.config import settings
 from mkb.db.engine import SyncSessionLocal, init_db
 
+# Backward-compatible name for materials-service modules while the ORM-based
+# implementations are migrated to repositories.  The callable resolves the
+# database from the active KnowledgeBase resource rather than importing the
+# compatibility engine in every service module.
 logger = logging.getLogger(__name__)
 
 __all__ = [

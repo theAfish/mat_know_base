@@ -3,26 +3,31 @@
 from __future__ import annotations
 
 from mkb.services._api_common import (
-    SyncSessionLocal,
-    init_db,
     uuid,
 )
+from mkb.agents.runtime import AgentRuntime
+from mkb.ports import Database, ObjectStore
 
 
 def clear_knowledge_graphs(
     project_id: str | uuid.UUID | None = None,
     remove_legacy_frame_sections: bool = True,
+    *,
+    database: Database,
 ) -> dict:
     """Delete (soft-delete) old KG projections and optionally purge legacy frame graph sections."""
     from mkb.knowledge_graph import clear_knowledge_graph_projections, purge_legacy_graph_sections
 
-    init_db()
     pid = uuid.UUID(str(project_id)) if project_id else None
-    deleted = clear_knowledge_graph_projections(project_id=pid, include_legacy_spaces=True)
+    deleted = clear_knowledge_graph_projections(
+        project_id=pid,
+        include_legacy_spaces=True,
+        database=database,
+    )
 
     purged = {"updated_frames": 0, "project_id": str(pid) if pid else None}
     if remove_legacy_frame_sections:
-        purged = purge_legacy_graph_sections(project_id=pid)
+        purged = purge_legacy_graph_sections(project_id=pid, database=database)
 
     return {
         "deleted_projections": deleted,
@@ -37,6 +42,9 @@ def extract_knowledge_graph(
     clear_existing: bool = True,
     clear_legacy_frame_sections: bool = True,
     progress_callback=None,
+    *,
+    database: Database,
+    object_store: ObjectStore | None = None,
 ) -> dict:
     """Run concept-graph extraction using one global cross-domain space.
 
@@ -48,13 +56,15 @@ def extract_knowledge_graph(
     from mkb.db.models import KnowledgeFrame
     from mkb.knowledge_graph import ensure_global_kg_space_id, purge_legacy_graph_sections
 
-    init_db()
+    runtime = AgentRuntime(database, object_store)
 
     if clear_legacy_frame_sections:
         if project_id:
-            purge_legacy_graph_sections(project_id=uuid.UUID(str(project_id)))
+            purge_legacy_graph_sections(
+                project_id=uuid.UUID(str(project_id)), database=database
+            )
         else:
-            purge_legacy_graph_sections()
+            purge_legacy_graph_sections(database=database)
 
     if frame_id is not None:
         fid = uuid.UUID(str(frame_id))
@@ -64,10 +74,11 @@ def extract_knowledge_graph(
             verbose=verbose,
             clear_existing=clear_existing,
             progress_callback=progress_callback,
+            runtime=runtime,
         )
     elif project_id is not None:
         pid = uuid.UUID(str(project_id))
-        with SyncSessionLocal() as session:
+        with database.session() as session:
             frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
             if not frame:
                 return {"error": f"No frame for project {project_id}"}
@@ -78,27 +89,34 @@ def extract_knowledge_graph(
             verbose=verbose,
             clear_existing=clear_existing,
             progress_callback=progress_callback,
+            runtime=runtime,
         )
     else:
-        result = run_knowledge_graph_all(model=model, verbose=verbose, clear_existing=clear_existing)
+        result = run_knowledge_graph_all(
+            model=model,
+            verbose=verbose,
+            clear_existing=clear_existing,
+            runtime=runtime,
+        )
 
     return {
-        "global_space_id": str(ensure_global_kg_space_id()),
+        "global_space_id": str(ensure_global_kg_space_id(database)),
         **result,
     }
 
 def get_knowledge_graph(
     project_id: str | uuid.UUID | None = None,
+    *,
+    database: Database,
 ) -> dict:
     """Get the merged concept graph from the singleton global KG space."""
     from mkb.agents.tools.knowledge_graph import normalize_knowledge_graph_payload
     from mkb.db.models import KnowledgeFrame, Projection, ProjectionStatus
     from mkb.knowledge_graph import ensure_global_kg_space_id
 
-    init_db()
-    sid = ensure_global_kg_space_id()
+    sid = ensure_global_kg_space_id(database)
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         q = (
             session.query(Projection)
             .filter(Projection.space_id == sid)
@@ -135,6 +153,9 @@ def review_knowledge_graph(
     verbose: bool = False,
     seed_count: int = 10,
     progress_callback=None,
+    *,
+    database: Database,
+    object_store: ObjectStore | None = None,
 ) -> dict:
     """Run the graph review agent to deduplicate and clean the knowledge graph.
 
@@ -156,10 +177,20 @@ def review_knowledge_graph(
     """
     from mkb.agents.graph_review import run_graph_review
 
-    init_db()
-    return run_graph_review(mode=mode, model=model, verbose=verbose, seed_count=seed_count, progress_callback=progress_callback)
+    return run_graph_review(
+        mode=mode,
+        model=model,
+        verbose=verbose,
+        seed_count=seed_count,
+        progress_callback=progress_callback,
+        runtime=AgentRuntime(database, object_store),
+    )
 
-def get_graph_review_counts(space_id: str | uuid.UUID | None = None) -> dict:
+def get_graph_review_counts(
+    space_id: str | uuid.UUID | None = None,
+    *,
+    database: Database,
+) -> dict:
     """Return review counts (times_examined, times_modified) per graph element.
 
     Returns a dict with two sub-dicts keyed by normalized element key:
@@ -169,13 +200,12 @@ def get_graph_review_counts(space_id: str | uuid.UUID | None = None) -> dict:
     from mkb.db.models import GraphElementReview
     from mkb.knowledge_graph import ensure_global_kg_space_id
 
-    init_db()
-    sid = uuid.UUID(str(space_id)) if space_id else ensure_global_kg_space_id()
+    sid = uuid.UUID(str(space_id)) if space_id else ensure_global_kg_space_id(database)
 
     concepts: dict[str, dict] = {}
     relations: dict[str, dict] = {}
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         rows = session.query(GraphElementReview).filter_by(space_id=sid).all()
         for row in rows:
             entry = {
@@ -190,4 +220,3 @@ def get_graph_review_counts(space_id: str | uuid.UUID | None = None) -> dict:
                 relations[row.element_key] = entry
 
     return {"space_id": str(sid), "concepts": concepts, "relations": relations}
-

@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-from mkb.services._api_common import (
-    SyncSessionLocal,
-    datetime,
-    init_db,
-    timezone,
-    uuid,
-)
+from mkb.services._api_common import datetime, timezone, uuid
+from mkb.agents.runtime import AgentRuntime
+from mkb.ports import Database, ObjectStore
 
-def schedule_workflow_reextraction(project_id: str | uuid.UUID, *, reason: str, requested_by: str, scope: dict | None = None, raw_extraction_id: str | uuid.UUID | None = None) -> dict:
+def schedule_workflow_reextraction(project_id: str | uuid.UUID, *, reason: str, requested_by: str, scope: dict | None = None, raw_extraction_id: str | uuid.UUID | None = None, database: Database) -> dict:
     """Queue an approved full or partial re-extraction request."""
     from mkb.db.models import RawWorkflowExtraction, WorkflowMaintenanceTask
     from mkb.workflows.maintenance import validate_reextraction_request
 
     pid = uuid.UUID(str(project_id))
     validated_scope = validate_reextraction_request(reason, scope)
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         query = session.query(RawWorkflowExtraction).filter(
             RawWorkflowExtraction.project_id == pid,
             RawWorkflowExtraction.status == "COMPLETED",
@@ -34,7 +29,7 @@ def schedule_workflow_reextraction(project_id: str | uuid.UUID, *, reason: str, 
         session.commit()
         return {"task_id": str(task.task_id), "status": task.status, "task_type": task.task_type, "scope": task.scope}
 
-def schedule_workflow_recanonicalization(project_id: str | uuid.UUID, *, reason: str = "manual_request", requested_by: str, raw_extraction_id: str | uuid.UUID | None = None, target_schema_version: str | None = None) -> dict:
+def schedule_workflow_recanonicalization(project_id: str | uuid.UUID, *, reason: str = "manual_request", requested_by: str, raw_extraction_id: str | uuid.UUID | None = None, target_schema_version: str | None = None, database: Database) -> dict:
     from mkb.db.models import RawWorkflowExtraction, WorkflowMaintenanceTask
     from mkb.workflows.maintenance import RECANONICALIZATION_REASONS
     from mkb.workflows.schema_library import get_schema_library_payload
@@ -42,8 +37,7 @@ def schedule_workflow_recanonicalization(project_id: str | uuid.UUID, *, reason:
     if reason not in RECANONICALIZATION_REASONS:
         raise ValueError(f"Unsupported recanonicalization reason: {reason}")
     pid = uuid.UUID(str(project_id))
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         query = session.query(RawWorkflowExtraction).filter(
             RawWorkflowExtraction.project_id == pid,
             RawWorkflowExtraction.status == "COMPLETED",
@@ -62,11 +56,10 @@ def schedule_workflow_recanonicalization(project_id: str | uuid.UUID, *, reason:
         session.commit()
         return {"task_id": str(task.task_id), "status": task.status, "task_type": task.task_type}
 
-def list_workflow_maintenance_tasks(*, status: str | None = None, project_id: str | uuid.UUID | None = None) -> list[dict]:
+def list_workflow_maintenance_tasks(*, status: str | None = None, project_id: str | uuid.UUID | None = None, database: Database) -> list[dict]:
     from mkb.db.models import WorkflowMaintenanceTask
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         query = session.query(WorkflowMaintenanceTask)
         if status:
             query = query.filter_by(status=status)
@@ -79,14 +72,13 @@ def list_workflow_maintenance_tasks(*, status: str | None = None, project_id: st
             "result": row.result, "error": row.error,
         } for row in query.order_by(WorkflowMaintenanceTask.created_at.desc()).all()]
 
-def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None = None, verbose: bool = False, progress_callback=None) -> dict:
+def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None = None, verbose: bool = False, progress_callback=None, database: Database, object_store: ObjectStore | None = None) -> dict:
     """Execute one queued raw-workflow task; canonical tasks are retired."""
     from mkb.agents.workflow_extraction import run_workflow_extraction
     from mkb.db.models import RawWorkflowExtraction, WorkflowMaintenanceTask
 
     tid = uuid.UUID(str(task_id))
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         task = session.query(WorkflowMaintenanceTask).filter_by(task_id=tid).first()
         if not task or task.status not in {"pending", "failed"}:
             return {"error": "Pending or failed maintenance task not found"}
@@ -102,6 +94,7 @@ def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None
             raise RuntimeError("Canonical-workflow maintenance is retired; export existing data through compatibility reads")
         result = run_workflow_extraction(
             project_id, model=model, verbose=verbose, progress_callback=progress_callback,
+            runtime=AgentRuntime(database, object_store),
             reextraction_request={
                 "reason": reason, "scope": scope,
                 "source_raw_extraction_id": str(source_raw_id),
@@ -112,12 +105,12 @@ def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None
         if not successful:
             raise RuntimeError(result.get("message") or "Workflow maintenance failed")
     except Exception as exc:
-        with SyncSessionLocal() as session:
+        with database.session() as session:
             task = session.query(WorkflowMaintenanceTask).filter_by(task_id=tid).first()
             task.status, task.error, task.completed_at = "failed", str(exc), datetime.now(timezone.utc)
             session.commit()
         return {"task_id": str(tid), "status": "failed", "error": str(exc)}
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         task = session.query(WorkflowMaintenanceTask).filter_by(task_id=tid).first()
         task.status, task.result, task.completed_at = "completed", result, datetime.now(timezone.utc)
         session.commit()
@@ -125,12 +118,12 @@ def run_workflow_maintenance_task(task_id: str | uuid.UUID, *, model: str | None
 
 def run_pending_recanonicalizations(
     *, model: str | None = None, verbose: bool = False, progress_callback=None,
+    database: Database, object_store: ObjectStore | None = None,
 ) -> dict:
     """Run all currently pending recanonicalizations as one global batch job."""
     from mkb.db.models import WorkflowMaintenanceTask
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         rows = session.query(WorkflowMaintenanceTask).filter_by(
                 task_type="recanonicalize", status="pending",
             ).order_by(WorkflowMaintenanceTask.created_at.desc()).all()
@@ -161,6 +154,7 @@ def run_pending_recanonicalizations(
         result = run_workflow_maintenance_task(
             task_id, model=model, verbose=verbose,
             progress_callback=progress_callback,
+            database=database, object_store=object_store,
         )
         results.append(result)
         if result.get("status") == "completed":

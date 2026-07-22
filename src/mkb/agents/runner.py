@@ -35,6 +35,7 @@ def _is_retryable_provider_error(error: str) -> bool:
         "429",
         "jsondecodeerror",
         "expecting ',' delimiter",
+        "expecting property name enclosed in double quotes",
         "unterminated string",
         "extra data",
         "tool call arguments",
@@ -80,7 +81,7 @@ class AgentRunner:
         user_id: str = "mkb_system",
         verbose: bool = False,
         progress_callback=None,
-        max_retries: int = 3,
+        max_retries: int | None = None,
         retry_delay: float = 5.0,
     ) -> RunResult:
         """Send a message and collect all events. Returns RunResult.
@@ -89,6 +90,11 @@ class AgentRunner:
         the Qwen/OpenAI 400 "Range of input length" error which sometimes fires
         spuriously even when the request is within limits.
         """
+        if max_retries is None:
+            from mkb.runtime_settings import get_setting
+
+            max_retries = max(1, int(get_setting("agent_retry_count")))
+
         for attempt in range(1, max_retries + 1):
             result = await self._run_once(
                 session_id=session_id,
@@ -230,6 +236,6 @@ class AgentRunner:
         except Exception as exc:
             logger.error("Agent run failed: %s", exc)
             result.success = False
-            result.error = str(exc)
+            result.error = f"{type(exc).__name__}: {exc}"
 
         return result

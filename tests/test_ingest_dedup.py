@@ -68,9 +68,15 @@ def test_repeated_project_reuses_existing_project_without_creating_row(tmp_path,
     asset = SimpleNamespace(asset_id=asset_id, sha256=digest)
     session = _Session(asset, existing_project_id)
 
-    monkeypatch.setattr(worker, "SyncSessionLocal", lambda: session)
+    database = SimpleNamespace(session=lambda: session)
+    object_store = SimpleNamespace()
 
-    result = worker.ingest_directory(tmp_path)
+    result = worker.ingest_directory(
+        tmp_path,
+        database=database,
+        object_store=object_store,
+        raw_bucket="raw",
+    )
 
     assert result == {
         "total": 1,

@@ -9,6 +9,8 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
+from mkb.ports import Database, ObjectStore
+
 def _older_than(path: Path, cutoff: datetime) -> bool:
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < cutoff
 
@@ -53,12 +55,16 @@ def apply_retention(plan: dict[str, Any], *, confirm: str) -> dict[str, Any]:
     return {"dry_run": False, "removed": removed, "reclaimed_bytes": reclaimed}
 
 
-def prune_job_history(*, older_than_days: int = 30, apply: bool = False) -> dict[str, Any]:
-    from mkb.db.engine import SyncSessionLocal
+def prune_job_history(
+    *,
+    older_than_days: int = 30,
+    apply: bool = False,
+    database: Database,
+) -> dict[str, Any]:
     from mkb.db.models import BackgroundJob
     cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, older_than_days))
     terminal = ("COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED")
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         ids = list(session.scalars(select(BackgroundJob.job_id).where(
             BackgroundJob.status.in_(terminal), BackgroundJob.updated_at < cutoff
         )))
@@ -68,25 +74,24 @@ def prune_job_history(*, older_than_days: int = 30, apply: bool = False) -> dict
     return {"dry_run": not apply, "job_count": len(ids), "older_than_days": older_than_days}
 
 
-def consistency_report() -> dict[str, Any]:
-    """Compare database object references with S3; never mutates either side."""
+def consistency_report(
+    *,
+    database: Database,
+    object_store: ObjectStore,
+) -> dict[str, Any]:
+    """Compare database object references with object storage; never mutates either."""
     from mkb.config import settings
-    from mkb.db.engine import SyncSessionLocal
     from mkb.db.models import Asset, ProcessedAsset
-    from mkb.storage.s3 import get_s3_client
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         references = {(row.s3_bucket, row.s3_key) for model in (Asset, ProcessedAsset)
                       for row in session.scalars(select(model))}
-    client = get_s3_client()
     buckets = (settings.s3_bucket_raw, settings.s3_bucket_processed,
                settings.s3_bucket_archive, settings.s3_bucket_temp)
     objects: set[tuple[str, str]] = set()
     unavailable: list[str] = []
     for bucket in buckets:
         try:
-            paginator = client.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=bucket):
-                objects.update((bucket, item["Key"]) for item in page.get("Contents", []))
+            objects.update((bucket, item.key) for item in object_store.list(bucket))
         except Exception:  # dependency category is reported without leaking credentials
             unavailable.append(bucket)
     missing = sorted(references - objects)

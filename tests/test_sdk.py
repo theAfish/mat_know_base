@@ -210,7 +210,7 @@ def test_from_url_injects_owned_resources_registries_and_capabilities(tmp_path):
     assert job_backend.closed is True
 
 
-def test_legacy_service_calls_use_the_owning_client_resources(tmp_path):
+def test_explicit_content_operations_use_the_owning_client_resources(tmp_path):
     first_database = SQLAlchemyDatabase(f"sqlite:///{tmp_path / 'legacy-first.db'}")
     second_database = SQLAlchemyDatabase(f"sqlite:///{tmp_path / 'legacy-second.db'}")
     first_store = FileObjectStore(tmp_path / "legacy-first-objects")
@@ -220,33 +220,19 @@ def test_legacy_service_calls_use_the_owning_client_resources(tmp_path):
             session.execute(text("create table identity (value text not null)"))
             session.execute(text("insert into identity values (:value)"), {"value": value})
 
-    def probe():
-        from mkb.db.engine import SyncSessionLocal
-        from mkb.storage.s3 import download_bytes, upload_bytes
-
-        with SyncSessionLocal() as session:
+    def probe(database, object_store):
+        with database.session() as session:
             identity = session.execute(text("select value from identity")).scalar_one()
-        upload_bytes(identity.encode(), "raw", "identity.txt")
-        return identity, download_bytes("raw", "identity.txt")
+        object_store.put_bytes("raw", "identity.txt", identity.encode())
+        return identity, object_store.get_bytes("raw", "identity.txt")
 
-    services = SimpleNamespace(probe=probe)
-    first = KnowledgeBase._from_legacy_resources(
-        config=MKBConfig(database_url=first_database.url),
-        database=first_database,
-        object_store=first_store,
-        services=services,
-    )
-    second = KnowledgeBase._from_legacy_resources(
-        config=MKBConfig(database_url=second_database.url),
-        database=second_database,
-        object_store=second_store,
-        services=services,
-    )
     try:
-        assert first.service("probe")() == ("first", b"first")
-        assert second.service("probe")() == ("second", b"second")
+        assert probe(first_database, first_store) == ("first", b"first")
+        assert probe(second_database, second_store) == ("second", b"second")
         assert first_store.get_bytes("raw", "identity.txt") == b"first"
         assert second_store.get_bytes("raw", "identity.txt") == b"second"
     finally:
-        first.close()
-        second.close()
+        first_store.close()
+        second_store.close()
+        first_database.close()
+        second_database.close()

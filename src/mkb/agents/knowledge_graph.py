@@ -11,11 +11,11 @@ import uuid
 
 from google.adk.agents import Agent
 
-from mkb.agents._utils import create_llm, sync_agent_run
+from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.knowledge_graph import KNOWLEDGE_GRAPH_PROMPT
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.knowledge_graph import KNOWLEDGE_GRAPH_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.knowledge_graph import knowledge_graph_tools
 from mkb.db.models import FrameStatus, KnowledgeFrame, Projection, ProjectionStatus
 from mkb.knowledge_graph import clear_knowledge_graph_projections, ensure_global_kg_space
 
@@ -24,14 +24,17 @@ logger = logging.getLogger(__name__)
 APP_NAME = "mkb_knowledge_graph"
 
 
-def build_knowledge_graph_agent(model: str | None = None) -> Agent:
+def build_knowledge_graph_agent(
+    runtime: AgentRuntime,
+    model: str | None = None,
+) -> Agent:
     """Create the concept-graph extraction agent."""
     llm = create_llm(model)
     return Agent(
         name="knowledge_graph_agent",
         model=llm,
         instruction=KNOWLEDGE_GRAPH_PROMPT,
-        tools=KNOWLEDGE_GRAPH_TOOLS,
+        tools=knowledge_graph_tools(runtime),
     )
 
 
@@ -41,6 +44,7 @@ async def _run_knowledge_graph_async(
     verbose: bool = False,
     clear_existing: bool = True,
     progress_callback=None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run knowledge graph extraction for one completed frame."""
 
@@ -48,9 +52,11 @@ async def _run_knowledge_graph_async(
         if progress_callback:
             progress_callback({"message": message, **extra})
 
-    global_space = ensure_global_kg_space()
+    if runtime is None:
+        raise ValueError("Knowledge graph extraction requires an explicit AgentRuntime")
+    global_space = ensure_global_kg_space(runtime.database)
 
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         frame = db.query(KnowledgeFrame).filter_by(frame_id=frame_id).first()
         if not frame:
             return {"status": "error", "message": f"Frame {frame_id} not found"}
@@ -58,7 +64,11 @@ async def _run_knowledge_graph_async(
             return {"status": "error", "message": f"Frame is not completed (status: {frame.status.value})"}
 
         if clear_existing:
-            clear_knowledge_graph_projections(frame_id=frame_id, include_legacy_spaces=True)
+            clear_knowledge_graph_projections(
+                frame_id=frame_id,
+                include_legacy_spaces=True,
+                database=runtime.database,
+            )
 
         projection = Projection(
             projection_id=uuid.uuid4(),
@@ -73,7 +83,7 @@ async def _run_knowledge_graph_async(
         project_id = frame.project_id
         _emit("Knowledge graph extraction started", stage="setup")
 
-    agent = build_knowledge_graph_agent(model)
+    agent = build_knowledge_graph_agent(runtime, model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
     session_id = f"kg_{projection_id}"
     await runner.create_session(session_id)
@@ -92,7 +102,7 @@ async def _run_knowledge_graph_async(
         progress_callback=progress_callback,
     )
     if not result.success:
-        with SyncSessionLocal() as db:
+        with runtime.database.session() as db:
             proj = db.query(Projection).filter_by(projection_id=projection_id).first()
             if proj:
                 # Only mark FAILED if save_knowledge_graph hasn't already set COMPLETED.
@@ -105,7 +115,7 @@ async def _run_knowledge_graph_async(
                 proj.agent_notes = (proj.agent_notes or "") + "\n" + error_note if proj.agent_notes else error_note
                 db.commit()
         # If data was saved successfully despite the runner error, treat as success
-        with SyncSessionLocal() as db:
+        with runtime.database.session() as db:
             proj = db.query(Projection).filter_by(projection_id=projection_id).first()
             if proj and proj.status == ProjectionStatus.COMPLETED:
                 concept_count = len((proj.data or {}).get("concepts", []))
@@ -129,7 +139,7 @@ async def _run_knowledge_graph_async(
             "message": result.error,
         }
 
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         proj = db.query(Projection).filter_by(projection_id=projection_id).first()
         status = proj.status.value if proj else "unknown"
 
@@ -143,32 +153,53 @@ async def _run_knowledge_graph_async(
     }
 
 
-@sync_agent_run
-async def run_knowledge_graph(
+def run_knowledge_graph(
     frame_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
     clear_existing: bool = True,
     progress_callback=None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run knowledge graph extraction for a single frame."""
-    return await _run_knowledge_graph_async(
-        frame_id,
-        model,
-        verbose,
-        clear_existing,
-        progress_callback=progress_callback,
+    return run_async_sync(
+        _run_knowledge_graph_async(
+            frame_id,
+            model,
+            verbose,
+            clear_existing,
+            progress_callback=progress_callback,
+            runtime=runtime,
+        )
     )
 
 
-@sync_agent_run
-async def run_knowledge_graph_all(
+def run_knowledge_graph_all(
     model: str | None = None,
     verbose: bool = False,
     clear_existing: bool = True,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run knowledge graph extraction for all completed frames."""
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Knowledge graph extraction requires an explicit AgentRuntime")
+    return run_async_sync(
+        _run_knowledge_graph_all_async(
+            model=model,
+            verbose=verbose,
+            clear_existing=clear_existing,
+            runtime=runtime,
+        )
+    )
+
+
+async def _run_knowledge_graph_all_async(
+    model: str | None,
+    verbose: bool,
+    clear_existing: bool,
+    runtime: AgentRuntime,
+) -> dict:
+    with runtime.database.session() as db:
         frame_ids = [
             row.frame_id
             for row in db.query(KnowledgeFrame).filter_by(status=FrameStatus.COMPLETED).all()
@@ -182,6 +213,7 @@ async def run_knowledge_graph_all(
             model=model,
             verbose=verbose,
             clear_existing=clear_existing,
+            runtime=runtime,
         )
         results.append(result)
         logger.info("  -> %s", result.get("status", "unknown"))

@@ -64,6 +64,30 @@ class SQLAlchemyCollectionRepository:
         with self._database.session() as session:
             return [self._model(row) for row in session.scalars(statement)]
 
+    def update(
+        self,
+        collection_id: uuid.UUID,
+        *,
+        name: str | None = None,
+        source_path: str | None = None,
+        metadata: dict | None = None,
+    ) -> Collection:
+        from mkb.db.models import ResearchProject
+        from mkb.exceptions import NotFoundError
+
+        with self._database.transaction() as session:
+            row = session.get(ResearchProject, collection_id)
+            if row is None:
+                raise NotFoundError(f"Collection not found: {collection_id}")
+            if name is not None:
+                row.label = name
+            if source_path is not None:
+                row.source_path = source_path
+            if metadata is not None:
+                row.metadata_ = dict(metadata)
+            session.flush()
+            return self._model(row)
+
 
 class SQLAlchemyCollectionGroupRepository:
     """Map collection groups to existing project-group rows without copying them."""

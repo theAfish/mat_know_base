@@ -124,7 +124,14 @@ def test_search_graph_elements_uses_full_graph_snapshot(monkeypatch):
 
     monkeypatch.setattr(kg_tools, "get_current_graph_snapshot", fake_snapshot)
 
-    result = kg_tools.search_graph_elements("space-1", ["AMTN", "hydroxy"], limit=5)
+    from mkb.agents.runtime import AgentRuntime
+
+    result = kg_tools.search_graph_elements(
+        "space-1",
+        ["AMTN", "hydroxy"],
+        limit=5,
+        runtime=AgentRuntime(database=object()),
+    )
 
     assert calls == [{"space_id": "space-1", "full_graph": True}]
     assert result["normalized_terms"] == ["amtn", "hydroxy"]

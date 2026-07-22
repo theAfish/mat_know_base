@@ -9,13 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Asset, ProjectAsset, ProcessedAsset, ProcessingLog, ProcessingType
 from mkb.processors.dataframe_processor import CSVProcessor, ExcelProcessor, JSONProcessor
 from mkb.processors.image_processor import BasicImageProcessor
 from mkb.processors.pdf_processor import PDFProcessor
 from mkb.processors.text_processor import TextProcessor
-from mkb.storage.s3 import download_bytes, object_exists, upload_bytes
+from mkb.ports import Database, ObjectStore
 
 logger = logging.getLogger(__name__)
 
@@ -115,19 +114,29 @@ def _persist_local_outputs(batch_segment: str, asset_id: uuid.UUID, primary_relp
     return str(asset_dir)
 
 
-def _upload_processed_bundle(bucket: str, batch_segment: str, asset_id: uuid.UUID, primary_relpath: str, result) -> str:
+def _upload_processed_bundle(
+    object_store: ObjectStore,
+    bucket: str,
+    batch_segment: str,
+    asset_id: uuid.UUID,
+    primary_relpath: str,
+    result,
+) -> str:
     """Upload primary output and artifact files to S3 under batch/asset prefix."""
     prefix = f"{batch_segment}/{asset_id}"
     primary_s3_key = f"{prefix}/{primary_relpath}"
-    upload_bytes(result.content, bucket, primary_s3_key)
+    object_store.put_bytes(bucket, primary_s3_key, result.content)
 
     for relpath, blob in (result.artifacts or {}).items():
-        upload_bytes(blob, bucket, f"{prefix}/{relpath}")
+        object_store.put_bytes(bucket, f"{prefix}/{relpath}", blob)
 
     return primary_s3_key
 
 
-def _processed_bundle_exists(processed_asset: ProcessedAsset) -> bool:
+def _processed_bundle_exists(
+    processed_asset: ProcessedAsset,
+    object_store: ObjectStore,
+) -> bool:
     """Check whether the processed output still exists both locally and in S3."""
     metadata = processed_asset.conversion_metadata or {}
     local_dir = metadata.get("local_dir")
@@ -145,12 +154,12 @@ def _processed_bundle_exists(processed_asset: ProcessedAsset) -> bool:
         if not (local_root / relpath).exists():
             return False
 
-    if not object_exists(processed_asset.s3_bucket, processed_asset.s3_key):
+    if not object_store.exists(processed_asset.s3_bucket, processed_asset.s3_key):
         return False
 
     s3_prefix = processed_asset.s3_key.rsplit("/", 1)[0]
     for relpath in artifact_files:
-        if not object_exists(processed_asset.s3_bucket, f"{s3_prefix}/{relpath}"):
+        if not object_store.exists(processed_asset.s3_bucket, f"{s3_prefix}/{relpath}"):
             return False
 
     return True
@@ -163,10 +172,12 @@ def _repair_existing_processed_asset(
     result,
     project_segment: str,
     primary_relpath: str,
+    object_store: ObjectStore,
 ) -> None:
     """Recreate missing processed outputs for an existing identical conversion."""
     local_dir = _persist_local_outputs(project_segment, asset.asset_id, primary_relpath, result)
     s3_key = _upload_processed_bundle(
+        object_store,
         processed_asset.s3_bucket,
         project_segment,
         asset.asset_id,
@@ -248,7 +259,14 @@ def _maybe_auto_rename_from_markdown(
     )
 
 
-def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
+def process_asset(
+    asset_id: uuid.UUID,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    processed_bucket: str,
+    progress_callback=None,
+) -> dict:
     """
     Process a raw asset and convert it to structured formats.
     
@@ -265,7 +283,7 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
         if progress_callback:
             progress_callback({"message": message, **extra})
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         # Fetch the asset
         asset = session.query(Asset).filter_by(asset_id=asset_id).first()
         if not asset:
@@ -285,7 +303,7 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
         
         # Download raw file from S3
         try:
-            raw_data = download_bytes(asset.s3_bucket, asset.s3_key)
+            raw_data = object_store.get_bytes(asset.s3_bucket, asset.s3_key)
             _emit(f"Downloaded {asset.filename}", asset_id=str(asset_id), filename=asset.filename, stage="downloaded")
         except Exception as e:
             logger.error(f"Failed to download raw asset {asset_id}: {e}")
@@ -378,7 +396,7 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
             if existing:
                 project_segment = _get_project_segment(session, asset_id)
                 primary_relpath = _default_primary_relpath(result)
-                bundle_exists = _processed_bundle_exists(existing)
+                bundle_exists = _processed_bundle_exists(existing, object_store)
                 if bundle_exists:
                     logger.info(
                         f"Skipping duplicate conversion for {asset.filename} "
@@ -396,6 +414,7 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
                         result,
                         project_segment,
                         primary_relpath,
+                        object_store,
                     )
                 log_entry = ProcessingLog(
                     log_id=uuid.uuid4(),
@@ -430,14 +449,12 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
                 }
 
             # Upload processed data to S3 (separate bucket)
-            from mkb.config import settings
-
-            processed_bucket = settings.s3_bucket_processed
             project_segment = _get_project_segment(session, asset_id)
             primary_relpath = _default_primary_relpath(result)
 
             local_dir = _persist_local_outputs(project_segment, asset_id, primary_relpath, result)
             s3_key = _upload_processed_bundle(
+                object_store,
                 processed_bucket,
                 project_segment,
                 asset_id,
@@ -550,13 +567,20 @@ def process_asset(asset_id: uuid.UUID, progress_callback=None) -> dict:
             }
 
 
-def process_all_pending(limit: int | None = None, progress_callback=None) -> dict:
+def process_all_pending(
+    limit: int | None = None,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    processed_bucket: str,
+    progress_callback=None,
+) -> dict:
     """
     Process all unprocessed assets.
     
     Returns a summary dict with statistics.
     """
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         all_assets = session.query(Asset).order_by(Asset.created_at.asc()).all()
         pending_list = []
 
@@ -566,7 +590,7 @@ def process_all_pending(limit: int | None = None, progress_callback=None) -> dic
                 pending_list.append(asset)
                 continue
 
-            if not any(_processed_bundle_exists(row) for row in processed_rows):
+            if not any(_processed_bundle_exists(row, object_store) for row in processed_rows):
                 pending_list.append(asset)
 
         if limit:
@@ -592,7 +616,13 @@ def process_all_pending(limit: int | None = None, progress_callback=None) -> dic
                         "stage": "queue_progress",
                     }
                 )
-            result = process_asset(asset.asset_id, progress_callback=progress_callback)
+            result = process_asset(
+                asset.asset_id,
+                database=database,
+                object_store=object_store,
+                processed_bucket=processed_bucket,
+                progress_callback=progress_callback,
+            )
             stats["results"].append(result)
             
             if result["status"] == "SUCCESS":

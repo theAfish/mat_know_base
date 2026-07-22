@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from mkb.services._api_common import (
     Path,
-    SyncSessionLocal,
-    init_db,
     settings,
     uuid,
     _choose_asset_for_manual_output,
@@ -14,10 +12,17 @@ from mkb.services._api_common import (
     _normalize_search_query,
 )
 
-from mkb.services.ingest import ingest
+from mkb.ports import Database, ObjectStore
 
 
-def process(project_id: str | uuid.UUID | None = None, progress_callback=None) -> dict:
+def process(
+    project_id: str | uuid.UUID | None = None,
+    progress_callback=None,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    processed_bucket: str,
+) -> dict:
     """Process assets. If project_id is given, process only that project's assets.
     Otherwise process all pending assets.
 
@@ -28,7 +33,7 @@ def process(project_id: str | uuid.UUID | None = None, progress_callback=None) -
     if project_id is not None:
         pid = uuid.UUID(str(project_id))
         from mkb.db.models import ProjectAsset
-        with SyncSessionLocal() as session:
+        with database.session() as session:
             links = session.query(ProjectAsset).filter_by(project_id=pid).all()
             asset_ids = [link.asset_id for link in links]
 
@@ -37,13 +42,24 @@ def process(project_id: str | uuid.UUID | None = None, progress_callback=None) -
             try:
                 if progress_callback:
                     progress_callback({"message": f"Starting asset {len(results) + 1}/{len(asset_ids)}", "asset_id": str(aid)})
-                r = process_asset(aid, progress_callback=progress_callback)
+                r = process_asset(
+                    aid,
+                    database=database,
+                    object_store=object_store,
+                    processed_bucket=processed_bucket,
+                    progress_callback=progress_callback,
+                )
                 results.append(r)
             except Exception as exc:
                 results.append({"asset_id": str(aid), "error": str(exc)})
         return {"project_id": str(pid), "assets_processed": len(results), "results": results}
 
-    return process_all_pending(progress_callback=progress_callback)
+    return process_all_pending(
+        database=database,
+        object_store=object_store,
+        processed_bucket=processed_bucket,
+        progress_callback=progress_callback,
+    )
 
 
 # ── Extraction ───────────────────────────────────────────────────
@@ -51,11 +67,13 @@ def process(project_id: str | uuid.UUID | None = None, progress_callback=None) -
 def list_processed_assets(
     project_id: str | uuid.UUID | None = None,
     limit: int = 100,
+    *,
+    database: Database,
 ) -> list[dict]:
     """List processed outputs, optionally filtered by project."""
     from mkb.db.models import Asset, ProcessedAsset, ProjectAsset
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         q = session.query(ProcessedAsset).order_by(ProcessedAsset.created_at.desc())
         if project_id is not None:
             pid = uuid.UUID(str(project_id))
@@ -92,6 +110,10 @@ def link_manual_processed_data(
     primary_file: str | None = None,
     processing_type: str | None = None,
     output_format: str | None = None,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    processed_bucket: str,
 ) -> dict:
     """Attach a handmade processed-output folder to an existing project asset.
 
@@ -109,7 +131,7 @@ def link_manual_processed_data(
         proc_type = bundle["processing_type"]
     out_format = output_format or bundle["output_format"]
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         project = None
         if project_id is not None:
             pid = uuid.UUID(str(project_id))
@@ -117,7 +139,12 @@ def link_manual_processed_data(
         elif paper_path is not None:
             project = session.query(ResearchProject).filter_by(source_path=str(paper_path)).first()
             if project is None and paper_path.is_dir():
-                ingest_result = ingest(paper_path, label=paper_path.name)
+                from mkb.services.compatibility_resources import content_operations
+
+                ingest_result = content_operations().ingest(
+                    paper_path,
+                    label=paper_path.name,
+                )
                 pid = uuid.UUID(ingest_result["project_id"])
                 project = session.query(ResearchProject).filter_by(project_id=pid).first()
         elif asset_id is not None:
@@ -177,22 +204,17 @@ def link_manual_processed_data(
             bundle["local_dir"] = str(canonical_root)
             bundle_root = canonical_root
 
-        # Upload primary file + artifacts to the processed-assets S3 bucket so that
-        # downstream consumers (idempotency check, frame extraction, projections,
-        # etc.) can fetch the bundle the same way as auto-processed outputs.
-        from mkb.storage.s3 import upload_bytes
-
-        upload_bytes(
-            (bundle_root / bundle["primary_relpath"]).read_bytes(),
-            settings.s3_bucket_processed,
+        # Upload primary file + artifacts through the configured object store so
+        # downstream consumers can fetch the bundle independently of MinIO/S3.
+        object_store.put_bytes(
+            processed_bucket,
             s3_key,
+            (bundle_root / bundle["primary_relpath"]).read_bytes(),
         )
         for relpath in bundle["artifact_files"]:
             artifact_key = f"{project.project_id}/{target_asset.asset_id}/{relpath}"
-            upload_bytes(
-                (bundle_root / relpath).read_bytes(),
-                settings.s3_bucket_processed,
-                artifact_key,
+            object_store.put_bytes(
+                processed_bucket, artifact_key, (bundle_root / relpath).read_bytes()
             )
 
         metadata = {
@@ -214,7 +236,7 @@ def link_manual_processed_data(
 
         if existing:
             existing.output_format = out_format
-            existing.s3_bucket = settings.s3_bucket_processed
+            existing.s3_bucket = processed_bucket
             existing.s3_key = s3_key
             existing.sha256 = bundle["sha256"]
             existing.size_bytes = bundle["size_bytes"]
@@ -228,7 +250,7 @@ def link_manual_processed_data(
                 asset_id=target_asset.asset_id,
                 processing_type=proc_type,
                 output_format=out_format,
-                s3_bucket=settings.s3_bucket_processed,
+                s3_bucket=processed_bucket,
                 s3_key=s3_key,
                 sha256=bundle["sha256"],
                 size_bytes=bundle["size_bytes"],
@@ -282,11 +304,16 @@ def link_manual_processed_data(
             "artifact_files": bundle["artifact_files"],
         }
 
-def list_assets(project_id: str | uuid.UUID | None = None, limit: int = 100) -> list[dict]:
+def list_assets(
+    project_id: str | uuid.UUID | None = None,
+    limit: int = 100,
+    *,
+    database: Database,
+) -> list[dict]:
     """List assets, optionally filtered by project."""
     from mkb.db.models import Asset, ProjectAsset
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         if project_id is not None:
             pid = uuid.UUID(str(project_id))
             links = session.query(ProjectAsset).filter_by(project_id=pid).all()
@@ -316,6 +343,8 @@ def search_library(
     query: str,
     limit: int = 25,
     project_id: str | uuid.UUID | None = None,
+    *,
+    database: Database,
 ) -> dict:
     """Search projects and assets by keyword.
 
@@ -327,7 +356,6 @@ def search_library(
 
     from mkb.db.models import Asset, ProjectAsset, ResearchProject
 
-    init_db()
     tokens = [token.lower() for token in _normalize_search_query(query)]
     if not tokens:
         return {
@@ -341,7 +369,7 @@ def search_library(
 
     pid = uuid.UUID(str(project_id)) if project_id is not None else None
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         project_filters = [
             or_(
                 ResearchProject.label.ilike(f"%{token}%"),
@@ -431,4 +459,3 @@ def search_library(
 
 
 # ── Spaces ───────────────────────────────────────────────────────
-

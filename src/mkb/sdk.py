@@ -33,6 +33,8 @@ from mkb.materials import (
     MaterialSpaces,
     MaterialWorkflows,
 )
+from mkb.services.projection_operations import ProjectionOperations
+from mkb.services.workflow_operations import WorkflowOperations
 from mkb.pipelines import Pipelines
 from mkb.ports import (
     Capabilities,
@@ -94,28 +96,6 @@ class _UnavailableServiceBindings:
             f"Compatibility operation {name!r} is unavailable on an explicitly "
             "configured client; use a grouped SDK service"
         )
-
-
-class _ResourceBoundServiceBindings:
-    """Run retained facade operations against one client's injected resources."""
-
-    def __init__(self, services, database: Database | None, object_store: ObjectStore | None):
-        self._services = services
-        self._database = database
-        self._object_store = object_store
-
-    def __getattr__(self, name: str):
-        operation = getattr(self._services, name)
-        if not callable(operation):
-            return operation
-
-        def invoke(*args, **kwargs):
-            from mkb.legacy_context import bind_legacy_resources
-
-            with bind_legacy_resources(self._database, self._object_store):
-                return operation(*args, **kwargs)
-
-        return invoke
 
 
 @dataclass(frozen=True)
@@ -207,8 +187,12 @@ class KnowledgeBase:
         startup_validator: Callable[..., list[str]] | None = None,
         migration_inventory_reader: Callable[..., dict[str, Any]] | None = None,
         cleanup_executor: Callable[..., dict[str, Any]] | None = None,
+        content_operations: Any | None = None,
+        project_operations: Any | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()
+        self._content_operations = content_operations
+        self._project_operations = project_operations
         self.config = config or MKBConfig()
         self.database = database
         self.object_store = object_store
@@ -420,9 +404,22 @@ class KnowledgeBase:
             export_space_to_yaml,
         )
         from mkb.spaces.registry import load_space_from_file
+        from mkb.services.project_operations import ProjectOperations
+        from mkb.services.content_operations import ContentOperations
+        from mkb.services.frames import get_extraction_history
+        from mkb.agents.operations import AgentOperations
+        from mkb.agents.runtime import AgentRuntime
+        from mkb.services.graph_operations import GraphOperations
         from mkb.config import settings as application_settings
         from mkb.maintenance import apply_retention, prune_job_history, retention_plan
         from mkb.migration_inventory import migration_inventory
+
+        def read_migration_inventory(**options):
+            return migration_inventory(
+                database=database,
+                object_store=object_store,
+                **options,
+            )
 
         def import_skill_files(files):
             if len(files) == 1:
@@ -441,20 +438,50 @@ class KnowledgeBase:
             plan = retention_plan(older_than_days=older_than_days)
             result = {
                 "local": plan,
-                "jobs": prune_job_history(older_than_days=job_days),
+                "jobs": prune_job_history(older_than_days=job_days, database=database),
             }
             if apply:
                 result["local"] = apply_retention(plan, confirm=confirm)
                 result["jobs"] = prune_job_history(
-                    older_than_days=job_days, apply=True
+                    older_than_days=job_days, apply=True, database=database
                 )
             return result
 
-        bound_services = (
-            _ResourceBoundServiceBindings(services, database, object_store)
-            if services is not None
+        bound_services = services
+        collection_services = Collections(
+            SQLAlchemyCollectionRepository(database),
+            CollectionGroups(SQLAlchemyCollectionGroupRepository(database)),
+        )
+        source_services = (
+            Sources(SQLAlchemySourceRepository(database), object_store)
+            if object_store is not None
             else None
         )
+        schema_services = ExtractionSchemas(SQLAlchemyExtractionSchemaRepository(database))
+        feedback_services = Feedback(SQLAlchemyFeedbackRepository(database))
+        projection_services = Projections(SQLAlchemyProjectionRepository(database))
+        content_operations = (
+            ContentOperations(
+                database,
+                object_store,
+                raw_bucket=config.raw_bucket,
+                processed_bucket=config.processed_bucket,
+            )
+            if object_store is not None
+            else None
+        )
+        project_operations = ProjectOperations(database, object_store)
+        graph_operations = GraphOperations(database, object_store)
+        projection_operations = ProjectionOperations(database, object_store)
+        workflow_operations = WorkflowOperations(database, object_store)
+        agent_operations = (
+            AgentOperations(AgentRuntime(database, object_store))
+            if object_store is not None
+            else None
+        )
+
+        def read_extraction_history(project_id):
+            return get_extraction_history(project_id, database=database)
         knowledge_base = cls(
             services=bound_services,
             config=config,
@@ -462,24 +489,17 @@ class KnowledgeBase:
             object_store=object_store,
             job_backend=SQLAlchemyLegacyJobBackend(database),
             graph_store=InMemoryGraphStore(),
-            collections=Collections(
-                SQLAlchemyCollectionRepository(database),
-                CollectionGroups(SQLAlchemyCollectionGroupRepository(database)),
-            ),
-            sources=(
-                Sources(SQLAlchemySourceRepository(database), object_store)
-                if object_store is not None
-                else None
-            ),
+            collections=collection_services,
+            sources=source_services,
             artifacts=(
                 Artifacts(SQLAlchemyArtifactRepository(database), object_store)
                 if object_store is not None
                 else None
             ),
             records=Records(SQLAlchemyRecordRepository(database)),
-            schemas=ExtractionSchemas(SQLAlchemyExtractionSchemaRepository(database)),
-            projections=Projections(SQLAlchemyProjectionRepository(database)),
-            feedback=Feedback(SQLAlchemyFeedbackRepository(database)),
+            schemas=schema_services,
+            projections=projection_services,
+            feedback=feedback_services,
             skills=Skills(
                 SQLAlchemySkillRepository(database),
                 importer=import_skill_files,
@@ -490,25 +510,47 @@ class KnowledgeBase:
             runtime_settings_reader=runtime_settings.public_view,
             runtime_settings_updater=update_runtime_settings,
             startup_validator=application_settings.validate_startup,
-            migration_inventory_reader=migration_inventory,
+            migration_inventory_reader=read_migration_inventory,
             cleanup_executor=execute_cleanup,
+            content_operations=content_operations,
+            project_operations=project_operations,
             materials=Materials(
-                frames=MaterialFrames(bound_services),
-                spaces=MaterialSpaces(bound_services, file_loader=load_space_from_file),
+                frames=MaterialFrames(
+                    bound_services,
+                    records=Records(SQLAlchemyRecordRepository(database)),
+                    history_reader=read_extraction_history,
+                ),
+                spaces=MaterialSpaces(
+                    schemas=schema_services,
+                    file_loader=load_space_from_file,
+                ),
                 projections=MaterialProjections(
                     bound_services,
+                    projections=projection_services,
+                    runner=projection_operations,
                     projection_exporter=export_projection_to_yaml,
                     space_exporter=export_space_to_yaml,
                 ),
                 workflows=MaterialWorkflows(
                     Workflows(SQLAlchemyWorkflowRepository(database)),
                     bound_services,
-                    schema_curator=run_ontology_induction,
+                    schema_curator=lambda **kwargs: run_ontology_induction(
+                        runtime=AgentRuntime(database, object_store), **kwargs
+                    ),
+                    workflow_operations=workflow_operations,
                 ),
-                graph=MaterialGraph(bound_services),
-                feedback=MaterialFeedback(bound_services),
+                graph=MaterialGraph(graph_operations),
+                feedback=MaterialFeedback(
+                    bound_services,
+                    feedback=feedback_services,
+                    reviewer=(agent_operations.review_feedback if agent_operations else None),
+                ),
                 library=MaterialLibrary(bound_services),
-                projects=MaterialProjects(bound_services),
+                projects=MaterialProjects(
+                    project_operations,
+                    collections=collection_services,
+                    sources=source_services,
+                ),
             ),
             capabilities=capabilities,
         )
@@ -621,6 +663,14 @@ class KnowledgeBase:
             job_backend if job_backend is not None else GenericJobBackend(database)
         )
         evidence = EvidenceLinks(GenericEvidenceRepository(database))
+        feedback_services = Feedback(GenericFeedbackRepository(database))
+        schema_services = ExtractionSchemas(GenericExtractionSchemaRepository(database))
+        collection_services = Collections(
+            GenericCollectionRepository(database),
+            CollectionGroups(GenericCollectionGroupRepository(database)),
+        )
+        projection_services = Projections(GenericProjectionRepository(database))
+        projection_operations = ProjectionOperations(database, object_store)
 
         return cls(
             config=config,
@@ -630,10 +680,7 @@ class KnowledgeBase:
             model_provider=model_provider,
             job_backend=effective_job_backend,
             vector_search=vector_search,
-            collections=Collections(
-                GenericCollectionRepository(database),
-                CollectionGroups(GenericCollectionGroupRepository(database)),
-            ),
+            collections=collection_services,
             sources=sources,
             artifacts=(
                 Artifacts(
@@ -646,13 +693,26 @@ class KnowledgeBase:
                 else None
             ),
             records=Records(GenericRecordRepository(database), evidence),
-            schemas=ExtractionSchemas(GenericExtractionSchemaRepository(database)),
-            projections=Projections(GenericProjectionRepository(database)),
+            schemas=schema_services,
+            projections=projection_services,
             evidence=evidence,
-            feedback=Feedback(GenericFeedbackRepository(database)),
+            feedback=feedback_services,
             skills=Skills(GenericSkillRepository(database)),
             post_processors=PostProcessors(
                 GenericPostProcessorRepository(database)
+            ),
+            materials=Materials(
+                frames=MaterialFrames(records=Records(GenericRecordRepository(database))),
+                spaces=MaterialSpaces(schemas=schema_services),
+                feedback=MaterialFeedback(feedback=feedback_services),
+                projections=MaterialProjections(
+                    projections=projection_services,
+                    runner=projection_operations,
+                ),
+                projects=MaterialProjects(
+                    collections=collection_services,
+                    sources=sources,
+                ),
             ),
             capabilities=capabilities,
             schema_manager=GenericSchemaManager(database),
@@ -734,29 +794,55 @@ class KnowledgeBase:
         return operation(*args, **kwargs)
 
     def ingest(self, directory, label=None, *, user_named=False) -> dict:
+        if self._content_operations is not None:
+            return self._content_operations.ingest(
+                directory, label=label, user_named=user_named
+            )
         return self._call("ingest", directory, label=label, user_named=user_named)
 
     def sync(self, root_dir) -> dict:
+        if self._content_operations is not None:
+            return self._content_operations.sync(root_dir)
         return self._call("sync", root_dir)
 
     def sync_project(self, project_id) -> dict:
+        if self._content_operations is not None:
+            return self._content_operations.sync_project(project_id)
         return self._call("sync_project", project_id)
 
     def process(self, project_id=None, progress_callback=None) -> dict:
+        if self._content_operations is not None:
+            return self._content_operations.process(
+                project_id=project_id,
+                progress_callback=progress_callback,
+            )
         return self._call(
             "process", project_id=project_id, progress_callback=progress_callback
         )
 
     def extract(self, project_id=None, **kwargs) -> dict:
+        if self.database is not None and self.object_store is not None:
+            from mkb.agents.operations import AgentOperations
+            from mkb.agents.runtime import AgentRuntime
+
+            return AgentOperations(
+                AgentRuntime(self.database, self.object_store)
+            ).extract(project_id, **kwargs)
         return self._call("extract", project_id=project_id, **kwargs)
 
     def list_projects(self, limit=50) -> list[dict]:
+        if self._project_operations is not None:
+            return self._project_operations.list_projects(limit)
         return self._call("list_projects", limit=limit)
 
     def list_assets(self, project_id=None, limit=100) -> list[dict]:
+        if self._project_operations is not None:
+            return self._project_operations.list_assets(project_id, limit)
         return self._call("list_assets", project_id=project_id, limit=limit)
 
     def list_processed_assets(self, project_id=None, limit=100) -> list[dict]:
+        if self._project_operations is not None:
+            return self._project_operations.list_processed_assets(project_id, limit)
         return self._call("list_processed_assets", project_id=project_id, limit=limit)
 
     def list_frames(self, status=None) -> list[dict]:

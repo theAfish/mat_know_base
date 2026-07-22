@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from mkb.services._api_common import (
-    SyncSessionLocal,
-    init_db,
-    uuid,
-)
+from mkb.services._api_common import uuid
+from mkb.agents.runtime import AgentRuntime
+from mkb.ports import Database, ObjectStore
 
 
 def extract(
@@ -15,6 +13,9 @@ def extract(
     verbose: bool = False,
     max_passes: int = 1,
     progress_callback=None,
+    *,
+    database: Database,
+    object_store: ObjectStore | None = None,
 ) -> dict:
     """Run knowledge extraction. If project_id given, extract one project.
     Otherwise extract all pending projects.
@@ -35,19 +36,22 @@ def extract(
             verbose=verbose,
             max_passes=max_passes,
             progress_callback=progress_callback,
+            runtime=AgentRuntime(database, object_store),
         )
-    return run_extraction_all(model=model, verbose=verbose, max_passes=max_passes)
+    return run_extraction_all(
+        model=model, verbose=verbose, max_passes=max_passes,
+        runtime=AgentRuntime(database, object_store),
+    )
 
 
 # ── Knowledge Frames ─────────────────────────────────────────────
 
-def get_frame(project_id: str | uuid.UUID) -> dict | None:
+def get_frame(project_id: str | uuid.UUID, *, database: Database) -> dict | None:
     """Get the knowledge frame for a project. Returns None if not found."""
     from mkb.db.models import KnowledgeFrame
 
-    init_db()
     pid = uuid.UUID(str(project_id))
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if not frame:
             return None
@@ -66,12 +70,11 @@ def get_frame(project_id: str | uuid.UUID) -> dict | None:
             "updated_at": frame.updated_at.isoformat() if frame.updated_at else None,
         }
 
-def list_frames(status: str | None = None) -> list[dict]:
+def list_frames(status: str | None = None, *, database: Database) -> list[dict]:
     """List all knowledge frames, optionally filtered by status."""
     from mkb.db.models import FrameStatus, KnowledgeFrame
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         q = session.query(KnowledgeFrame).order_by(KnowledgeFrame.created_at.desc())
         if status:
             q = q.filter_by(status=FrameStatus(status))
@@ -89,13 +92,16 @@ def list_frames(status: str | None = None) -> list[dict]:
             for f in frames
         ]
 
-def get_extraction_history(project_id: str | uuid.UUID) -> list[dict]:
+def get_extraction_history(
+    project_id: str | uuid.UUID,
+    *,
+    database: Database,
+) -> list[dict]:
     """Get the extraction pass history for a project's frame."""
     from mkb.db.models import ExtractionPass, KnowledgeFrame
 
-    init_db()
     pid = uuid.UUID(str(project_id))
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         frame = session.query(KnowledgeFrame).filter_by(project_id=pid).first()
         if not frame:
             return []

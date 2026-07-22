@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from mkb import api
+from mkb.agents.runtime import AgentRuntime
 from mkb.agents.tools import workflow_canonicalization as canonical_tools
 from mkb.agents.tools import workflows as workflow_tools
 from mkb.agents.workflow_canonicalization import canonicalization_call_budget
@@ -111,10 +112,13 @@ def test_delete_raw_workflow_version_removes_unfinished_row(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
+    from mkb.services.workflows.extraction import delete_raw_workflow_version
 
-    result = api.delete_raw_workflow_version(project_id, 4)
+    result = delete_raw_workflow_version(
+        project_id,
+        4,
+        database=MagicMock(session=lambda: fake_cm),
+    )
 
     assert result == {
         "status": "deleted",
@@ -147,10 +151,13 @@ def test_delete_raw_workflow_version_rejects_when_canonical_depends_on_it(monkey
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(api, "init_db", lambda: None)
-    monkeypatch.setattr(api, "SyncSessionLocal", lambda: fake_cm)
+    from mkb.services.workflows.extraction import delete_raw_workflow_version
 
-    result = api.delete_raw_workflow_version(project_id, 2)
+    result = delete_raw_workflow_version(
+        project_id,
+        2,
+        database=MagicMock(session=lambda: fake_cm),
+    )
 
     assert result == {"error": "Raw workflow v2 cannot be deleted because canonical workflow v5 still depends on it"}
     fake_session.delete.assert_not_called()
@@ -181,12 +188,13 @@ def test_checkpoint_raw_workflow_updates_unfinished_row(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(workflow_tools, "SyncSessionLocal", lambda: fake_cm)
+    from mkb.agents.runtime import AgentRuntime
 
     result = workflow_tools.checkpoint_raw_workflow(
         str(extraction_id),
         "Read methods section; synthesis branch drafted, characterization remains.",
         graph={"nodes": [{"node_id": "draft-1"}], "edges": []},
+        runtime=AgentRuntime(database=MagicMock(session=lambda: fake_cm)),
     )
 
     assert result["status"] == "checkpointed"
@@ -227,7 +235,7 @@ def test_curate_schema_endpoint_passes_review_mode_and_sample_size(monkeypatch):
     assert captured["min_support"] == 3
 
 
-def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):
+def test_checkpoint_canonical_workflow_updates_unfinished_row():
     canonicalization_id = uuid.uuid4()
     raw_extraction_id = uuid.uuid4()
     fake_row = SimpleNamespace(
@@ -251,9 +259,11 @@ def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(canonical_tools, "SyncSessionLocal", lambda: fake_cm)
-
-    result = canonical_tools.checkpoint_canonical_workflow(
+    tools = canonical_tools.canonicalization_tools(
+        AgentRuntime(database=MagicMock(session=lambda: fake_cm))
+    )
+    checkpoint = next(tool for tool in tools if tool.__name__ == "checkpoint_canonical_workflow")
+    result = checkpoint(
         str(canonicalization_id),
         "Mapped data objects and one operation; edge drafting remains.",
     )
@@ -266,7 +276,7 @@ def test_checkpoint_canonical_workflow_updates_unfinished_row(monkeypatch):
     fake_session.commit.assert_called_once()
 
 
-def test_upsert_canonical_node_persists_draft_graph(monkeypatch):
+def test_upsert_canonical_node_persists_draft_graph():
     canonicalization_id = uuid.uuid4()
     raw_extraction_id = uuid.uuid4()
     project_id = uuid.uuid4()
@@ -292,9 +302,11 @@ def test_upsert_canonical_node_persists_draft_graph(monkeypatch):
     fake_cm.__enter__.return_value = fake_session
     fake_cm.__exit__.return_value = False
 
-    monkeypatch.setattr(canonical_tools, "SyncSessionLocal", lambda: fake_cm)
-
-    result = canonical_tools.upsert_canonical_node(
+    tools = canonical_tools.canonicalization_tools(
+        AgentRuntime(database=MagicMock(session=lambda: fake_cm))
+    )
+    upsert_node = next(tool for tool in tools if tool.__name__ == "upsert_canonical_node")
+    result = upsert_node(
         str(canonicalization_id),
         {
             "node_id": f"canonical:{canonicalization_id}:n0001",

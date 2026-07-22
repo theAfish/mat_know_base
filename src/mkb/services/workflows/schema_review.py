@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from mkb.services._api_common import (
-    SyncSessionLocal,
-    datetime,
-    init_db,
-    timezone,
-    uuid,
-)
+from mkb.services._api_common import datetime, timezone, uuid
+from mkb.ports import Database
 
-def curate_workflow_schema(*, min_support: int = 2, author: str = "schema-curator/1.0") -> list[dict]:
+def curate_workflow_schema(*, min_support: int = 2, author: str = "schema-curator/1.0", database: Database) -> list[dict]:
     """Analyze accumulated workflows and persist new evidence-backed proposals."""
     from mkb.db.models import CanonicalWorkflow, RawWorkflowExtraction, SchemaProposal, SchemaProposalRevision, WorkflowSchemaVersion
     from mkb.workflows.curator import analyze_canonical_workflows
     from mkb.workflows.schema_library import get_schema_library_payload
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         current = session.query(WorkflowSchemaVersion).filter_by(status="active").order_by(WorkflowSchemaVersion.version.desc()).first()
         if not current:
             current = WorkflowSchemaVersion(version=1, name="workflow-schema/1.0", payload=get_schema_library_payload(), created_by="seed")
@@ -60,12 +54,11 @@ def curate_workflow_schema(*, min_support: int = 2, author: str = "schema-curato
         session.commit()
         return results
 
-def list_schema_proposals(status: str | None = "pending") -> list[dict]:
+def list_schema_proposals(status: str | None = "pending", *, database: Database) -> list[dict]:
     from sqlalchemy import func
     from mkb.db.models import SchemaProposal, SchemaProposalRevision
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         query = session.query(SchemaProposal)
         if status:
             query = query.filter_by(status=status)
@@ -90,12 +83,11 @@ def list_schema_proposals(status: str | None = "pending") -> list[dict]:
             "created_at": row.created_at.isoformat() if row.created_at else None,
         } for row in rows]
 
-def get_schema_proposal_revisions(proposal_id: str | uuid.UUID) -> list[dict]:
+def get_schema_proposal_revisions(proposal_id: str | uuid.UUID, *, database: Database) -> list[dict]:
     from mkb.db.models import SchemaProposalRevision
 
     pid = uuid.UUID(str(proposal_id))
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         rows = session.query(SchemaProposalRevision).filter_by(proposal_id=pid).order_by(
             SchemaProposalRevision.revision_number.desc()
         ).all()
@@ -117,6 +109,7 @@ def edit_schema_proposal(
     proposal_id: str | uuid.UUID, *, payload: dict,
     evidence_workflow_ids: list[str], rationale: str,
     editor: str, change_note: str,
+    database: Database,
 ) -> dict:
     """Save an attributed proposal draft revision and revalidate it."""
     from sqlalchemy import func
@@ -133,8 +126,7 @@ def edit_schema_proposal(
         evidence_uuids = [uuid.UUID(value) for value in evidence_workflow_ids]
     except (TypeError, ValueError, AttributeError):
         return {"error": "evidence_workflow_ids must contain canonicalization UUIDs"}
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         row = session.query(SchemaProposal).filter_by(proposal_id=pid).first()
         if not row or row.status not in {"pending", "revision_requested"}:
             return {"error": "Only pending or revision-requested proposals can be edited"}
@@ -183,14 +175,13 @@ def edit_schema_proposal(
             "revision_number": revision_number, "validation_errors": errors,
         }
 
-def get_workflow_schema_status() -> dict:
+def get_workflow_schema_status(*, database: Database) -> dict:
     """Return global schema and curator queue summary for the frontend."""
     from sqlalchemy import func
     from mkb.db.models import SchemaProposal, WorkflowMaintenanceTask, WorkflowSchemaVersion
     from mkb.workflows.schema_library import get_schema_library_payload
 
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         active = session.query(WorkflowSchemaVersion).filter_by(status="active").order_by(
             WorkflowSchemaVersion.version.desc()
         ).first()
@@ -221,6 +212,7 @@ def get_workflow_schema_status() -> dict:
 def review_schema_proposal(
     proposal_id: str | uuid.UUID, *, approve: bool | None = None,
     reviewer: str, decision: str | None = None, notes: str = "",
+    database: Database,
 ) -> dict:
     """Validate and approve/reject a proposal; approval creates a schema snapshot."""
     from sqlalchemy import func
@@ -238,8 +230,7 @@ def review_schema_proposal(
         return {"error": "reviewer is required"}
     if decision == "request_revision" and not notes.strip():
         return {"error": "Revision requests require reviewer notes"}
-    init_db()
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         row = session.query(SchemaProposal).filter_by(proposal_id=uuid.UUID(str(proposal_id))).first()
         if not row or row.status not in {"pending", "revision_requested"}:
             return {"error": "Reviewable proposal not found"}

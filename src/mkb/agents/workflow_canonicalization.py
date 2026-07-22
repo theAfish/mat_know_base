@@ -11,8 +11,8 @@ from sqlalchemy import func
 from mkb.agents._utils import create_llm, sync_agent_run
 from mkb.agents.prompts.workflow_canonicalization import WORKFLOW_CANONICALIZER_PROMPT
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.workflow_canonicalization import CANONICALIZATION_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.workflow_canonicalization import canonicalization_tools
 from mkb.db.models import CanonicalWorkflow, RawWorkflowExtraction, ResearchProject
 from mkb.workflows.schema_library import CANONICALIZER_VERSION, get_schema_library_payload
 
@@ -24,19 +24,21 @@ def canonicalization_call_budget(raw_node_count: int, raw_edge_count: int) -> in
     return min(240, max(80, 40 + raw_node_count * 3 + raw_edge_count))
 
 
-def build_workflow_canonicalizer(model: str | None = None) -> Agent:
+def build_workflow_canonicalizer(runtime: AgentRuntime, model: str | None = None) -> Agent:
     return Agent(
         name="workflow_canonicalizer", model=create_llm(model),
-        instruction=WORKFLOW_CANONICALIZER_PROMPT, tools=CANONICALIZATION_TOOLS,
+        instruction=WORKFLOW_CANONICALIZER_PROMPT, tools=canonicalization_tools(runtime),
     )
 
 
-async def _run_async(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None, model: str | None, verbose: bool, progress_callback=None, recanonicalization_reason: str | None = None, target_schema_version: str | None = None) -> dict:
+async def _run_async(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None, model: str | None, verbose: bool, progress_callback=None, recanonicalization_reason: str | None = None, target_schema_version: str | None = None, runtime: AgentRuntime | None = None) -> dict:
+    if runtime is None:
+        raise ValueError("Workflow canonicalization requires an explicit AgentRuntime")
     if model is None:
         from mkb.runtime_settings import get_setting
 
         model = get_setting("extraction_model")
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         if not db.query(ResearchProject).filter_by(project_id=project_id).first():
             return {"status": "error", "message": "Project not found"}
         raw_query = db.query(RawWorkflowExtraction).filter(
@@ -106,7 +108,7 @@ async def _run_async(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None,
 
     max_llm_calls = canonicalization_call_budget(raw_node_count, raw_edge_count)
     runner = AgentRunner(
-        agent=build_workflow_canonicalizer(model),
+        agent=build_workflow_canonicalizer(runtime, model),
         app_name=APP_NAME,
         max_llm_calls=max_llm_calls,
     )
@@ -130,7 +132,7 @@ async def _run_async(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None,
         ),
         verbose=verbose, progress_callback=progress_callback,
     )
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         row = db.query(CanonicalWorkflow).filter_by(canonicalization_id=cid).first()
         if row and row.status == "COMPLETED":
             return {"status": "completed", "canonicalization_id": str(cid), "version": version}
@@ -143,5 +145,5 @@ async def _run_async(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None,
 
 
 @sync_agent_run
-async def run_workflow_canonicalization(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None = None, model: str | None = None, verbose: bool = False, progress_callback=None, recanonicalization_reason: str | None = None, target_schema_version: str | None = None) -> dict:
-    return await _run_async(project_id, raw_extraction_id, model, verbose, progress_callback, recanonicalization_reason, target_schema_version)
+async def run_workflow_canonicalization(project_id: uuid.UUID, raw_extraction_id: uuid.UUID | None = None, model: str | None = None, verbose: bool = False, progress_callback=None, recanonicalization_reason: str | None = None, target_schema_version: str | None = None, runtime: AgentRuntime | None = None) -> dict:
+    return await _run_async(project_id, raw_extraction_id, model, verbose, progress_callback, recanonicalization_reason, target_schema_version, runtime)

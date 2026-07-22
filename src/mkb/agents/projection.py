@@ -14,12 +14,12 @@ import uuid
 
 from google.adk.agents import Agent
 
-from mkb.agents._utils import JobCancelled, SpaceConfig, create_llm, sync_agent_run
+from mkb.agents._utils import JobCancelled, SpaceConfig, create_llm, run_async_sync
 from mkb.agents.prompts.projection import build_projection_prompt
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.projection import PROJECTION_TOOLS, write_projection_trace
-from mkb.agents.tools.vision import VISION_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.projection import projection_tools, write_projection_trace
+from mkb.agents.tools.vision import vision_tools
 from mkb.db.models import (
     FrameStatus,
     KnowledgeFrame,
@@ -36,6 +36,7 @@ APP_NAME = "mkb_projection"
 
 def build_projection_agent(
     space: Space | SpaceConfig,
+    runtime: AgentRuntime,
     model: str | None = None,
     source_type: str = "frame",
     source_id: str | None = None,
@@ -62,7 +63,7 @@ def build_projection_agent(
         name="projection_agent",
         model=llm,
         instruction=prompt,
-        tools=PROJECTION_TOOLS + VISION_TOOLS,
+        tools=projection_tools(runtime) + vision_tools(runtime),
     )
 
 
@@ -74,6 +75,7 @@ async def _run_projection_async(
     progress_callback=None,
     source_type: str = "frame",
     project_id: uuid.UUID | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run projection on a single frame using a space definition.
 
@@ -86,6 +88,8 @@ async def _run_projection_async(
     the project if one does not yet exist (so the DB linkage is preserved).
     """
 
+    if runtime is None:
+        raise ValueError("Projection requires an explicit AgentRuntime")
     source_kind = (source_type or "frame").strip().lower()
     if source_kind not in {"frame", "markdown"}:
         return {"status": "error", "message": f"Unknown source_type: {source_type}"}
@@ -94,7 +98,7 @@ async def _run_projection_async(
         if progress_callback:
             progress_callback({"message": message, **extra})
 
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         space = db.query(Space).filter_by(space_id=space_id).first()
         if not space:
             return {"status": "error", "message": f"Space {space_id} not found"}
@@ -171,7 +175,7 @@ async def _run_projection_async(
         str(resolved_project_id) if source_kind == "markdown" else str(frame_id)
     )
     agent = build_projection_agent(
-        space_cfg, model, source_type=source_kind, source_id=source_id,
+        space_cfg, runtime, model, source_type=source_kind, source_id=source_id,
         project_id=str(resolved_project_id),
     )
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
@@ -216,7 +220,7 @@ async def _run_projection_async(
         )
     except JobCancelled:
         # Revert the projection to PENDING so it can be re-run cleanly.
-        with SyncSessionLocal() as db:
+        with runtime.database.session() as db:
             proj = db.query(Projection).filter_by(projection_id=projection_id).first()
             if proj and proj.status == ProjectionStatus.IN_PROGRESS:
                 proj.status = ProjectionStatus.PENDING
@@ -225,7 +229,7 @@ async def _run_projection_async(
         raise
 
     if not result.success:
-        with SyncSessionLocal() as db:
+        with runtime.database.session() as db:
             proj = db.query(Projection).filter_by(projection_id=projection_id).first()
             if proj:
                 proj.status = ProjectionStatus.FAILED
@@ -244,7 +248,7 @@ async def _run_projection_async(
         }
 
     # Check result
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         proj = db.query(Projection).filter_by(projection_id=projection_id).first()
         status = proj.status.value if proj else "unknown"
 
@@ -267,8 +271,7 @@ async def _run_projection_async(
     }
 
 
-@sync_agent_run
-async def run_projection(
+def run_projection(
     space_id: uuid.UUID,
     frame_id: uuid.UUID | None = None,
     model: str | None = None,
@@ -276,31 +279,37 @@ async def run_projection(
     progress_callback=None,
     source_type: str = "frame",
     project_id: uuid.UUID | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run projection on one frame."""
-    return await _run_projection_async(
-        space_id,
-        frame_id,
-        model,
-        verbose,
-        progress_callback=progress_callback,
-        source_type=source_type,
-        project_id=project_id,
+    return run_async_sync(
+        _run_projection_async(
+            space_id,
+            frame_id,
+            model,
+            verbose,
+            progress_callback=progress_callback,
+            source_type=source_type,
+            project_id=project_id,
+            runtime=runtime,
+        )
     )
 
 
-@sync_agent_run
-async def run_projection_all(
+def run_projection_all(
     space_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
     source_type: str = "frame",
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run projection on all completed frames (or all projects) using a space."""
+    if runtime is None:
+        raise ValueError("Projection requires an explicit AgentRuntime")
     sid = space_id
     source_kind = (source_type or "frame").strip().lower()
 
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         space = db.query(Space).filter_by(space_id=sid).first()
         if not space:
             return {"status": "error", "message": f"Space {sid} not found"}
@@ -336,10 +345,10 @@ async def run_projection_all(
             "project" if source_kind == "markdown" else "frame",
             pid or fid, sid,
         )
-        result = await _run_projection_async(
+        result = run_async_sync(_run_projection_async(
             sid, fid, model=model, verbose=verbose,
-            source_type=source_kind, project_id=pid,
-        )
+            source_type=source_kind, project_id=pid, runtime=runtime,
+        ))
         results.append(result)
         logger.info("  → %s", result.get("status", "unknown"))
 

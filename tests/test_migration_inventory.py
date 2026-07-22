@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+from mkb.adapters import FileObjectStore
 from mkb.migration_inventory import local_inventory, object_storage_inventory
 
 
@@ -64,3 +65,20 @@ def test_object_inventory_can_include_streamed_content_checksums():
     assert result["buckets"]["raw"]["objects"][0]["sha256"] == (
         "ab5aa97074c454a0632057e704220d9a6678fbf773a0a5806fc09b8173b07309"
     )
+
+
+def test_object_inventory_supports_the_backend_neutral_object_store(tmp_path):
+    store = FileObjectStore(tmp_path / "objects")
+    store.put_bytes("raw", "notes.md", b"notes")
+
+    result = object_storage_inventory(
+        None,
+        ["raw"],
+        include_checksums=True,
+        object_store=store,
+    )
+
+    item = result["buckets"]["raw"]["objects"][0]
+    assert item["key"] == "notes.md"
+    assert item["bytes"] == 5
+    assert item["sha256"] == "ab5aa97074c454a0632057e704220d9a6678fbf773a0a5806fc09b8173b07309"

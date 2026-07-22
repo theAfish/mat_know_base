@@ -8,6 +8,11 @@ from mkb.services._api_common import (
     logger,
     uuid,
 )
+from mkb.ports import Database, ObjectStore
+
+
+def _session_factory(database: Database | None):
+    return database.session if database is not None else SyncSessionLocal
 
 
 def serialize_group(group, project_count: int) -> dict:
@@ -28,6 +33,7 @@ def rename_project(
     label: str,
     *,
     user_initiated: bool = True,
+    database: Database | None = None,
 ) -> dict:
     """Rename a research project.
 
@@ -44,7 +50,7 @@ def rename_project(
     if not cleaned:
         return {"error": "label must not be empty"}
 
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         project = session.query(ResearchProject).filter_by(project_id=pid).first()
         if not project:
             return {"error": f"Project {project_id} not found"}
@@ -60,14 +66,14 @@ def rename_project(
             "user_named": bool((project.metadata_ or {}).get("user_named")),
         }
 
-def list_projects(limit: int = 50) -> list[dict]:
+def list_projects(limit: int = 50, *, database: Database | None = None) -> list[dict]:
     """List research projects."""
     from collections import defaultdict
 
     from mkb.db.models import CanonicalWorkflow, KnowledgeFrame, ProcessedAsset, ProjectAsset, RawWorkflowExtraction, ResearchProject
 
     init_db()
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         projects = (
             session.query(ResearchProject)
             .order_by(ResearchProject.created_at.desc())
@@ -167,14 +173,14 @@ def list_projects(limit: int = 50) -> list[dict]:
 def _serialize_group(g, project_count: int) -> dict:
     return serialize_group(g, project_count)
 
-def list_project_groups() -> list[dict]:
+def list_project_groups(*, database: Database | None = None) -> list[dict]:
     """List all project groups with project counts."""
     from sqlalchemy import func as sa_func
 
     from mkb.db.models import ProjectGroup, ResearchProject
 
     init_db()
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         groups = (
             session.query(ProjectGroup)
             .order_by(ProjectGroup.display_order, ProjectGroup.created_at)
@@ -194,6 +200,7 @@ def create_project_group(
     description: str | None = None,
     color: str | None = None,
     display_order: int | None = None,
+    database: Database | None = None,
 ) -> dict:
     from mkb.db.models import ProjectGroup
 
@@ -202,7 +209,7 @@ def create_project_group(
         return {"error": "name must not be empty"}
 
     init_db()
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         if display_order is None:
             current_max = (
                 session.query(ProjectGroup)
@@ -228,6 +235,7 @@ def update_project_group(
     description: str | None = None,
     color: str | None = None,
     display_order: int | None = None,
+    database: Database | None = None,
 ) -> dict:
     from sqlalchemy import func as sa_func
 
@@ -235,7 +243,7 @@ def update_project_group(
 
     gid = uuid.UUID(str(group_id))
     init_db()
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         group = session.query(ProjectGroup).filter_by(group_id=gid).first()
         if not group:
             return {"error": f"Group {group_id} not found"}
@@ -260,13 +268,17 @@ def update_project_group(
         ) or 0
         return _serialize_group(group, int(count))
 
-def delete_project_group(group_id: str | uuid.UUID) -> dict:
+def delete_project_group(
+    group_id: str | uuid.UUID,
+    *,
+    database: Database | None = None,
+) -> dict:
     """Delete a group. Projects in it are unassigned (group_id set to NULL)."""
     from mkb.db.models import ProjectGroup, ResearchProject
 
     gid = uuid.UUID(str(group_id))
     init_db()
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         group = session.query(ProjectGroup).filter_by(group_id=gid).first()
         if not group:
             return {"error": f"Group {group_id} not found"}
@@ -283,6 +295,8 @@ def delete_project(
     project_id: str | uuid.UUID,
     *,
     delete_s3_objects: bool = True,
+    database: Database | None = None,
+    object_store: ObjectStore | None = None,
 ) -> dict:
     """Hard-delete a research project and all data exclusively owned by it.
 
@@ -315,12 +329,10 @@ def delete_project(
         WorkflowIndexEntry,
         WorkflowMaintenanceTask,
     )
-    from mkb.storage.s3 import delete_object
-
     pid = uuid.UUID(str(project_id))
     init_db()
 
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         project = session.query(ResearchProject).filter_by(project_id=pid).first()
         if not project:
             return {"error": f"Project {project_id} not found"}
@@ -360,7 +372,11 @@ def delete_project(
             for pa in processed_rows:
                 if delete_s3_objects:
                     try:
-                        delete_object(pa.s3_bucket, pa.s3_key)
+                        if object_store is not None:
+                            object_store.delete(pa.s3_bucket, pa.s3_key)
+                        else:
+                            if object_store is not None:
+                                object_store.delete(pa.s3_bucket, pa.s3_key)
                         deleted_s3_objects += 1
                     except Exception:
                         logger.warning(
@@ -383,7 +399,11 @@ def delete_project(
             for asset in raw_assets:
                 if delete_s3_objects:
                     try:
-                        delete_object(asset.s3_bucket, asset.s3_key)
+                        if object_store is not None:
+                            object_store.delete(asset.s3_bucket, asset.s3_key)
+                        else:
+                            if object_store is not None:
+                                object_store.delete(asset.s3_bucket, asset.s3_key)
                         deleted_s3_objects += 1
                     except Exception:
                         logger.warning(
@@ -478,6 +498,8 @@ def delete_project(
 def assign_projects_to_group(
     project_ids: list[str | uuid.UUID],
     group_id: str | uuid.UUID | None,
+    *,
+    database: Database | None = None,
 ) -> dict:
     """Assign multiple projects to a group, or to no group when ``group_id`` is None."""
     from mkb.db.models import ProjectGroup, ResearchProject
@@ -489,7 +511,7 @@ def assign_projects_to_group(
     gid = uuid.UUID(str(group_id)) if group_id else None
 
     init_db()
-    with SyncSessionLocal() as session:
+    with _session_factory(database)() as session:
         if gid is not None:
             group = session.query(ProjectGroup).filter_by(group_id=gid).first()
             if not group:
@@ -501,4 +523,3 @@ def assign_projects_to_group(
         )
         session.commit()
         return {"updated": int(updated), "group_id": str(gid) if gid else None}
-

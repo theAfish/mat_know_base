@@ -26,27 +26,6 @@ from mkb.services.workflows import (
     serialization as _workflow_serialization,
 )
 
-from mkb.services.ingest import (
-    ingest,
-    sync,
-    sync_project,
-)
-
-from mkb.services.frames import (
-    extract,
-    get_frame,
-    list_frames,
-    get_extraction_history,
-)
-
-from mkb.services.assets import (
-    process,
-    list_processed_assets,
-    link_manual_processed_data,
-    list_assets,
-    search_library,
-)
-
 from mkb.services.projects import (
     serialize_group,
     rename_project,
@@ -63,14 +42,7 @@ from mkb.services.projects import (
 from mkb.services.workflows import (
     serialize_raw_workflow,
     serialize_canonical_workflow,
-    extract_raw_workflow,
-    get_raw_workflow_extraction_readiness,
-    list_raw_workflows,
-    get_raw_workflow,
-    delete_raw_workflow_version,
     _serialize_raw_workflow,
-    review_raw_workflow,
-    correct_raw_workflow,
     list_canonical_workflows,
     get_canonical_workflow,
     _serialize_canonical_workflow,
@@ -135,6 +107,118 @@ from mkb.services._api_common import (
     SyncSessionLocal,
     init_db,
 )
+
+
+def ingest(directory, label=None, *, user_named=False):
+    """Compatibility entry point bound to explicitly owned default resources."""
+    from mkb.services.compatibility_resources import content_operations
+
+    return content_operations().ingest(directory, label=label, user_named=user_named)
+
+
+def sync(root_dir):
+    from mkb.services.compatibility_resources import content_operations
+
+    return content_operations().sync(root_dir)
+
+
+def sync_project(project_id):
+    from mkb.services.compatibility_resources import content_operations
+
+    return content_operations().sync_project(project_id)
+
+
+def process(project_id=None, progress_callback=None):
+    from mkb.services.compatibility_resources import content_operations
+
+    return content_operations().process(
+        project_id=project_id,
+        progress_callback=progress_callback,
+    )
+
+
+def _workflow_operations():
+    from mkb.services.compatibility_resources import workflow_operations
+
+    return workflow_operations()
+
+
+def extract_raw_workflow(project_id, **kwargs):
+    readiness = get_raw_workflow_extraction_readiness(project_id)
+    if not readiness.get("ready"):
+        return {
+            "status": "error",
+            "message": readiness.get("message") or "Project is not ready for workflow extraction",
+        }
+    return _workflow_operations().extract_raw_workflow(project_id, **kwargs)
+
+
+def get_raw_workflow_extraction_readiness(project_id, **kwargs):
+    return _workflow_operations().get_raw_workflow_extraction_readiness(project_id, **kwargs)
+
+
+def list_raw_workflows(project_id, **kwargs):
+    return _workflow_operations().list_raw_workflows(project_id, **kwargs)
+
+
+def get_raw_workflow(project_id, **kwargs):
+    return _workflow_operations().get_raw_workflow(project_id, **kwargs)
+
+
+def delete_raw_workflow_version(project_id, version, **kwargs):
+    return _workflow_operations().delete_raw_workflow_version(project_id, version, **kwargs)
+
+
+def review_raw_workflow(extraction_id, **kwargs):
+    return _workflow_operations().review_raw_workflow(extraction_id, **kwargs)
+
+
+def correct_raw_workflow(extraction_id, graph, **kwargs):
+    return _workflow_operations().correct_raw_workflow(extraction_id, graph, **kwargs)
+
+
+def _frame_operations():
+    from mkb.services.compatibility_resources import frame_operations
+
+    return frame_operations()
+
+
+def extract(**kwargs):
+    return _frame_operations().extract(**kwargs)
+
+
+def get_frame(project_id, **kwargs):
+    return _frame_operations().get_frame(project_id, **kwargs)
+
+
+def list_frames(**kwargs):
+    return _frame_operations().list_frames(**kwargs)
+
+
+def get_extraction_history(project_id, **kwargs):
+    return _frame_operations().get_extraction_history(project_id, **kwargs)
+
+
+def _asset_operations():
+    from mkb.services.compatibility_resources import asset_operations
+
+    return asset_operations()
+
+
+def list_processed_assets(**kwargs):
+    return _asset_operations().list_processed_assets(**kwargs)
+
+
+def link_manual_processed_data(*args, **kwargs):
+    return _asset_operations().link_manual_processed_data(*args, **kwargs)
+
+
+def list_assets(**kwargs):
+    return _asset_operations().list_assets(**kwargs)
+
+
+def search_library(query, **kwargs):
+    return _asset_operations().search_library(query, **kwargs)
 
 __all__ = [
     "SyncSessionLocal",

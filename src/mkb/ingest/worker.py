@@ -15,10 +15,8 @@ from typing import Iterable
 import magic
 from sqlalchemy import func
 
-from mkb.config import settings
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Asset, ProcessingStatus, ProjectAsset, ResearchProject
-from mkb.storage.s3 import object_exists, upload_bytes
+from mkb.ports import Database, ObjectStore
 
 logger = logging.getLogger(__name__)
 CHUNK_SIZE = 8 * 1024 * 1024  # 8 MiB
@@ -75,6 +73,8 @@ def _ingest_file(
     session,
     project_id: uuid.UUID,
     existing_by_hash: dict[str, Asset],
+    object_store: ObjectStore,
+    raw_bucket: str,
 ) -> tuple[Asset, bool]:
     """Ingest a single file. Returns (Asset, is_new)."""
     path = fingerprint.path.resolve()
@@ -88,11 +88,11 @@ def _ingest_file(
     mime = detect_mime(path)
     data = path.read_bytes()
 
-    bucket = settings.s3_bucket_raw
+    bucket = raw_bucket
     s3_key = f"{file_hash[:2]}/{file_hash[2:4]}/{file_hash}"
 
-    if not object_exists(bucket, s3_key):
-        upload_bytes(data, bucket, s3_key)
+    if not object_store.exists(bucket, s3_key):
+        object_store.put_bytes(bucket, s3_key, data)
         logger.info("Uploaded %s -> s3://%s/%s", path.name, bucket, s3_key)
 
     asset = Asset(
@@ -161,6 +161,9 @@ def ingest_directory(
     directory: str | Path,
     label: str | None = None,
     *,
+    database: Database,
+    object_store: ObjectStore,
+    raw_bucket: str,
     user_named: bool = False,
 ) -> dict:
     """Ingest a directory as a research project. Creates or updates the project.
@@ -178,7 +181,7 @@ def ingest_directory(
     logger.info("Found %d files in %s", len(files), directory)
     fingerprints = _fingerprint_files(files)
 
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         # Find or create research project by source_path
         project = session.query(ResearchProject).filter_by(source_path=source_path).first()
         existing_by_hash = _load_existing_assets(session, fingerprints)
@@ -239,6 +242,8 @@ def ingest_directory(
                     session,
                     project.project_id,
                     existing_by_hash,
+                    object_store,
+                    raw_bucket,
                 )
                 if is_new:
                     stats["ingested"] += 1
@@ -277,12 +282,18 @@ def ingest_directory(
     return stats
 
 
-def sync_project(project_id: uuid.UUID) -> dict:
+def sync_project(
+    project_id: uuid.UUID,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    raw_bucket: str,
+) -> dict:
     """Re-scan a project's source_path and ingest any new files.
 
     Returns stats about what was found/added.
     """
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         project = session.query(ResearchProject).filter_by(project_id=project_id).first()
         if not project:
             return {"error": f"Project {project_id} not found"}
@@ -316,6 +327,8 @@ def sync_project(project_id: uuid.UUID) -> dict:
                     session,
                     project_id,
                     existing_by_hash,
+                    object_store,
+                    raw_bucket,
                 )
                 existing_hashes.add(asset.sha256)
                 stats["new_ingested"] += 1
@@ -331,7 +344,13 @@ def sync_project(project_id: uuid.UUID) -> dict:
     return stats
 
 
-def sync_root(root_dir: str | Path) -> dict:
+def sync_root(
+    root_dir: str | Path,
+    *,
+    database: Database,
+    object_store: ObjectStore,
+    raw_bucket: str,
+) -> dict:
     """Scan a root directory: each immediate subdirectory becomes a research project.
 
     New subdirectories are ingested. Existing ones are synced for new files.
@@ -348,18 +367,28 @@ def sync_root(root_dir: str | Path) -> dict:
     for subdir in subdirs:
         source_path = str(subdir.resolve())
 
-        with SyncSessionLocal() as session:
+        with database.session() as session:
             project = session.query(ResearchProject).filter_by(source_path=source_path).first()
 
         if project:
             logger.info("Syncing existing project: %s (%s)", project.label, subdir.name)
-            result = sync_project(project.project_id)
+            result = sync_project(
+                project.project_id,
+                database=database,
+                object_store=object_store,
+                raw_bucket=raw_bucket,
+            )
             result["project_id"] = str(project.project_id)
             result["label"] = project.label
             result["action"] = "synced"
         else:
             logger.info("New project found: %s", subdir.name)
-            result = ingest_directory(subdir)
+            result = ingest_directory(
+                subdir,
+                database=database,
+                object_store=object_store,
+                raw_bucket=raw_bucket,
+            )
             result["action"] = "created"
 
         results.append(result)

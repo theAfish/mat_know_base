@@ -17,7 +17,7 @@ from mkb.agents._utils import JobCancelled
 from mkb.agents.orchestrator import create_orchestrator_runner
 from mkb.agents.tools.orchestrator_tools import get_pending_workflows
 from mkb.config import settings
-from mkb.jobs import DatabaseJobStore, JobStore, MemoryJobStore
+from mkb.jobs import JobStore, MemoryJobStore
 from mkb.web.job_actions import action_for_workflow_kind, start_job_action
 
 _EVENT_LIMIT = 60
@@ -351,7 +351,9 @@ class JobManager:
 
 # ── Singletons shared by every router ────────────────────────────────────────
 
-jobs = JobManager(store=DatabaseJobStore())
+# The web composition root replaces this temporary store with a
+# DatabaseJobStore built from the owning KnowledgeBase before accepting work.
+jobs = JobManager()
 assistant_lock = threading.Lock()
 assistant_session: AssistantSession | None = None
 

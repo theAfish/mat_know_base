@@ -20,13 +20,13 @@ from google.adk.agents import Agent
 from mkb.agents._utils import create_llm, sync_agent_run
 from mkb.agents.prompts.projection_review import default_review_prompt_for
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.reading import READING_TOOLS
-from mkb.agents.tools.projection_review import PROJECTION_REVIEW_TOOLS
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.reading import reading_tools
+from mkb.agents.tools.projection_review import projection_review_tools
 from mkb.agents.tools.projection_review import save_reviewed_projection_patch
 from mkb.agents.tools.review_search import (
     get_projection_review_search_tools,
 )
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import (
     KnowledgeFrame,
     Projection,
@@ -41,15 +41,13 @@ logger = logging.getLogger(__name__)
 
 APP_NAME = "mkb_projection_reviewer"
 
-BASE_REVIEWER_TOOLS = PROJECTION_REVIEW_TOOLS
-
-
 def _compact_followup_context(value: Any, *, max_chars: int = 8000) -> str:
     text = json.dumps(value, ensure_ascii=True, default=str) if not isinstance(value, str) else value
     return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
 
 
 def build_projection_reviewer_agent(
+    runtime: AgentRuntime,
     model: str | None = None,
     purpose: str | None = None,
     custom_prompt: str | None = None,
@@ -87,7 +85,7 @@ def build_projection_reviewer_agent(
     groups = [str(group).strip().lower() for group in (tool_groups or ["reading"]) if str(group).strip()]
     optional_tools = []
     if "reading" in groups:
-        optional_tools.extend(READING_TOOLS)
+        optional_tools.extend(reading_tools(runtime))
     search_names = [group for group in groups if group in {"web", "uniprot", "crossref", "ncbi"}]
     if search_names:
         optional_tools.extend(get_projection_review_search_tools(search_names))
@@ -95,7 +93,7 @@ def build_projection_reviewer_agent(
         name=agent_name,
         model=llm,
         instruction=instruction,
-        tools=BASE_REVIEWER_TOOLS + optional_tools,
+        tools=projection_review_tools(runtime) + optional_tools,
     )
 
 
@@ -187,7 +185,7 @@ def _post_processor_script_payload(
     }
 
 
-def _apply_script_patch(script_decision: dict) -> dict | None:
+def _apply_script_patch(script_decision: dict, *, runtime: AgentRuntime) -> dict | None:
     patch = script_decision.get("patch")
     if not patch:
         return None
@@ -195,6 +193,7 @@ def _apply_script_patch(script_decision: dict) -> dict | None:
         str(patch["winning_projection_id"]),
         patch["updates"],
         str(patch.get("review_notes") or "Post-processor script applied."),
+        runtime=runtime,
     )
     if result.get("error"):
         raise ValueError(f"Post-processor script patch was not saved: {result['error']}")
@@ -208,10 +207,13 @@ async def _run_review_async(
     verbose: bool = False,
     progress_callback=None,
     reviewer_id: str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run projection review on a single project for a given space."""
 
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Projection review requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         space = db.query(Space).filter_by(space_id=space_id).first()
         if not space:
             return {"status": "error", "message": f"Space {space_id} not found"}
@@ -271,7 +273,7 @@ async def _run_review_async(
             }
 
     try:
-        script_save = _apply_script_patch(script_decision)
+        script_save = _apply_script_patch(script_decision, runtime=runtime)
     except ValueError as exc:
         return {
             "status": "error",
@@ -306,7 +308,7 @@ async def _run_review_async(
             "stage": "agent_fallback",
         })
     agent = build_projection_reviewer_agent(
-        model,
+        runtime, model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
@@ -376,7 +378,7 @@ async def _run_review_async(
         }
 
     # Check result — look for a REVIEWED projection
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         reviewed = (
             db.query(Projection)
             .filter_by(space_id=space_id, status=ProjectionStatus.REVIEWED)
@@ -414,6 +416,7 @@ async def run_projection_review(
     verbose: bool = False,
     progress_callback=None,
     reviewer_id: str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run projection review on one project."""
     return await _run_review_async(
@@ -423,6 +426,7 @@ async def run_projection_review(
         verbose=verbose,
         progress_callback=progress_callback,
         reviewer_id=reviewer_id,
+        runtime=runtime,
     )
 
 
@@ -436,6 +440,7 @@ async def run_projection_review_followup(
     verbose: bool = False,
     progress_callback=None,
     reviewer_id: str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run a follow-up reviewer turn after a projection review job.
 
@@ -447,7 +452,9 @@ async def run_projection_review_followup(
     if not cleaned_message:
         return {"status": "error", "message": "Follow-up message is required."}
 
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Projection review requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         space = db.query(Space).filter_by(space_id=space_id).first()
         if not space:
             return {"status": "error", "message": f"Space {space_id} not found"}
@@ -477,7 +484,7 @@ async def run_projection_review_followup(
         selected_reviewer_id, processor_prompt, tool_groups, skill_ids, processor = _processor_runtime(space, reviewer_id)
 
     agent = build_projection_reviewer_agent(
-        model,
+        runtime, model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
@@ -554,6 +561,7 @@ async def run_projection_review_all(
     progress_callback=None,
     project_ids: list[uuid.UUID] | None = None,
     reviewer_id: str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run projection review on projects in a space (separate sessions).
 
@@ -563,7 +571,9 @@ async def run_projection_review_all(
     """
     sid = space_id
 
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Projection review requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         space = db.query(Space).filter_by(space_id=sid).first()
         if not space:
             return {"status": "error", "message": f"Space {sid} not found"}
@@ -640,6 +650,7 @@ async def run_projection_review_all(
             verbose=verbose,
             progress_callback=progress_callback,
             reviewer_id=reviewer_id,
+            runtime=runtime,
         )
         results.append(result)
         logger.info("  -> %s", result.get("status", "unknown"))
@@ -661,6 +672,7 @@ async def run_projection_review_session(
     verbose: bool = False,
     progress_callback=None,
     reviewer_id: str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run a SINGLE reviewer session that handles every selected project.
 
@@ -672,7 +684,9 @@ async def run_projection_review_session(
     """
     sid = space_id
 
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Projection review requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         space = db.query(Space).filter_by(space_id=sid).first()
         if not space:
             return {"status": "error", "message": f"Space {sid} not found"}
@@ -724,7 +738,7 @@ async def run_projection_review_session(
                     "message": f"Post-processor script failed: {exc}",
                 }
             try:
-                script_save = _apply_script_patch(script_decision)
+                script_save = _apply_script_patch(script_decision, runtime=runtime)
             except ValueError as exc:
                 return {
                     "status": "error",
@@ -771,7 +785,7 @@ async def run_projection_review_session(
         space_purpose = getattr(space, "purpose", None)
 
     agent = build_projection_reviewer_agent(
-        model,
+        runtime, model,
         purpose=space_purpose,
         custom_prompt=processor_prompt,
         tool_groups=tool_groups,
@@ -830,7 +844,7 @@ async def run_projection_review_session(
 
     # Tally reviewed projections per project after the run
     summary: list[dict] = []
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         for pid in per_project_counts.keys():
             fid = frame_by_pid.get(pid)
             reviewed = (

@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from google.adk.agents import Agent
 from sqlalchemy import func
 
-from mkb.agents._utils import create_llm, sync_agent_run
+from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.workflow_extraction import WORKFLOW_EXTRACTOR_PROMPT
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.reading import READING_TOOLS
-from mkb.agents.tools.workflows import WORKFLOW_EXTRACTION_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.reading import reading_tools
+from mkb.agents.tools.workflows import workflow_extraction_tools
 from mkb.db.models import ProjectAsset, RawWorkflowExtraction, ResearchProject
 from mkb.workflows.contract import EXTRACTOR_VERSION, RAW_WORKFLOW_SCHEMA_VERSION
 
@@ -22,16 +22,26 @@ logger = logging.getLogger(__name__)
 APP_NAME = "mkb_raw_workflow"
 
 
-def build_workflow_extractor(model: str | None = None) -> Agent:
+def build_workflow_extractor(
+    runtime: AgentRuntime,
+    model: str | None = None,
+) -> Agent:
     return Agent(
         name="raw_workflow_extractor",
         model=create_llm(model),
         instruction=WORKFLOW_EXTRACTOR_PROMPT,
-        tools=READING_TOOLS + WORKFLOW_EXTRACTION_TOOLS,
+        tools=reading_tools(runtime) + workflow_extraction_tools(runtime),
     )
 
 
-async def _run_async(project_id: uuid.UUID, model: str | None, verbose: bool, progress_callback=None, reextraction_request: dict | None = None) -> dict:
+async def _run_async(
+    project_id: uuid.UUID,
+    model: str | None,
+    verbose: bool,
+    progress_callback=None,
+    reextraction_request: dict | None = None,
+    runtime: AgentRuntime | None = None,
+) -> dict:
     def emit(message: str, **extra) -> None:
         if progress_callback:
             progress_callback({"message": message, **extra})
@@ -45,7 +55,9 @@ async def _run_async(project_id: uuid.UUID, model: str | None, verbose: bool, pr
         if reextraction_request else None
     )
 
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Workflow extraction requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         project = db.query(ResearchProject).filter_by(project_id=project_id).first()
         if not project:
             return {"status": "error", "message": f"Project {project_id} not found"}
@@ -121,7 +133,7 @@ async def _run_async(project_id: uuid.UUID, model: str | None, verbose: bool, pr
         version=next_version,
     )
 
-    runner = AgentRunner(agent=build_workflow_extractor(model), app_name=APP_NAME)
+    runner = AgentRunner(agent=build_workflow_extractor(runtime, model), app_name=APP_NAME)
     session_id = f"raw_workflow_{eid}"
     await runner.create_session(session_id)
     checkpoint_summary = str(checkpoint.get("summary") or "").strip()
@@ -152,7 +164,7 @@ async def _run_async(project_id: uuid.UUID, model: str | None, verbose: bool, pr
         max_retries=int(get_setting("agent_retry_count")),
     )
 
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         row = db.query(RawWorkflowExtraction).filter_by(extraction_id=eid).first()
         if row and row.status == "COMPLETED":
             return {
@@ -167,6 +179,21 @@ async def _run_async(project_id: uuid.UUID, model: str | None, verbose: bool, pr
         return {"status": "error", "extraction_id": str(eid), "message": result.error or "No graph was saved"}
 
 
-@sync_agent_run
-async def run_workflow_extraction(project_id: uuid.UUID, model: str | None = None, verbose: bool = False, progress_callback=None, reextraction_request: dict | None = None) -> dict:
-    return await _run_async(project_id, model, verbose, progress_callback, reextraction_request)
+def run_workflow_extraction(
+    project_id: uuid.UUID,
+    model: str | None = None,
+    verbose: bool = False,
+    progress_callback=None,
+    reextraction_request: dict | None = None,
+    runtime: AgentRuntime | None = None,
+) -> dict:
+    return run_async_sync(
+        _run_async(
+            project_id,
+            model,
+            verbose,
+            progress_callback,
+            reextraction_request,
+            runtime=runtime,
+        )
+    )

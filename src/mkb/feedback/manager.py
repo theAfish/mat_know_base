@@ -11,8 +11,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from mkb.db.engine import SyncSessionLocal
 from mkb.db.models import Feedback, FeedbackStatus
+from mkb.ports import Database
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +26,11 @@ def create_feedback(
     source_projection_id: uuid.UUID | None = None,
     field_path: str | None = None,
     context: str | None = None,
+    *,
+    database: Database,
 ) -> dict:
     """Create a new feedback item."""
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         fb = Feedback(
             feedback_id=uuid.uuid4(),
             source_projection_id=source_projection_id,
@@ -46,10 +48,10 @@ def create_feedback(
         return {"feedback_id": str(fb.feedback_id), "status": "created"}
 
 
-def get_open_feedback(project_id: uuid.UUID) -> list[dict]:
+def get_open_feedback(project_id: uuid.UUID, *, database: Database) -> list[dict]:
     """Get all open feedback items for a project."""
     pid = project_id
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         items = (
             session.query(Feedback)
             .filter_by(target_project_id=pid, status=FeedbackStatus.OPEN)
@@ -59,10 +61,10 @@ def get_open_feedback(project_id: uuid.UUID) -> list[dict]:
         return [_feedback_to_dict(fb) for fb in items]
 
 
-def get_feedback_summary(project_id: uuid.UUID) -> dict:
+def get_feedback_summary(project_id: uuid.UUID, *, database: Database) -> dict:
     """Get counts of feedback by category and status for a project."""
     pid = project_id
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         items = session.query(Feedback).filter_by(target_project_id=pid).all()
         by_status = {}
         by_category = {}
@@ -81,10 +83,12 @@ def resolve_feedback(
     status: str,
     notes: str,
     resolved_by: str = "user",
+    *,
+    database: Database,
 ) -> dict:
     """Resolve a feedback item."""
     fid = feedback_id
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         fb = session.query(Feedback).filter_by(feedback_id=fid).first()
         if not fb:
             return {"error": f"Feedback {feedback_id} not found."}
@@ -101,9 +105,11 @@ def resolve_feedback(
 def list_feedback(
     project_id: uuid.UUID | None = None,
     status: str | None = None,
+    *,
+    database: Database,
 ) -> list[dict]:
     """List feedback items with optional filters."""
-    with SyncSessionLocal() as session:
+    with database.session() as session:
         q = session.query(Feedback).order_by(Feedback.created_at.desc())
         if project_id:
             q = q.filter_by(target_project_id=project_id)

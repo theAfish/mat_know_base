@@ -15,27 +15,26 @@ from google.adk.agents import Agent
 from mkb.agents._utils import create_llm, run_async_sync
 from mkb.agents.prompts.feedback_review import FEEDBACK_REVIEW_PROMPT
 from mkb.agents.runner import AgentRunner
-from mkb.agents.tools.reading import READING_TOOLS
-from mkb.agents.tools.frames import FRAME_TOOLS
-from mkb.agents.tools.feedback import FEEDBACK_TOOLS
-from mkb.db.engine import SyncSessionLocal
+from mkb.agents.runtime import AgentRuntime
+from mkb.agents.tools.feedback import feedback_tools
+from mkb.agents.tools.frames import frame_tools
+from mkb.agents.tools.reading import reading_tools
 from mkb.db.models import Feedback, FeedbackStatus
 
 logger = logging.getLogger(__name__)
 
 APP_NAME = "mkb_feedback_review"
 
-# Combine reading + frame + feedback tools for the review agent
-FEEDBACK_REVIEW_TOOLS = READING_TOOLS + FRAME_TOOLS + FEEDBACK_TOOLS
-
-
-def build_feedback_review_agent(model: str | None = None) -> Agent:
+def build_feedback_review_agent(
+    runtime: AgentRuntime,
+    model: str | None = None,
+) -> Agent:
     """Create a feedback review agent."""
     return Agent(
         name="feedback_reviewer",
         model=create_llm(model),
         instruction=FEEDBACK_REVIEW_PROMPT,
-        tools=FEEDBACK_REVIEW_TOOLS,
+        tools=reading_tools(runtime) + frame_tools(runtime) + feedback_tools(runtime),
     )
 
 
@@ -43,11 +42,14 @@ async def _run_feedback_review_async(
     project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Run feedback review on a project's knowledge frame."""
 
     # Check if there's any open feedback
-    with SyncSessionLocal() as db:
+    if runtime is None:
+        raise ValueError("Feedback review requires an explicit AgentRuntime")
+    with runtime.database.session() as db:
         open_count = (
             db.query(Feedback)
             .filter_by(target_project_id=project_id, status=FeedbackStatus.OPEN)
@@ -60,7 +62,7 @@ async def _run_feedback_review_async(
                 "message": "No open feedback items for this project.",
             }
 
-    agent = build_feedback_review_agent(model)
+    agent = build_feedback_review_agent(runtime, model)
     runner = AgentRunner(agent=agent, app_name=APP_NAME)
 
     session_id = f"feedback_review_{project_id}_{uuid.uuid4().hex[:8]}"
@@ -80,7 +82,7 @@ async def _run_feedback_review_async(
     )
 
     # Count resolutions
-    with SyncSessionLocal() as db:
+    with runtime.database.session() as db:
         remaining = (
             db.query(Feedback)
             .filter_by(target_project_id=project_id, status=FeedbackStatus.OPEN)
@@ -102,6 +104,9 @@ def run_feedback_review(
     project_id: uuid.UUID,
     model: str | None = None,
     verbose: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> dict:
     """Synchronous wrapper — run feedback review on one project."""
-    return run_async_sync(_run_feedback_review_async(project_id, model, verbose))
+    return run_async_sync(
+        _run_feedback_review_async(project_id, model, verbose, runtime=runtime)
+    )
