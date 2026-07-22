@@ -2,17 +2,29 @@
 
 ## Installation and supported surfaces
 
-Install the base package for the portable typed SDK, SQLite, filesystem storage,
-registries, and local pipeline execution:
+MKB is currently distributed from this repository rather than PyPI. Install the base
+package for the portable typed SDK, SQLite, filesystem storage, registries, and local
+pipeline execution from a pinned commit for reproducible consumers (replace
+`<commit>` with the version your repository has tested):
 
 ```bash
-pip install mat-know-base
+python -m pip install \
+  "mat-know-base @ git+https://github.com/theAfish/mat_know_base.git@<commit>"
 ```
 
-Install extras only for the integrations a consumer uses: `mat-know-base[postgres]`,
-`mat-know-base[s3]`, or `mat-know-base[neo4j]`. The existing materials application,
-agent-backed extraction, and its compatibility facade require
-`mat-know-base[materials]`; its HTTP server additionally requires `[server]`.
+Use the `dev` branch only when intentionally tracking the shared development build.
+Install extras only for the integrations a consumer uses. For example, PostgreSQL and
+S3 support use:
+
+```bash
+python -m pip install \
+  "mat-know-base[postgres,s3] @ git+https://github.com/theAfish/mat_know_base.git@<commit>"
+```
+
+Other extras are `[neo4j]`, `[materials]`, and `[server]`. The existing materials
+application, agent-backed extraction, and its compatibility facade require
+`[materials]`; its HTTP server additionally requires `[server]`. Once MKB is
+published on PyPI, these Git URLs can be replaced with normal package-install commands.
 
 There are two supported Python surfaces. `KnowledgeBase.from_url(...)` is the portable,
 typed SDK intended for new repositories. `KnowledgeBase.from_environment()` and
@@ -68,6 +80,39 @@ operations; wrapping them in `async def` would still block an event loop. Durabl
 uses `kb.pipelines.submit(...)`/`kb.jobs`, and asynchronous applications should call the
 synchronous SDK at their worker/thread boundary. An async client will be added only when
 the injected ports have genuinely asynchronous implementations.
+
+## Client construction and lifecycle
+
+New integrations should use `KnowledgeBase.from_url(...)`. It is the supported portable
+composition path and accepts SQLite or SQLAlchemy PostgreSQL URLs plus built-in
+filesystem or S3 object-store URLs. `from_environment()` is only for the configured
+materials application. `from_url()` never reads application settings and never creates
+tables; call `initialize()` deliberately for a new portable database.
+
+```python
+from mkb import KnowledgeBase
+
+with KnowledgeBase.from_url(
+    database_url="sqlite:////absolute/path/project.db",
+    object_store_url="file:///absolute/path/objects",  # omit for metadata-only use
+) as kb:
+    kb.initialize()
+    # use kb.collections, kb.records, kb.schemas, and other grouped services
+```
+
+The context manager owns and closes the constructed database, storage, graph, model,
+job, and vector resources. Do not use the client after leaving the block. If an
+application must create it outside a `with` block, call `kb.close()` after all submitted
+pipeline jobs have finished or been cancelled.
+
+`from_url()` accepts injected `GraphStore`, `ModelProvider`, `JobBackend`, and
+`VectorSearch` implementations. Custom `Database` and `ObjectStore` implementations
+are **not yet a supported public composition path**: `from_url()` constructs MKB's
+built-in SQLAlchemy and filesystem/S3 adapters, while direct `KnowledgeBase(...)`
+construction requires internal repository/schema bindings. Adapter authors can rely on
+the protocols in `mkb.ports`, but should not depend on private SDK builders; request or
+contribute a public adapter factory before using a non-built-in database or object store
+in another repository.
 
 For pipeline execution and typed repository access without reading `.env` or YAML,
 construct an independent client explicitly:
@@ -346,9 +391,10 @@ without writing files, so package consumers decide where exported data belongs.
 Narrow adapter protocols live in `mkb.ports`: relational database, object storage,
 graph storage, vector search, content parser, model provider, and job backend. Default
 database, S3/MinIO, filesystem, and in-memory graph implementations are available from
-`mkb.adapters`. These ports remain separate and are composed by `KnowledgeBase`; there
-is no artificial storage interface spanning relational transactions, blobs, vectors,
-and graph traversal.
+`mkb.adapters`. Today the public client factory composes the built-in database and
+object-store adapters; graph, model-provider, job, and vector adapters can be injected
+into `from_url(...)`. These ports remain separate: there is no artificial storage
+interface spanning relational transactions, blobs, vectors, and graph traversal.
 
 Adapters declare stable capability names through `Capabilities`. Pipeline steps fail
 before execution when requirements such as `vector_search`, `full_text_search`,
@@ -639,12 +685,14 @@ and service internals are not supported API even if importable.
 
 ## Adapter and lifecycle guidance
 
-Custom adapters implement the narrow protocols in `mkb.ports`: `Database`,
-`ObjectStore`, `GraphStore`, `ModelProvider`, `JobBackend`, and `VectorSearch`. Declare
-only the stable names in `Capabilities` that the adapter truly supports; pipeline steps
-validate required capabilities before execution. Adapters passed to `KnowledgeBase` are
-owned by that client and closed by `kb.close()` (or a `with` block), so do not share one
-adapter instance across clients unless the adapter supports that lifecycle explicitly.
+Custom `GraphStore`, `ModelProvider`, `JobBackend`, and `VectorSearch` adapters can be
+passed to `from_url(...)`. Implement the corresponding narrow protocol in `mkb.ports`
+and declare only the stable `Capabilities` the adapter truly supports; pipeline steps
+validate requirements before execution. The client owns injected adapters and closes
+them with `kb.close()` (or a `with` block), so do not share an adapter instance across
+clients unless it explicitly supports that lifecycle. Custom `Database` and
+`ObjectStore` adapters remain an extension point, not a public client-construction
+workflow; see [Client construction and lifecycle](#client-construction-and-lifecycle).
 
 `KnowledgeBase` is synchronous. Use it at a worker/thread boundary from async
 applications, keep SQLAlchemy sessions within that boundary, and use `kb.transaction()`

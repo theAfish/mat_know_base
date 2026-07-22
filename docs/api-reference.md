@@ -450,6 +450,55 @@ Fields:
 - `checkpoint_updated_at` — `datetime.datetime | None` (optional/defaulted)
 - `created_at` — `datetime.datetime | None` (optional/defaulted)
 
+## Configured client
+
+### `KnowledgeBase`
+
+The portable client entry point. See [Python API](python-api.md) for installation, supported adapter injection, and lifecycle guidance.
+
+#### `from_environment() -> "'KnowledgeBase'"`
+
+Create a client for the configured materials application.
+
+#### `from_url(*, database_url: 'str', object_store_url: 'str | None' = None, object_store_access_key: 'str | None' = None, object_store_secret_key: 'str | None' = None, raw_bucket: 'str | None' = None, processed_bucket: 'str' = 'processed', archive_bucket: 'str' = 'archive', temp_bucket: 'str' = 'temp', capabilities: 'frozenset[str] | None' = None, graph_store: 'GraphStore | None' = None, model_provider: 'ModelProvider | None' = None, job_backend: 'JobBackend | None' = None, vector_search: 'VectorSearch | None' = None, parser_registry_factory: "Callable[['KnowledgeBase'], Parsers] | None" = None, pipeline_registry_factory: "Callable[['KnowledgeBase', frozenset[str]], Pipelines] | None" = None, steps: 'Steps | None' = None) -> "'KnowledgeBase'"`
+
+Create an independent client without reading global environment settings.
+
+#### `initialize() -> 'int'`
+
+Explicitly create missing SDK-owned tables without dropping existing data.
+
+#### `schema_version() -> 'int | None'`
+
+Return the initialized portable schema version, or ``None`` if absent.
+
+#### `transaction() -> 'Iterator[Transaction]'`
+
+Open one relational transaction for SDK-managed repositories.
+
+#### `close() -> 'None'`
+
+Close client-owned resources and submitted pipeline workers.
+
+### `MKBConfig`
+
+Immutable client configuration.
+
+Fields:
+
+- `database_url` — `str | None` (optional/defaulted)
+- `object_store_endpoint` — `str | None` (optional/defaulted)
+- `object_store_access_key` — `str | None` (optional/defaulted)
+- `object_store_secret_key` — `str | None` (optional/defaulted)
+- `raw_bucket` — `str` (optional/defaulted)
+- `processed_bucket` — `str` (optional/defaulted)
+- `archive_bucket` — `str` (optional/defaulted)
+- `temp_bucket` — `str` (optional/defaulted)
+- `allow_uploaded_python` — `bool` (optional/defaulted)
+- `upload_max_file_mb` — `int` (optional/defaulted)
+- `api_host` — `str` (optional/defaulted)
+- `api_port` — `int` (optional/defaulted)
+
 ## Grouped services
 
 ### `kb.collections`
@@ -812,7 +861,7 @@ Per-client pipeline registry and synchronous/local-background executor.
 
 Resume a failed, cancelled, or interrupted job from its last checkpoint.
 
-#### `run(pipeline: 'Pipeline | str', *, inputs: 'Mapping[str, Any] | None' = None, parameters: 'Mapping[str, Any] | None' = None, progress: 'ProgressHandler | None' = None, _run_id: 'uuid.UUID | None' = None, _resume_checkpoint: 'Mapping[str, Any] | None' = None, _checkpoint: 'Callable[[dict[str, Any], tuple[StepRun, ...]], None] | None' = None) -> 'PipelineRun'`
+#### `run(pipeline: 'Pipeline | str', *, inputs: 'Mapping[str, Any] | None' = None, parameters: 'Mapping[str, Any] | None' = None, progress: 'ProgressHandler | None' = None) -> 'PipelineRun'`
 
 
 

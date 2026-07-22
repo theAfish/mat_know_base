@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from dataclasses import MISSING, fields
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,20 @@ SERVICES = (
     ("kb.maintenance", MaintenanceService),
 )
 
+CLIENT_METHODS = (
+    "from_environment",
+    "from_url",
+    "initialize",
+    "schema_version",
+    "transaction",
+    "close",
+)
+
+CLIENT_SUMMARIES = {
+    "from_environment": "Create a client for the configured materials application.",
+    "close": "Close client-owned resources and submitted pipeline workers.",
+}
+
 
 def _summary(member) -> str:
     doc = inspect.getdoc(member) or ""
@@ -64,7 +79,18 @@ def _summary(member) -> str:
 
 
 def _signature(member) -> str:
-    signature = str(inspect.signature(member))
+    signature = inspect.signature(member)
+    # Parameters beginning with an underscore are implementation controls, even when
+    # they are needed for internal collaboration between public methods. Do not turn
+    # them into a documented compatibility commitment.
+    signature = signature.replace(
+        parameters=[
+            parameter
+            for parameter in signature.parameters.values()
+            if not parameter.name.startswith("_")
+        ]
+    )
+    signature = str(signature)
     return signature.replace("(self, ", "(").replace("(self)", "()")
 
 
@@ -90,6 +116,36 @@ def generate() -> str:
             required = "required" if field.is_required() else "optional/defaulted"
             lines.append(f"- `{field_name}` — `{field.annotation!s}` ({required})")
         lines.append("")
+
+    lines.extend(
+        (
+            "## Configured client",
+            "",
+            "### `KnowledgeBase`",
+            "",
+            "The portable client entry point. See [Python API](python-api.md) for "
+            "installation, supported adapter injection, and lifecycle guidance.",
+            "",
+        )
+    )
+    for method_name in CLIENT_METHODS:
+        method = getattr(mkb.KnowledgeBase, method_name)
+        lines.extend(
+            (
+                f"#### `{method_name}{_signature(method)}`",
+                "",
+                _summary(method) or CLIENT_SUMMARIES.get(method_name, ""),
+                "",
+            )
+        )
+
+    lines.extend(
+        ("### `MKBConfig`", "", "Immutable client configuration.", "", "Fields:", "")
+    )
+    for config_field in fields(mkb.MKBConfig):
+        required = "required" if config_field.default is MISSING else "optional/defaulted"
+        lines.append(f"- `{config_field.name}` — `{config_field.type!s}` ({required})")
+    lines.append("")
 
     lines.extend(("## Grouped services", ""))
     for service_name, service_type in SERVICES:
