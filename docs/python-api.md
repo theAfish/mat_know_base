@@ -1,5 +1,25 @@
 # Python API
 
+## Installation and supported surfaces
+
+Install the base package for the portable typed SDK, SQLite, filesystem storage,
+registries, and local pipeline execution:
+
+```bash
+pip install mat-know-base
+```
+
+Install extras only for the integrations a consumer uses: `mat-know-base[postgres]`,
+`mat-know-base[s3]`, or `mat-know-base[neo4j]`. The existing materials application,
+agent-backed extraction, and its compatibility facade require
+`mat-know-base[materials]`; its HTTP server additionally requires `[server]`.
+
+There are two supported Python surfaces. `KnowledgeBase.from_url(...)` is the portable,
+typed SDK intended for new repositories. `KnowledgeBase.from_environment()` and
+`mkb.api` are the materials application's compatibility surfaces: they require its
+configured infrastructure and may return legacy dictionaries. Do not mix identifiers or
+assume that a portable client can operate on the legacy application schema.
+
 `KnowledgeBase` is the new explicit entry point for Python callers. During the SDK
 refactor it delegates to the same services and reads the same PostgreSQL and MinIO data
 as the current application; creating it does not migrate, copy, or re-extract data.
@@ -58,6 +78,8 @@ from mkb import KnowledgeBase
 with KnowledgeBase.from_url(
     database_url="sqlite:////absolute/path/project.db",
     object_store_url="file:///absolute/path/objects",
+    raw_bucket="inputs",
+    processed_bucket="derived",
 ) as kb:
     kb.database.check()
     kb.initialize()  # explicit, idempotent creation of missing SDK-owned tables
@@ -82,8 +104,11 @@ with KnowledgeBase.from_url(
 
 S3-compatible storage uses
 `s3://bucket?endpoint=http://localhost:9000` plus the optional
-`object_store_access_key` and `object_store_secret_key` arguments. Construction never
-creates or migrates tables. Explicit clients deliberately reject legacy facade calls
+`object_store_access_key` and `object_store_secret_key` arguments. The S3 URL's bucket
+is the raw/input bucket; configure `processed_bucket`, `archive_bucket`, and
+`temp_bucket` explicitly when their names differ from the defaults. Filesystem storage
+uses all four bucket names as directories under its root. Construction never creates or
+migrates tables. Explicit clients deliberately reject legacy facade calls
 such as `list_projects()` because those operations still depend on global application
 configuration; use their grouped services as those repositories become writable.
 `initialize()` creates only the portable `mkb_*` tables owned by the new SDK. It uses
@@ -165,6 +190,12 @@ with KnowledgeBase.from_url(
 The adapter stores backend-neutral entity/relation IDs and JSON properties beneath
 fixed `MKBEntity`/`MKBRelation` types, so user-provided values are parameters rather
 than Cypher identifiers.
+
+Without an injected `graph_store`, portable clients use an `InMemoryGraphStore`. It is
+isolated to that client and emptied when the client closes; SQLite does not persist graph
+entities or relations. Inject Neo4j or another `GraphStore` implementation whenever a
+consumer needs graph data after process restart. The in-memory default is appropriate for
+tests and short-lived local pipelines only.
 
 ## Safe migration/read-validation example
 
@@ -325,9 +356,11 @@ before execution when requirements such as `vector_search`, `full_text_search`,
 cover lifecycle, transactions, streaming, CRUD semantics, structural repository
 contracts, and capability composition.
 
-The API performs real database, object-storage, filesystem, processor, and LLM work.
-It is not an in-memory SDK. Configure `.env`, start infrastructure with `make up`, and
-run calls from the repository root so configuration and local data paths resolve.
+The materials compatibility API performs real database, object-storage, filesystem,
+processor, and LLM work. Configure `.env`, start infrastructure with `make up`, and run
+those calls from the repository root so application configuration and local data paths
+resolve. The portable SDK needs only the adapters supplied to `from_url(...)`; its
+default graph is the documented in-memory exception.
 
 ## End-to-end lifecycle
 
@@ -429,13 +462,17 @@ completed = kb.jobs.wait(job.id, timeout=60)
 ```
 
 Jobs retain inputs, parameters, stable run IDs, completed-step checkpoints, structured
-progress/log events, attempts, results, and errors. `kb.jobs.cancel(...)` requests
-cooperative cancellation at a step/event boundary. A failed, cancelled, or interrupted
-job can be restarted with `kb.pipelines.resume(job.id)`; completed steps in a compatible
-checkpoint are not repeated. Reusing an idempotency key returns the original job.
-Custom workers may enqueue non-pipeline work with `kb.jobs.submit(...)`. Persisted
-events can be consumed as a snapshot with `kb.jobs.events(job.id)` or followed until a
-terminal state with `kb.jobs.events(job.id, follow=True)`.
+progress/log events, attempts, results, and errors. The built-in `submit()` executor is a
+daemon thread in the process that owns the client: persistence makes its state inspectable
+and resumable, but it is not an external queue or a cross-process worker. On restart,
+register the same pipeline version, call `kb.jobs.recover_interrupted()`, then call
+`kb.pipelines.resume(job.id)`; completed steps in a compatible checkpoint are not
+repeated. `kb.jobs.cancel(...)` requests cooperative cancellation at a step/event
+boundary. Reusing an idempotency key returns the original job. Custom workers may enqueue
+non-pipeline work with `kb.jobs.submit(...)` and must implement their own claim/execute
+loop through a `JobBackend`. Persisted events can be consumed as a snapshot with
+`kb.jobs.events(job.id)` or followed until a terminal state with
+`kb.jobs.events(job.id, follow=True)`.
 
 Cacheable steps must be deterministic and provide a `cache_key` builder returning
 `CacheKeyComponents`. The components require configuration, source fingerprint, model
@@ -479,11 +516,15 @@ kb.schemas.register(
 kb.pipelines.register(Pipeline(name="notes", steps=(kb.steps.require("word-count"),)))
 ```
 
-Most mutating functions return a summary dictionary containing stable identifiers and
-counts. Read functions return a dictionary, a list of dictionaries, or `None` when a
-singular resource does not exist. Invalid IDs, missing prerequisites, storage errors,
-and provider failures raise exceptions; library callers should catch exceptions at a
-job or request boundary rather than infer success from partial output.
+Most mutating compatibility functions return a summary dictionary containing stable
+identifiers and counts. Typed SDK reads return a public model, a list of models, or
+`None` when a singular resource does not exist. Invalid IDs, missing prerequisites,
+storage errors, and provider failures raise exceptions; library callers should catch
+`MKBError` at a job or request boundary rather than infer success from partial output.
+Use `ValidationError` for invalid caller input, `NotFoundError` for required resources,
+`ConflictError` for state/precondition failures, `BackendUnavailableError` for missing or
+closed integrations, `ProviderError` for external provider failures, and
+`PipelineExecutionError` for a failed pipeline (whose `run` contains the typed result).
 
 ## Setup, ingest, and assets
 
@@ -595,3 +636,17 @@ Public names listed in `mkb.api.__all__` are the compatibility surface. Keys in 
 dictionaries are less strictly versioned than function names; consumers should read
 needed keys and tolerate additive fields. Private names beginning with `_`, ORM models,
 and service internals are not supported API even if importable.
+
+## Adapter and lifecycle guidance
+
+Custom adapters implement the narrow protocols in `mkb.ports`: `Database`,
+`ObjectStore`, `GraphStore`, `ModelProvider`, `JobBackend`, and `VectorSearch`. Declare
+only the stable names in `Capabilities` that the adapter truly supports; pipeline steps
+validate required capabilities before execution. Adapters passed to `KnowledgeBase` are
+owned by that client and closed by `kb.close()` (or a `with` block), so do not share one
+adapter instance across clients unless the adapter supports that lifecycle explicitly.
+
+`KnowledgeBase` is synchronous. Use it at a worker/thread boundary from async
+applications, keep SQLAlchemy sessions within that boundary, and use `kb.transaction()`
+when grouped relational changes must commit or roll back together. Object-store writes
+use compensating cleanup and are not part of relational ACID transactions.

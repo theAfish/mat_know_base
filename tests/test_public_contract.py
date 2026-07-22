@@ -50,6 +50,11 @@ def test_root_public_boundary_excludes_persistence_session_interfaces():
     assert mkb.ObjectStore is not None
 
 
+def test_base_package_import_does_not_require_materials_agent_dependencies():
+    """The portable SDK must load before an optional ADK-backed agent is requested."""
+    assert mkb.KnowledgeBase is not None
+
+
 def test_public_exception_hierarchy_is_stable():
     for error_type in (
         NotFoundError,

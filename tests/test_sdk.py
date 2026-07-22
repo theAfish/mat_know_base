@@ -149,6 +149,31 @@ def test_from_url_rejects_invalid_configuration(tmp_path):
         )
 
 
+def test_from_url_configures_all_storage_buckets_and_validates_s3_raw_bucket(tmp_path):
+    kb = KnowledgeBase.from_url(
+        database_url=f"sqlite:///{tmp_path / 'buckets.db'}",
+        object_store_url=(tmp_path / "objects").as_uri(),
+        raw_bucket="inputs",
+        processed_bucket="derived",
+        archive_bucket="history",
+        temp_bucket="scratch",
+    )
+    try:
+        assert kb.config.raw_bucket == "inputs"
+        assert kb.config.processed_bucket == "derived"
+        assert kb.config.archive_bucket == "history"
+        assert kb.config.temp_bucket == "scratch"
+    finally:
+        kb.close()
+
+    with pytest.raises(ValidationError, match="raw_bucket must match"):
+        KnowledgeBase.from_url(
+            database_url=f"sqlite:///{tmp_path / 's3.db'}",
+            object_store_url="s3://inputs?endpoint=http://localhost:9000",
+            raw_bucket="different",
+        )
+
+
 def test_from_url_injects_owned_resources_registries_and_capabilities(tmp_path):
     class Resource:
         def __init__(self, capabilities):

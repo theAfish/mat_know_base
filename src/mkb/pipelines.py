@@ -257,7 +257,13 @@ class StepContext:
 
 
 class Pipelines:
-    """Per-client pipeline registry and synchronous executor."""
+    """Per-client pipeline registry and synchronous/local-background executor.
+
+    ``submit`` persists job state but executes with a daemon thread owned by this
+    client process. It is therefore suitable for local application workers, not an
+    independently durable queue: after a process restart, register the compatible
+    pipeline definition, call ``jobs.recover_interrupted()``, and resume the job.
+    """
 
     def __init__(
         self,

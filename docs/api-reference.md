@@ -786,7 +786,7 @@ Breadth-first traversal with a bounded portable depth.
 
 ### `kb.pipelines`
 
-Per-client pipeline registry and synchronous executor.
+Per-client pipeline registry and synchronous/local-background executor.
 
 #### `get(name: 'str') -> 'Pipeline | None'`
 

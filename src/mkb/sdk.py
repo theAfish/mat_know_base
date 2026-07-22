@@ -33,8 +33,6 @@ from mkb.materials import (
     MaterialSpaces,
     MaterialWorkflows,
 )
-from mkb.services.projection_operations import ProjectionOperations
-from mkb.services.workflow_operations import WorkflowOperations
 from mkb.pipelines import Pipelines
 from mkb.ports import (
     Capabilities,
@@ -297,6 +295,10 @@ class KnowledgeBase:
         object_store_url: str | None = None,
         object_store_access_key: str | None = None,
         object_store_secret_key: str | None = None,
+        raw_bucket: str | None = None,
+        processed_bucket: str = "processed",
+        archive_bucket: str = "archive",
+        temp_bucket: str = "temp",
         capabilities: frozenset[str] | None = None,
         graph_store: GraphStore | None = None,
         model_provider: ModelProvider | None = None,
@@ -312,7 +314,9 @@ class KnowledgeBase:
         """Create an independent client without reading global environment settings.
 
         Supported object-store URLs are ``file:///absolute/root`` and
-        ``s3://bucket?endpoint=http://host:9000``. This constructor never runs schema
+        ``s3://bucket?endpoint=http://host:9000``. ``raw_bucket`` defaults to ``raw``
+        for filesystem storage and is the bucket component for S3 storage; the other
+        bucket names are independently configurable. This constructor never runs schema
         migrations and does not enable legacy global service calls.
         """
         from mkb.adapters import FileObjectStore, S3ObjectStore, SQLAlchemyDatabase
@@ -322,7 +326,15 @@ class KnowledgeBase:
         database = SQLAlchemyDatabase(database_url)
         object_store = None
         endpoint = None
-        raw_bucket = "raw"
+        configured_raw_bucket = raw_bucket or "raw"
+        for field_name, bucket in {
+            "raw_bucket": configured_raw_bucket,
+            "processed_bucket": processed_bucket,
+            "archive_bucket": archive_bucket,
+            "temp_bucket": temp_bucket,
+        }.items():
+            if not bucket.strip():
+                raise ValidationError(f"{field_name} must not be empty")
         try:
             if object_store_url is not None:
                 parsed = urlparse(object_store_url)
@@ -333,7 +345,11 @@ class KnowledgeBase:
                 elif parsed.scheme == "s3":
                     if not parsed.netloc:
                         raise ValidationError("s3 object-store URL must include a bucket")
-                    raw_bucket = parsed.netloc
+                    if raw_bucket is not None and raw_bucket != parsed.netloc:
+                        raise ValidationError(
+                            "raw_bucket must match the bucket in an s3 object-store URL"
+                        )
+                    configured_raw_bucket = parsed.netloc
                     endpoint = parse_qs(parsed.query).get("endpoint", [None])[0]
                     object_store = S3ObjectStore(
                         endpoint_url=endpoint,
@@ -350,7 +366,10 @@ class KnowledgeBase:
                 object_store_endpoint=endpoint,
                 object_store_access_key=object_store_access_key,
                 object_store_secret_key=object_store_secret_key,
-                raw_bucket=raw_bucket,
+                raw_bucket=configured_raw_bucket,
+                processed_bucket=processed_bucket,
+                archive_bucket=archive_bucket,
+                temp_bucket=temp_bucket,
             )
             return cls._from_generic_resources(
                 config=config,
@@ -584,6 +603,7 @@ class KnowledgeBase:
         | None = None,
         steps: Steps | None = None,
     ) -> "KnowledgeBase":
+        from mkb.services.projection_operations import ProjectionOperations
         from mkb.adapters.generic_repositories import (
             GenericArtifactRepository,
             GenericCollectionGroupRepository,

@@ -70,10 +70,12 @@ The same workflow is available in the React UI. For library use, start with the
 [examples/basic_usage.py](examples/basic_usage.py).
 
 For a Docker-free library project, install the lightweight base package and use
-SQLite plus filesystem storage:
+SQLite plus filesystem storage. The reusable example is in the Python API guide; from a
+source checkout, it can also be run directly:
 
 ```bash
 pip install mat-know-base
+# From this repository checkout:
 python examples/portable_quickstart.py
 ```
 
