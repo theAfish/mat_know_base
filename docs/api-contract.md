@@ -30,3 +30,21 @@ Route families cover projects/assets, frames, spaces, projections, graph, feedba
 jobs, skills, settings, assistant, post-processors, workflow extraction/maintenance,
 and project groups. The TypeScript modules under `frontend/src/api/` are useful current
 examples, but OpenAPI is the external contract. React is the bundled client.
+
+## Versioned knowledge integration
+
+The stable `/api/v1` boundary exposes reviewed knowledge drafts, facts, and durable
+integration events. `POST /api/v1/correction-requests` accepts a complete KDG
+correction detail and imports it idempotently as an editable MKB draft linked to the
+target fact revision. The initial draft copies the authoritative fact payload and MKB
+evidence references; external KDG provenance remains in `correction_context`.
+`GET /api/v1/facts/{fact_id}` reads one immutable published fact revision by its
+UUID, returning 404 for an unknown ID. Its `revision` is the number within the
+fact set; use the returned ID and revision when citing it from another service.
+
+Correction intake is an editor-level mutation and never changes a fact directly. The
+draft must follow the normal revise, submit-review, and approval workflow. Approval
+appends the next revision to the existing fact set, marks the prior revision
+`SUPERSEDED`, and emits `fact.revision.published` with
+`supersedes_fact_revision_id`. Approval and rejection continue to require publish
+permission.

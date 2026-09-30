@@ -72,14 +72,22 @@ class Settings(BaseSettings):
             f"@{self.pg_host}:{self.pg_port}/{self.pg_database}"
         )
 
-    # ── MinIO / S3 ──────────────────────────────────────────────
-    s3_endpoint: str = "http://localhost:9000"
-    s3_access_key: str = "minioadmin"
-    s3_secret_key: str = "minioadmin"
+    # ── Object storage ──────────────────────────────────────────
+    # "sql" keeps object bytes in the database above, so a deployment needs no
+    # separate storage service. "file" writes beneath object_store_root and
+    # "s3" talks to an S3-compatible endpoint.
+    object_store_backend: str = "sql"
+    object_store_root: str = "data/objects"
+    # Bucket names stay meaningful for every backend: they are the logical
+    # namespaces recorded on assets and swept by maintenance.
     s3_bucket_raw: str = "raw"
     s3_bucket_processed: str = "processed"
     s3_bucket_archive: str = "archive"
     s3_bucket_temp: str = "temp"
+    # Only read when object_store_backend is "s3".
+    s3_endpoint: str = "http://localhost:9000"
+    s3_access_key: str = "minioadmin"
+    s3_secret_key: str = "minioadmin"
 
     # Local mirror for processed outputs (organized by batch/asset)
     processed_local_root: str = "data/processed"
@@ -226,8 +234,10 @@ class Settings(BaseSettings):
         default_credentials = []
         if self.pg_password == "mkb_dev":
             default_credentials.append("PostgreSQL")
-        if self.s3_access_key == "minioadmin" or self.s3_secret_key == "minioadmin":
-            default_credentials.append("MinIO")
+        if self.object_store_backend == "s3" and (
+            self.s3_access_key == "minioadmin" or self.s3_secret_key == "minioadmin"
+        ):
+            default_credentials.append("object storage")
 
         if self.deployment_mode is DeploymentMode.PRODUCTION:
             if default_credentials:

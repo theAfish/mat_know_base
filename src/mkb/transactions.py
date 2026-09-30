@@ -14,6 +14,7 @@ from mkb.repositories import (
     Records,
     Sources,
 )
+from mkb.knowledge import Knowledge
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class Transaction:
     sources: Sources | None = None
     artifacts: Artifacts | None = None
     evidence: EvidenceLinks | None = None
+    knowledge: Knowledge | None = None
     _rollback_actions: list[Callable[[], None]] = field(
         default_factory=list,
         repr=False,

@@ -1,8 +1,8 @@
 # Upgrade and migration guide
 
 Before upgrading, read release notes, finish or cancel active jobs, run `make doctor`,
-and create a verified snapshot. Stop the API and frontend while leaving PostgreSQL and
-MinIO available for migration.
+and create a verified snapshot. Stop the API and frontend while leaving PostgreSQL
+available for migration.
 
 ```bash
 git pull --ff-only

@@ -33,8 +33,9 @@ configured infrastructure and may return legacy dictionaries. Do not mix identif
 assume that a portable client can operate on the legacy application schema.
 
 `KnowledgeBase` is the new explicit entry point for Python callers. During the SDK
-refactor it delegates to the same services and reads the same PostgreSQL and MinIO data
-as the current application; creating it does not migrate, copy, or re-extract data.
+refactor it delegates to the same services and reads the same PostgreSQL and
+object-store data as the current application; creating it does not migrate, copy, or
+re-extract data.
 
 ```python
 from mkb import KnowledgeBase
@@ -184,25 +185,43 @@ When upgrading an older portable database, revision 7 snapshots each schema defi
 that is current at migration time. Definitions overwritten before revision 7 did not
 exist independently and therefore cannot be reconstructed by the migration.
 
-## PostgreSQL and MinIO/S3
+## Object storage
 
-An explicitly configured PostgreSQL/S3 client owns its adapters and does not read global
-settings:
+An explicitly configured client owns its adapters and does not read global settings.
+Three object-store URLs are supported.
+
+`sql:` is the default and keeps object bytes in `database_url`, so a deployment needs
+no storage service at all. It provisions its own blob table on first use and works on
+both PostgreSQL and SQLite:
 
 ```python
 from mkb import KnowledgeBase
 
 with KnowledgeBase.from_url(
     database_url="postgresql+psycopg://mkb:password@localhost:5432/mkb",
-    object_store_url="s3://raw?endpoint=http://localhost:9000",
-    object_store_access_key="...",
-    object_store_secret_key="...",
+    object_store_url="sql:",
 ) as kb:
     kb.database.check()
     kb.object_store.check((kb.config.raw_bucket, kb.config.processed_bucket))
     # Explicit and additive; omit this call for a read-only validation connection.
     kb.initialize()
 ```
+
+`file:///absolute/root` writes beneath a directory, and `s3://bucket?endpoint=...`
+talks to an S3-compatible service such as MinIO:
+
+```python
+with KnowledgeBase.from_url(
+    database_url="postgresql+psycopg://mkb:password@localhost:5432/mkb",
+    object_store_url="s3://raw?endpoint=http://localhost:9000",
+    object_store_access_key="...",
+    object_store_secret_key="...",
+) as kb:
+    kb.object_store.check((kb.config.raw_bucket,))
+```
+
+Buckets are logical namespaces under every backend, so the same code and the same
+recorded keys carry across all three.
 
 Use `KnowledgeBase.from_environment()` for the existing materials deployment. It maps
 legacy projects, groups, assets, frames, spaces, projections, feedback, skills,
@@ -390,7 +409,7 @@ without writing files, so package consumers decide where exported data belongs.
 
 Narrow adapter protocols live in `mkb.ports`: relational database, object storage,
 graph storage, vector search, content parser, model provider, and job backend. Default
-database, S3/MinIO, filesystem, and in-memory graph implementations are available from
+database, SQL-blob, S3, filesystem, and in-memory graph implementations are available from
 `mkb.adapters`. Today the public client factory composes the built-in database and
 object-store adapters; graph, model-provider, job, and vector adapters can be injected
 into `from_url(...)`. These ports remain separate: there is no artificial storage

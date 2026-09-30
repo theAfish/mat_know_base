@@ -48,6 +48,22 @@ supported revision. This repository does not provision or upgrade the legacy mat
 schema. Start from a verified current database snapshot; explicit SDK clients create
 only their portable `mkb_*` tables with `kb.initialize()`.
 
+For isolated local UI acceptance when no snapshot is available, use the disposable
+demo schema instead. It creates the existing ORM tables in a separate database,
+not a production migration or a substitute for a verified snapshot:
+
+```bash
+docker compose up -d postgres minio minio-init
+MKB_PG_DATABASE=mkb_demo_acceptance .venv/bin/python scripts/bootstrap_demo_schema.py
+MKB_PG_DATABASE=mkb_demo_acceptance .venv/bin/python -m mkb.cli api --host 127.0.0.1 --port 8503
+```
+
+The bootstrap refuses any database name other than `mkb_demo_acceptance` or a
+non-local PostgreSQL host. It is additive and repeatable; it never drops tables.
+Pass the same `MKB_PG_DATABASE` override to any launcher used for the MKB API.
+The demo database starts empty, so extraction still requires an available model
+and document processing dependencies. Do not treat demo results as production data.
+
 ## Runtime files and legacy surfaces
 
 Local artifacts live under `data/`, `.debug/`, `logs/`, and Docker volumes. Treat

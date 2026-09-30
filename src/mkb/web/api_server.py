@@ -107,6 +107,7 @@ async def _lifespan(_app: FastAPI):
     for warning in settings.validate_startup(log_level=get_setting("log_level")):
         logger.warning("UNSAFE LOCAL OVERRIDE: %s", warning)
     knowledge_base = get_knowledge_base()
+    knowledge_base.initialize_knowledge()
     interrupted = knowledge_base.jobs.recover_interrupted()
     if interrupted:
         logger.warning("Marked %d background job(s) interrupted after restart", interrupted)
@@ -134,6 +135,7 @@ app.add_middleware(
 )
 
 from mkb.web.routers import (  # noqa: E402
+    api_v1,
     assistant,
     feedback,
     frames,
@@ -150,6 +152,7 @@ from mkb.web.routers import (  # noqa: E402
 
 for _r in (
     health,
+    api_v1,
     projects,
     frames,
     spaces,

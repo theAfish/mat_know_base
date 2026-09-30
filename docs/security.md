@@ -1,8 +1,9 @@
 # Security model
 
 MKB defaults to trusted, single-user, localhost-only operation. Development and
-local modes reject non-loopback API binds. PostgreSQL, MinIO, and the MinIO
-console are also published on loopback only by the supplied Compose file.
+local modes reject non-loopback API binds. PostgreSQL — which also holds object
+bytes under the default `sql` object-store backend — is published on loopback only
+by the supplied Compose file.
 
 ## Authentication and roles
 

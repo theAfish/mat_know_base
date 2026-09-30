@@ -2,7 +2,8 @@
 Content-Addressable Storage ingestion worker.
 
 Scans directories for files, computes SHA256, deduplicates,
-uploads to MinIO, and registers assets + research projects in PostgreSQL.
+stores bytes through the configured object store, and registers assets +
+research projects in PostgreSQL.
 """
 
 import hashlib

@@ -15,6 +15,8 @@ Choose the guide for the work you are doing.
 
 - [Developer setup](development.md): clean-clone setup, commands, tests, and database provisioning
 - [Architecture and ownership](architecture-map.md): boundaries and review ownership
+- [Enterprise AI research system architecture](ai-research-system-architecture.md): MKB, KDG, Harness, agent, and frontend plugin responsibilities
+- [OAW central harness analysis](oaw-central-harness-analysis.md): current OAW/KDG integration status and recommended adapter boundary
 - [Workflow card architecture](workflow-card-architecture.md)
 - [Transaction boundaries](transactions.md)
 - [Contributing](../CONTRIBUTING.md)

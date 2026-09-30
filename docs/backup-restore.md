@@ -8,15 +8,18 @@ make doctor
 make pack out=mkb-snapshot.tar.gz
 ```
 
-The archive contains a versioned manifest, database dump, required bucket contents,
-local data, file sizes, checksums, schema revision, and application version. Store it
+The archive contains a versioned manifest, database dump, local data, file sizes,
+checksums, schema revision, and application version. Under the default `sql`
+object-store backend the object bytes are inside the database dump; the `s3` backend
+also mirrors bucket contents into the archive. Store it
 encrypted using organization-approved storage and retention controls. A successful
 archive creation is not proof of restorability; schedule `make restore-drill` against
 disposable infrastructure.
 
-The full drill restores PostgreSQL into a temporary database, starts a disposable
-MinIO container, restores local files beneath a temporary root, and then runs inventory
-comparison, reconciliation, and content verification against those copies:
+The full drill restores PostgreSQL into a temporary database, restores local files
+beneath a temporary root (starting a disposable MinIO container only for the `s3`
+backend), and then runs inventory comparison, reconciliation, and content
+verification against those copies:
 
 ```bash
 make restore-drill file=mkb-snapshot.tar.gz
