@@ -372,6 +372,7 @@ def run_upload_ingest(
     total_ingested = 0
     total_dupes = 0
     created: list[str] = []
+    project_ids: list[str] = []
     reused = 0
 
     try:
@@ -396,6 +397,8 @@ def run_upload_ingest(
                 label=project.name if not project.name_auto else None,
                 user_named=not project.name_auto,
             )
+            if result.get("project_id"):
+                project_ids.append(str(result["project_id"]))
             total_ingested += int(result.get("ingested", 0) or 0)
             total_dupes += int(result.get("duplicates", 0) or 0)
             if result.get("project_reused"):
@@ -414,6 +417,7 @@ def run_upload_ingest(
             f"{total_ingested} file(s) ingested, {total_dupes} duplicate(s) skipped."
         ),
         "created_projects": created,
+        "project_ids": project_ids,
         "reused_projects": reused,
         "ingested": total_ingested,
         "duplicates": total_dupes,

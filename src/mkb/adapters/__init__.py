@@ -18,7 +18,12 @@ from mkb.adapters.generic_repositories import (
     GenericSkillRepository,
     GenericSourceRepository,
 )
-from mkb.adapters.object_store import FileObjectStore, S3ObjectStore
+from mkb.adapters.object_store import (
+    FileObjectStore,
+    S3ObjectStore,
+    SqlObjectStore,
+    create_object_store,
+)
 from mkb.adapters.repositories import (
     SQLAlchemyArtifactRepository,
     SQLAlchemyCollectionGroupRepository,
@@ -64,4 +69,6 @@ __all__ = [
     "SQLAlchemySourceRepository",
     "SQLAlchemySkillRepository",
     "SQLAlchemyWorkflowRepository",
+    "SqlObjectStore",
+    "create_object_store",
 ]

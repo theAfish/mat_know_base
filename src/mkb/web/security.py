@@ -24,6 +24,7 @@ class Permission(str, Enum):
     SETTINGS = "settings"
     JOB_START = "job-start"
     CODE_UPLOAD = "code-upload"
+    PUBLISH = "publish"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -76,6 +77,12 @@ def required_permission(method: str, path: str) -> Permission | None:
         return None
     if path.startswith("/api/settings"):
         return Permission.SETTINGS
+    if (
+        method == "POST"
+        and path.startswith("/api/v1/drafts/")
+        and path.rsplit("/", 1)[-1] in {"approve", "reject"}
+    ):
+        return Permission.PUBLISH
     if path in CODE_UPLOAD_PATHS:
         return Permission.CODE_UPLOAD
     if method == "DELETE" or path in DESTRUCTIVE_POST_PATHS:

@@ -19,12 +19,15 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
-    func,
+    UniqueConstraint,
     delete,
+    func,
     insert,
-    inspect as sa_inspect,
     select,
     update,
+)
+from sqlalchemy import (
+    inspect as sa_inspect,
 )
 from sqlalchemy.exc import IntegrityError
 
@@ -36,13 +39,13 @@ from mkb.models import (
     Evidence,
     ExtractionSchema,
     FeedbackItem,
-    Projection,
+    Job,
     PostProcessor,
+    Projection,
     Record,
     Skill,
     Source,
     StorageReference,
-    Job,
 )
 from mkb.ports import Capabilities, Database
 
@@ -302,6 +305,87 @@ post_processors_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+drafts_table = Table(
+    "mkb_drafts",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("collection_id", String(36), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("current_revision", Integer, nullable=False),
+    Column("idempotency_key", String(255), unique=True),
+    Column("target_fact_revision_id", String(36)),
+    Column("correction_context", JSON),
+    Column("created_by", String(255), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+draft_revisions_table = Table(
+    "mkb_draft_revisions",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("draft_id", String(36), ForeignKey("mkb_drafts.id"), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("graph", JSON, nullable=False),
+    Column("evidence_ids", JSON, nullable=False),
+    Column("author", String(255), nullable=False),
+    Column("change_note", String),
+    Column("idempotency_key", String(255), unique=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("draft_id", "revision", name="uq_mkb_draft_revision"),
+)
+
+review_decisions_table = Table(
+    "mkb_review_decisions",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("draft_id", String(36), ForeignKey("mkb_drafts.id"), nullable=False),
+    Column("draft_revision", Integer, nullable=False),
+    Column("decision", String(32), nullable=False),
+    Column("actor", String(255), nullable=False),
+    Column("notes", String),
+    Column("idempotency_key", String(255), unique=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+fact_sets_table = Table(
+    "mkb_fact_sets",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("collection_id", String(36), nullable=False),
+    Column("draft_id", String(36), ForeignKey("mkb_drafts.id"), nullable=False, unique=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+fact_revisions_table = Table(
+    "mkb_fact_revisions",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("fact_set_id", String(36), ForeignKey("mkb_fact_sets.id"), nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("draft_id", String(36), ForeignKey("mkb_drafts.id"), nullable=False),
+    Column("draft_revision", Integer, nullable=False),
+    Column("data", JSON, nullable=False),
+    Column("evidence_ids", JSON, nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("published_by", String(255), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("fact_set_id", "revision", name="uq_mkb_fact_revision"),
+)
+
+integration_outbox_table = Table(
+    "mkb_integration_outbox",
+    generic_metadata,
+    Column("id", String(36), primary_key=True),
+    Column("event_type", String(128), nullable=False),
+    Column("subject_type", String(64), nullable=False),
+    Column("subject_id", String(36), nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("correlation_id", String(255)),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    Column("published_at", DateTime(timezone=True)),
+)
+
 schema_migrations_table = Table(
     "mkb_schema_migrations",
     generic_metadata,
@@ -310,7 +394,7 @@ schema_migrations_table = Table(
     Column("applied_at", DateTime(timezone=True), nullable=False),
 )
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 10
 
 
 def _now() -> datetime:
@@ -503,6 +587,46 @@ class GenericSchemaManager:
                     )
                 )
                 current = 8
+            if current < 9:
+                for table in (
+                    drafts_table,
+                    draft_revisions_table,
+                    review_decisions_table,
+                    fact_sets_table,
+                    fact_revisions_table,
+                    integration_outbox_table,
+                ):
+                    table.create(connection, checkfirst=True)
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=9,
+                        name="draft_fact_review_outbox",
+                        applied_at=_now(),
+                    )
+                )
+                current = 9
+            if current < 10:
+                draft_columns = {
+                    column["name"]
+                    for column in sa_inspect(connection).get_columns("mkb_drafts")
+                }
+                if "target_fact_revision_id" not in draft_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE mkb_drafts "
+                        "ADD COLUMN target_fact_revision_id VARCHAR(36)"
+                    )
+                if "correction_context" not in draft_columns:
+                    connection.exec_driver_sql(
+                        "ALTER TABLE mkb_drafts ADD COLUMN correction_context JSON"
+                    )
+                session.execute(
+                    insert(schema_migrations_table).values(
+                        version=10,
+                        name="correction_linked_drafts",
+                        applied_at=_now(),
+                    )
+                )
+                current = 10
             return int(current)
 
     def version(self) -> int | None:

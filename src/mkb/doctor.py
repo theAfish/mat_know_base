@@ -116,9 +116,15 @@ def main() -> int:
 
     endpoints = {
         "PostgreSQL port": (settings.pg_host, settings.pg_port),
-        "S3 port": (urlsplit(settings.s3_endpoint).hostname or "localhost", urlsplit(settings.s3_endpoint).port or 80),
         "API port": (settings.api_host, settings.api_port),
     }
+    # Only the s3 backend reaches a separate storage service; sql and file
+    # storage have no port to probe.
+    if settings.object_store_backend == "s3":
+        endpoints["S3 port"] = (
+            urlsplit(settings.s3_endpoint).hostname or "localhost",
+            urlsplit(settings.s3_endpoint).port or 80,
+        )
     for name, (host, port) in endpoints.items():
         open_ = tcp_status(host, port)
         report.emit("OK" if open_ else "WARN", name, f"{host}:{port} is {'reachable' if open_ else 'not listening'}")

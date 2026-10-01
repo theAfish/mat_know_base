@@ -71,10 +71,10 @@ make dev
 ```
 
 Open the React UI at <http://127.0.0.1:5173>. The API is at
-<http://127.0.0.1:8503>, its interactive OpenAPI documentation at
-<http://127.0.0.1:8503/docs>, and the MinIO console at
-<http://127.0.0.1:9001>. Stop application servers with `Ctrl+C` and infrastructure
-with `make down`.
+<http://127.0.0.1:8503> and its interactive OpenAPI documentation at
+<http://127.0.0.1:8503/docs>. PostgreSQL is the only infrastructure container:
+uploaded and processed bytes are stored in it too. Stop application servers with
+`Ctrl+C` and infrastructure with `make down`.
 
 `make bootstrap` creates `.venv`, installs Python and locked frontend dependencies,
 and copies `.env.example` to `.env` without overwriting an existing file. Override

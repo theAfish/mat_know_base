@@ -34,6 +34,7 @@ from mkb.adapters import (
     SQLAlchemySourceRepository,
     SQLAlchemySkillRepository,
     SQLAlchemyWorkflowRepository,
+    SqlObjectStore,
 )
 from mkb.models import Entity, Relation
 from mkb.managed_services import (
@@ -108,13 +109,17 @@ class _S3Client:
         self.closed = True
 
 
-@pytest.mark.parametrize("kind", ["filesystem", "s3"])
+def _object_store_for(kind, tmp_path):
+    if kind == "filesystem":
+        return FileObjectStore(tmp_path / "objects")
+    if kind == "sql":
+        return SqlObjectStore(SQLAlchemyDatabase(f"sqlite:///{tmp_path / 'objects.db'}"))
+    return S3ObjectStore(client=_S3Client())
+
+
+@pytest.mark.parametrize("kind", ["filesystem", "s3", "sql"])
 def test_object_store_conformance(kind, tmp_path):
-    store = (
-        FileObjectStore(tmp_path / "objects")
-        if kind == "filesystem"
-        else S3ObjectStore(client=_S3Client())
-    )
+    store = _object_store_for(kind, tmp_path)
     assert isinstance(store, ObjectStore)
     assert Capabilities.OBJECT_STREAMING in store.capabilities
 
@@ -131,6 +136,20 @@ def test_object_store_conformance(kind, tmp_path):
     store.close()
     with pytest.raises(RuntimeError, match="closed"):
         store.exists("raw", "papers/example.txt")
+
+
+@pytest.mark.parametrize("kind", ["filesystem", "s3", "sql"])
+def test_object_store_put_overwrites_an_existing_key(kind, tmp_path):
+    # Content-addressed ingest re-puts keys that already exist. S3 and the
+    # filesystem overwrite for free; the SQL store has to do it explicitly.
+    store = _object_store_for(kind, tmp_path)
+
+    store.put_bytes("raw", "papers/example.txt", b"first")
+    store.put_bytes("raw", "papers/example.txt", b"second-version")
+
+    assert store.get_bytes("raw", "papers/example.txt") == b"second-version"
+    items = list(store.list("raw"))
+    assert [(item.key, item.size) for item in items] == [("papers/example.txt", 14)]
 
 
 def test_database_and_graph_adapter_conformance(tmp_path):

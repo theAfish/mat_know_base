@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
+import uuid
 
 from mkb.exceptions import ConflictError, MKBError, ValidationError
 from mkb.application_services import (
@@ -21,6 +22,7 @@ from mkb.application_services import (
 )
 from mkb.graph import Graph
 from mkb.job_service import Jobs
+from mkb.knowledge import Knowledge
 from mkb.managed_services import Feedback, PostProcessors, Skills
 from mkb.materials import (
     MaterialFeedback,
@@ -106,6 +108,8 @@ class MKBConfig:
     """
 
     database_url: str | None = field(default=None, repr=False)
+    object_store_backend: str = "sql"
+    object_store_root: str | None = None
     object_store_endpoint: str | None = None
     object_store_access_key: str | None = field(default=None, repr=False)
     object_store_secret_key: str | None = field(default=None, repr=False)
@@ -125,6 +129,8 @@ class MKBConfig:
 
         return cls(
             database_url=settings.pg_dsn_sync,
+            object_store_backend=settings.object_store_backend,
+            object_store_root=settings.object_store_root,
             object_store_endpoint=settings.s3_endpoint,
             object_store_access_key=settings.s3_access_key,
             object_store_secret_key=settings.s3_secret_key,
@@ -142,7 +148,7 @@ class MKBConfig:
 class KnowledgeBase:
     """Configured, non-global entry point for Python callers.
 
-    ``from_environment`` preserves all current PostgreSQL/MinIO data by binding the
+    ``from_environment`` preserves all current PostgreSQL and object-store data by binding the
     client to the existing supported service facade. Direct construction is intended
     for tests and future independently configured adapters.
     """
@@ -165,9 +171,11 @@ class KnowledgeBase:
         schemas: ExtractionSchemas | None = None,
         projections: Projections | None = None,
         evidence: EvidenceLinks | None = None,
+        knowledge: Knowledge | None = None,
         materials: Materials | None = None,
         capabilities: frozenset[str] | None = None,
         schema_manager: Any | None = None,
+        knowledge_schema_manager: Any | None = None,
         transaction_factory: Callable[[Any], Transaction] | None = None,
         parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
         pipeline_registry_factory: Callable[
@@ -211,6 +219,7 @@ class KnowledgeBase:
         self.schemas = schemas
         self.projections = projections
         self.evidence = evidence
+        self.knowledge = knowledge if knowledge is not None else Knowledge(None)
         self.materials = materials if materials is not None else Materials()
         self.feedback = feedback if feedback is not None else Feedback(None)
         self.skills = skills if skills is not None else Skills(None)
@@ -230,6 +239,7 @@ class KnowledgeBase:
             cleanup_executor=cleanup_executor,
         )
         self._schema_manager = schema_manager
+        self._knowledge_schema_manager = knowledge_schema_manager
         self._transaction_factory = transaction_factory
         detected_capabilities = set(capabilities or ())
         if database is not None:
@@ -268,15 +278,15 @@ class KnowledgeBase:
     @classmethod
     def from_environment(cls) -> "KnowledgeBase":
         from mkb import api
-        from mkb.adapters import (
-            S3ObjectStore,
-            SQLAlchemyDatabase,
-        )
+        from mkb.adapters import SQLAlchemyDatabase, create_object_store
 
         config = MKBConfig.from_environment()
         database = SQLAlchemyDatabase(config.database_url)
-        object_store = S3ObjectStore(
-            endpoint_url=config.object_store_endpoint,
+        object_store = create_object_store(
+            config.object_store_backend,
+            database=database,
+            root=config.object_store_root,
+            endpoint=config.object_store_endpoint,
             access_key=config.object_store_access_key,
             secret_key=config.object_store_secret_key,
         )
@@ -313,13 +323,20 @@ class KnowledgeBase:
     ) -> "KnowledgeBase":
         """Create an independent client without reading global environment settings.
 
-        Supported object-store URLs are ``file:///absolute/root`` and
+        Supported object-store URLs are ``sql:`` (keep object bytes in
+        ``database_url``), ``file:///absolute/root`` and
         ``s3://bucket?endpoint=http://host:9000``. ``raw_bucket`` defaults to ``raw``
         for filesystem storage and is the bucket component for S3 storage; the other
         bucket names are independently configurable. This constructor never runs schema
-        migrations and does not enable legacy global service calls.
+        migrations and does not enable legacy global service calls; the ``sql`` object
+        store still provisions its own blob table.
         """
-        from mkb.adapters import FileObjectStore, S3ObjectStore, SQLAlchemyDatabase
+        from mkb.adapters import (
+            FileObjectStore,
+            S3ObjectStore,
+            SQLAlchemyDatabase,
+            SqlObjectStore,
+        )
 
         if not database_url.strip():
             raise ValidationError("database_url must not be empty")
@@ -338,7 +355,14 @@ class KnowledgeBase:
         try:
             if object_store_url is not None:
                 parsed = urlparse(object_store_url)
-                if parsed.scheme == "file":
+                if parsed.scheme == "sql":
+                    if parsed.netloc:
+                        raise ValidationError(
+                            "sql object-store URL must not include a host; "
+                            "it reuses database_url"
+                        )
+                    object_store = SqlObjectStore(database)
+                elif parsed.scheme == "file":
                     if not parsed.path or not parsed.path.startswith("/"):
                         raise ValidationError("file object-store URL must use an absolute path")
                     object_store = FileObjectStore(unquote(parsed.path))
@@ -358,11 +382,12 @@ class KnowledgeBase:
                     )
                 else:
                     raise ValidationError(
-                        "object_store_url must use the file or s3 scheme"
+                        "object_store_url must use the sql, file or s3 scheme"
                     )
 
             config = MKBConfig(
                 database_url=database_url,
+                object_store_backend=parsed.scheme if object_store_url else "sql",
                 object_store_endpoint=endpoint,
                 object_store_access_key=object_store_access_key,
                 object_store_secret_key=object_store_secret_key,
@@ -415,6 +440,11 @@ class KnowledgeBase:
             SQLAlchemySkillRepository,
             SQLAlchemyWorkflowRepository,
         )
+        from mkb.adapters.knowledge_repository import (
+            GenericKnowledgeRepository,
+            KnowledgeSchemaManager,
+        )
+        from mkb.db.models import ResearchProject
         from mkb import runtime_settings
         from mkb.agents.ontology_induction import run_ontology_induction
         from mkb.skills import registry as skill_registry
@@ -429,6 +459,8 @@ class KnowledgeBase:
         from mkb.agents.operations import AgentOperations
         from mkb.agents.runtime import AgentRuntime
         from mkb.services.graph_operations import GraphOperations
+        from mkb.services.projection_operations import ProjectionOperations
+        from mkb.services.workflow_operations import WorkflowOperations
         from mkb.config import settings as application_settings
         from mkb.maintenance import apply_retention, prune_job_history, retention_plan
         from mkb.migration_inventory import migration_inventory
@@ -479,6 +511,24 @@ class KnowledgeBase:
         schema_services = ExtractionSchemas(SQLAlchemyExtractionSchemaRepository(database))
         feedback_services = Feedback(SQLAlchemyFeedbackRepository(database))
         projection_services = Projections(SQLAlchemyProjectionRepository(database))
+
+        def project_exists(session, identifier: str) -> bool:
+            try:
+                project_id = uuid.UUID(identifier)
+            except ValueError:
+                return False
+            return (
+                session.query(ResearchProject.project_id).filter_by(project_id=project_id).first()
+                is not None
+            )
+
+        knowledge_schema_manager = KnowledgeSchemaManager(database)
+        knowledge = Knowledge(
+            GenericKnowledgeRepository(
+                database,
+                collection_exists=project_exists,
+            )
+        )
         content_operations = (
             ContentOperations(
                 database,
@@ -518,6 +568,7 @@ class KnowledgeBase:
             records=Records(SQLAlchemyRecordRepository(database)),
             schemas=schema_services,
             projections=projection_services,
+            knowledge=knowledge,
             feedback=feedback_services,
             skills=Skills(
                 SQLAlchemySkillRepository(database),
@@ -531,6 +582,7 @@ class KnowledgeBase:
             startup_validator=application_settings.validate_startup,
             migration_inventory_reader=read_migration_inventory,
             cleanup_executor=execute_cleanup,
+            knowledge_schema_manager=knowledge_schema_manager,
             content_operations=content_operations,
             project_operations=project_operations,
             materials=Materials(
@@ -619,6 +671,7 @@ class KnowledgeBase:
             GenericSkillRepository,
             GenericSourceRepository,
         )
+        from mkb.adapters.knowledge_repository import GenericKnowledgeRepository
         from mkb.adapters.graph import InMemoryGraphStore
 
         def transaction_factory(session) -> Transaction:
@@ -665,6 +718,7 @@ class KnowledgeBase:
                     GenericProjectionRepository(database, session)
                 ),
                 evidence=transaction_evidence,
+                knowledge=Knowledge(GenericKnowledgeRepository(database, session)),
                 sources=transaction_sources,
                 artifacts=transaction_artifacts,
                 _rollback_actions=rollback_actions,
@@ -716,6 +770,7 @@ class KnowledgeBase:
             schemas=schema_services,
             projections=projection_services,
             evidence=evidence,
+            knowledge=Knowledge(GenericKnowledgeRepository(database)),
             feedback=feedback_services,
             skills=Skills(GenericSkillRepository(database)),
             post_processors=PostProcessors(
@@ -784,6 +839,12 @@ class KnowledgeBase:
         if self._schema_manager is None:
             raise ConflictError("This client does not manage a portable SDK schema")
         return self._schema_manager.initialize()
+
+    def initialize_knowledge(self) -> None:
+        """Create additive reviewed-knowledge tables for the configured deployment."""
+        self._ensure_open()
+        if self._knowledge_schema_manager is not None:
+            self._knowledge_schema_manager.initialize()
 
     def schema_version(self) -> int | None:
         """Return the initialized portable schema version, or ``None`` if absent."""

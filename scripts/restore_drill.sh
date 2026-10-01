@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Full disposable snapshot drill: PostgreSQL, MinIO, local files, and SDK checks.
+# Full disposable snapshot drill: PostgreSQL, object storage, local files, and SDK checks.
+#
+# Under the default "sql" object-store backend the object bytes are restored by the
+# PostgreSQL dump itself, so the drill needs no second storage service. The "s3"
+# backend still spins up a disposable MinIO to restore the mirrored buckets into.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -18,6 +22,9 @@ fi
 PG_USER="${MKB_PG_USER:-mkb}"
 PG_PORT="${MKB_PG_PORT:-5432}"
 RESTORE_DB="mkb_restore_drill_$$"
+# The .env sourced above already applied the file-level setting, so this is the
+# same precedence the application uses.
+OBJECT_STORE_BACKEND="${MKB_OBJECT_STORE_BACKEND:-sql}"
 MINIO_CONTAINER="mkb-restore-drill-minio-$$"
 DRILL_NETWORK="mkb-restore-drill-$$"
 MINIO_ACCESS_KEY="${MKB_S3_ACCESS_KEY:-minioadmin}"
@@ -99,44 +106,50 @@ docker compose --project-directory "$ROOT" --file "$ROOT/docker-compose.yaml" \
     psql --username="$PG_USER" --dbname="$RESTORE_DB" \
     --set=ON_ERROR_STOP=1 --quiet < "$EXTRACTED/postgres/dump.sql"
 
-echo "[restore-drill] Starting disposable MinIO container '$MINIO_CONTAINER'…"
-docker network create "$DRILL_NETWORK" >/dev/null
-docker run --detach --name "$MINIO_CONTAINER" \
-    --network "$DRILL_NETWORK" \
-    --publish 127.0.0.1::9000 \
-    --env "MINIO_ROOT_USER=$MINIO_ACCESS_KEY" \
-    --env "MINIO_ROOT_PASSWORD=$MINIO_SECRET_KEY" \
-    "$MINIO_IMAGE" server /data >/dev/null
+if [ "$OBJECT_STORE_BACKEND" = "s3" ]; then
+    echo "[restore-drill] Starting disposable MinIO container '$MINIO_CONTAINER'…"
+    docker network create "$DRILL_NETWORK" >/dev/null
+    docker run --detach --name "$MINIO_CONTAINER" \
+        --network "$DRILL_NETWORK" \
+        --publish 127.0.0.1::9000 \
+        --env "MINIO_ROOT_USER=$MINIO_ACCESS_KEY" \
+        --env "MINIO_ROOT_PASSWORD=$MINIO_SECRET_KEY" \
+        "$MINIO_IMAGE" server /data >/dev/null
 
-ready=false
-for _attempt in $(seq 1 60); do
-    if docker exec "$MINIO_CONTAINER" mc ready local >/dev/null 2>&1; then
-        ready=true
-        break
+    ready=false
+    for _attempt in $(seq 1 60); do
+        if docker exec "$MINIO_CONTAINER" mc ready local >/dev/null 2>&1; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+    if ! $ready; then
+        echo "[restore-drill] Disposable MinIO did not become ready." >&2
+        exit 1
     fi
-    sleep 1
-done
-if ! $ready; then
-    echo "[restore-drill] Disposable MinIO did not become ready." >&2
-    exit 1
-fi
 
-MINIO_PORT=$(docker port "$MINIO_CONTAINER" 9000/tcp | sed -E 's/.*:([0-9]+)$/\1/' | head -n 1)
-MINIO_ENDPOINT="http://127.0.0.1:$MINIO_PORT"
-MINIO_INTERNAL_ENDPOINT="http://$MINIO_CONTAINER:9000"
-echo "[restore-drill] Restoring all four buckets into disposable MinIO…"
-docker run --rm --network "$DRILL_NETWORK" \
-    --volume "$EXTRACTED/minio:/snapshot:ro" \
-    --env MC_CONFIG_DIR=/tmp/.mc \
-    --entrypoint /bin/sh \
-    "$MC_IMAGE" -c "
-        set -eu
-        mc alias set drill '$MINIO_INTERNAL_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null
-        for bucket in raw processed archive temp; do
-            mc mb --ignore-existing drill/\"\$bucket\" >/dev/null
-            mc mirror --overwrite /snapshot/\"\$bucket\"/ drill/\"\$bucket\"/ >/dev/null
-        done
-    "
+    MINIO_PORT=$(docker port "$MINIO_CONTAINER" 9000/tcp | sed -E 's/.*:([0-9]+)$/\1/' | head -n 1)
+    MINIO_ENDPOINT="http://127.0.0.1:$MINIO_PORT"
+    MINIO_INTERNAL_ENDPOINT="http://$MINIO_CONTAINER:9000"
+    echo "[restore-drill] Restoring all four buckets into disposable MinIO…"
+    docker run --rm --network "$DRILL_NETWORK" \
+        --volume "$EXTRACTED/minio:/snapshot:ro" \
+        --env MC_CONFIG_DIR=/tmp/.mc \
+        --entrypoint /bin/sh \
+        "$MC_IMAGE" -c "
+            set -eu
+            mc alias set drill '$MINIO_INTERNAL_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null
+            for bucket in raw processed archive temp; do
+                mc mb --ignore-existing drill/\"\$bucket\" >/dev/null
+                mc mirror --overwrite /snapshot/\"\$bucket\"/ drill/\"\$bucket\"/ >/dev/null
+            done
+        "
+else
+    # The disposable database restored above already carries object_blobs, so the
+    # objects under test are the restored ones with no second service involved.
+    echo "[restore-drill] Object bytes restored with the database ('$OBJECT_STORE_BACKEND' backend)."
+fi
 
 RESTORED_ROOT="$DRILL_DIR/restored-local"
 mkdir -p "$RESTORED_ROOT"
@@ -155,9 +168,12 @@ echo "[restore-drill] Running SDK inventory and reconciliation on restored copie
     export MKB_PG_HOST=127.0.0.1
     export MKB_PG_PORT="$PG_PORT"
     export MKB_PG_DATABASE="$RESTORE_DB"
-    export MKB_S3_ENDPOINT="$MINIO_ENDPOINT"
-    export MKB_S3_ACCESS_KEY="$MINIO_ACCESS_KEY"
-    export MKB_S3_SECRET_KEY="$MINIO_SECRET_KEY"
+    export MKB_OBJECT_STORE_BACKEND="$OBJECT_STORE_BACKEND"
+    if [ "$OBJECT_STORE_BACKEND" = "s3" ]; then
+        export MKB_S3_ENDPOINT="$MINIO_ENDPOINT"
+        export MKB_S3_ACCESS_KEY="$MINIO_ACCESS_KEY"
+        export MKB_S3_SECRET_KEY="$MINIO_SECRET_KEY"
+    fi
     export MKB_PROCESSED_LOCAL_ROOT=data/processed
     export MKB_RUNTIME_SETTINGS_PATH=data/runtime_settings.json
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"

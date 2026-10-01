@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# unpack_data.sh — restore PostgreSQL + MinIO + local data from a pack_data archive
+# unpack_data.sh — restore PostgreSQL + object storage + local data from a pack_data archive
 # Usage:
 #   bash scripts/unpack_data.sh mkb_data_20260429_120000.tar.gz
 #
+# Bucket restore only applies to the "s3" object-store backend. Under the default
+# "sql" backend the object bytes arrive with the PostgreSQL dump and the bucket
+# step is skipped.
+#
 # Flags:
 #   --pg-only      Restore only the PostgreSQL database
-#   --minio-only   Restore only MinIO buckets
+#   --buckets-only Restore only object-storage buckets
 #   --local-only   Restore only local data directories
 #   --no-pg        Skip PostgreSQL restore
-#   --no-minio     Skip MinIO restore
+#   --no-buckets   Skip bucket restore
 #   --no-local     Skip local data restore
 set -euo pipefail
 
@@ -16,28 +20,42 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 WORKSPACE_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
 # ── Parse args ────────────────────────────────────────────────────────────────
+# Mirror the application's own precedence for this one key — environment first,
+# then .env, then the built-in default — without importing the package.
+OBJECT_STORE_BACKEND="${MKB_OBJECT_STORE_BACKEND:-}"
+if [ -z "$OBJECT_STORE_BACKEND" ] && [ -f "$WORKSPACE_ROOT/.env" ]; then
+    OBJECT_STORE_BACKEND=$(sed -n 's/^[[:space:]]*MKB_OBJECT_STORE_BACKEND[[:space:]]*=[[:space:]]*//p' "$WORKSPACE_ROOT/.env" | tail -n 1)
+fi
+OBJECT_STORE_BACKEND="${OBJECT_STORE_BACKEND:-sql}"
+
 ARCHIVE_FILE=""
 DO_PG=true
-DO_MINIO=true
+# Only the s3 backend keeps bytes outside the database, so only it has buckets
+# to restore. The flags below still let an operator force either way.
+if [ "$OBJECT_STORE_BACKEND" = "s3" ]; then
+    DO_BUCKETS=true
+else
+    DO_BUCKETS=false
+fi
 DO_LOCAL=true
 CONFIRM_REPLACE=false
 
 for arg in "$@"; do
     case "$arg" in
-        --pg-only)    DO_MINIO=false; DO_LOCAL=false ;;
-        --minio-only) DO_PG=false;    DO_LOCAL=false ;;
-        --local-only) DO_PG=false;    DO_MINIO=false ;;
-        --no-pg)      DO_PG=false ;;
-        --no-minio)   DO_MINIO=false ;;
-        --no-local)   DO_LOCAL=false ;;
+        --pg-only)      DO_BUCKETS=false; DO_LOCAL=false ;;
+        --buckets-only) DO_BUCKETS=true;  DO_PG=false; DO_LOCAL=false ;;
+        --local-only)   DO_PG=false;      DO_BUCKETS=false ;;
+        --no-pg)        DO_PG=false ;;
+        --no-buckets)   DO_BUCKETS=false ;;
+        --no-local)     DO_LOCAL=false ;;
         --confirm-replace) CONFIRM_REPLACE=true ;;
-        --*)          echo "[unpack] Unknown flag: $arg" >&2; exit 1 ;;
-        *)            ARCHIVE_FILE="$arg" ;;
+        --*)            echo "[unpack] Unknown flag: $arg" >&2; exit 1 ;;
+        *)              ARCHIVE_FILE="$arg" ;;
     esac
 done
 
 if [ -z "$ARCHIVE_FILE" ]; then
-    echo "Usage: bash scripts/unpack_data.sh <archive.tar.gz> [--no-pg] [--no-minio] [--no-local]"
+    echo "Usage: bash scripts/unpack_data.sh <archive.tar.gz> [--no-pg] [--no-buckets] [--no-local]"
     exit 1
 fi
 
@@ -50,9 +68,9 @@ fi
 PG_USER="${MKB_PG_USER:-mkb}"
 PG_DATABASE="${MKB_PG_DATABASE:-mkb}"
 
-MINIO_ENDPOINT="${MKB_S3_ENDPOINT:-http://localhost:9000}"
-MINIO_ACCESS_KEY="${MKB_S3_ACCESS_KEY:-minioadmin}"
-MINIO_SECRET_KEY="${MKB_S3_SECRET_KEY:-minioadmin}"
+S3_ENDPOINT="${MKB_S3_ENDPOINT:-http://localhost:9000}"
+S3_ACCESS_KEY="${MKB_S3_ACCESS_KEY:-minioadmin}"
+S3_SECRET_KEY="${MKB_S3_SECRET_KEY:-minioadmin}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()  { echo "[unpack] $*"; }
@@ -73,9 +91,9 @@ if $DO_PG; then
     fi
 fi
 
-if $DO_MINIO; then
+if $DO_BUCKETS; then
     if ! docker compose ps minio 2>/dev/null | grep -q "Up\|running"; then
-        error "minio container is not running. Run 'make up' first."
+        error "minio container is not running, but the s3 object-store backend is selected."
         exit 1
     fi
 fi
@@ -157,17 +175,17 @@ if $DO_PG; then
     fi
 fi
 
-# ── 2. MinIO restore ──────────────────────────────────────────────────────────
-if $DO_MINIO; then
-    MINIO_STAGING="$EXTRACTED/minio"
-    if [ ! -d "$MINIO_STAGING" ]; then
+# ── 2. Object-storage restore ─────────────────────────────────────────────────
+if $DO_BUCKETS; then
+    BUCKET_STAGING="$EXTRACTED/minio"
+    if [ ! -d "$BUCKET_STAGING" ]; then
         error "minio/ directory not found in archive."
         exit 1
     fi
 
-    info "Restoring MinIO buckets…"
+    info "Restoring object-storage buckets…"
 
-    for bucket_dir in "$MINIO_STAGING"/*/; do
+    for bucket_dir in "$BUCKET_STAGING"/*/; do
         bucket=$(basename "$bucket_dir")
         count=$(find "$bucket_dir" -type f | wc -l)
         info "  Uploading bucket '$bucket'  ($count files)…"
@@ -180,13 +198,16 @@ if $DO_MINIO; then
             --entrypoint /bin/sh \
             minio/mc:RELEASE.2025-04-16T18-13-26Z \
             -c "
-                mc alias set mkb '$MINIO_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
+                mc alias set mkb '$S3_ENDPOINT' '$S3_ACCESS_KEY' '$S3_SECRET_KEY' --api s3v4 >/dev/null 2>&1 && \
                 mc mb --ignore-existing mkb/$bucket >/dev/null 2>&1 && \
                 mc mirror --overwrite --remove /minio_mirror/ mkb/$bucket >/dev/null
             "
 
         info "  → bucket '$bucket' restored."
     done
+elif [ -d "$EXTRACTED/minio" ]; then
+    info "Archive carries buckets, but the '$OBJECT_STORE_BACKEND' backend keeps object bytes in the database; skipping."
+    info "Pass --buckets-only against an s3 deployment if you need them restored."
 fi
 
 # ── 3. Local data directories ─────────────────────────────────────────────────
