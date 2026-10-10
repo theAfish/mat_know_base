@@ -275,6 +275,86 @@ class Evidence(BaseModel):
     created_at: datetime | None = None
 
 
+class DraftGraph(BaseModel):
+    """Mutable review container whose content changes through immutable revisions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    collection_id: uuid.UUID
+    status: str
+    current_revision: int = Field(ge=1)
+    idempotency_key: str | None = None
+    target_fact_revision_id: uuid.UUID | None = None
+    correction_context: dict[str, Any] | None = None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class DraftRevision(BaseModel):
+    """Immutable snapshot of a draft graph and its evidence references."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    draft_id: uuid.UUID
+    revision: int = Field(ge=1)
+    graph: dict[str, Any]
+    evidence_ids: tuple[uuid.UUID, ...] = ()
+    author: str
+    change_note: str | None = None
+    idempotency_key: str | None = None
+    created_at: datetime
+
+
+class ReviewDecision(BaseModel):
+    """Immutable human or service decision against one exact draft revision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    draft_id: uuid.UUID
+    draft_revision: int = Field(ge=1)
+    decision: str
+    actor: str
+    notes: str | None = None
+    idempotency_key: str | None = None
+    created_at: datetime
+
+
+class FactRevision(BaseModel):
+    """Immutable published fact payload derived from an approved draft revision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    fact_set_id: uuid.UUID
+    revision: int = Field(ge=1)
+    draft_id: uuid.UUID
+    draft_revision: int = Field(ge=1)
+    data: dict[str, Any]
+    evidence_ids: tuple[uuid.UUID, ...] = ()
+    status: str
+    published_by: str
+    created_at: datetime
+
+
+class OutboxEvent(BaseModel):
+    """Durable integration event waiting for downstream delivery."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    event_type: str
+    subject_type: str
+    subject_id: uuid.UUID
+    payload: dict[str, Any]
+    correlation_id: str | None = None
+    occurred_at: datetime
+    published_at: datetime | None = None
+
+
 class WorkflowRecord(BaseModel):
     """Lossless materials workflow extraction mapped from a legacy row."""
 

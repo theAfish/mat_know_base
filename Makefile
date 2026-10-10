@@ -25,7 +25,7 @@ install-frontend:
 
 # ── Infrastructure ──────────────────────────────────────────────
 up:
-	docker compose up -d --wait
+	docker compose up -d --wait postgres
 	@echo "MKB data services are healthy."
 
 down:
@@ -72,7 +72,7 @@ restore-drill:
 
 # ── Server ──────────────────────────────────────────────────────
 server:
-	$(PYTHON) -m mkb.cli api --host 127.0.0.1 --port 8503
+	$(PYTHON) -m mkb.cli api --host 127.0.0.1 --port 8000
 
 dev:
 	PYTHON="$(PYTHON)" NPM="$(NPM)" bash scripts/dev.sh

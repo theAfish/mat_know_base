@@ -205,7 +205,7 @@ def link_manual_processed_data(
             bundle_root = canonical_root
 
         # Upload primary file + artifacts through the configured object store so
-        # downstream consumers can fetch the bundle independently of MinIO/S3.
+        # downstream consumers can fetch the bundle whichever backend is configured.
         object_store.put_bytes(
             processed_bucket,
             s3_key,

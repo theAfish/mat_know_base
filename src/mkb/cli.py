@@ -922,7 +922,9 @@ def main():
     p.add_argument("--apply", action="store_true")
     p.add_argument("--confirm", help="Required exact value DELETE when applying")
 
-    p = sub.add_parser("reconcile", help="Read-only PostgreSQL/MinIO consistency check")
+    p = sub.add_parser(
+        "reconcile", help="Read-only PostgreSQL/object-store consistency check"
+    )
     p.add_argument("--summary", action="store_true", help="Omit individual object keys")
     p.add_argument("--out", help="Write a new JSON report instead of printing")
 

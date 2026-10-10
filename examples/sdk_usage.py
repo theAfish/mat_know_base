@@ -4,7 +4,7 @@ from mkb import KnowledgeBase
 
 
 def main() -> None:
-    # This reads the same .env/config.yaml and the same PostgreSQL/MinIO data as the
+    # This reads the same .env/config.yaml and the same PostgreSQL/object-store data as the
     # current CLI and React application. It does not migrate or re-extract anything.
     with KnowledgeBase.from_environment() as kb:
         if kb.database is not None:

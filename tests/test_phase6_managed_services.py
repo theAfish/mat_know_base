@@ -12,7 +12,7 @@ def _client(tmp_path):
 
 def test_feedback_lifecycle_is_typed_and_persistent(tmp_path):
     with _client(tmp_path) as kb:
-        assert kb.initialize() == 8
+        assert kb.initialize() == 10
         collection = kb.collections.create(name="Feedback")
         record = kb.records.create(collection_id=collection.id, data={"value": 1})
 

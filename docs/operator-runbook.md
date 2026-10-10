@@ -19,7 +19,7 @@ after readiness and provider checks recover.
 For full disks, run `mkb cleanup` first. It is a dry run and reports item/byte
 counts. Review the paths, then use `mkb cleanup --apply --confirm DELETE`.
 Use `mkb reconcile` before and after cleanup; it is read-only and reports missing
-and orphaned PostgreSQL/MinIO objects.
+and orphaned PostgreSQL/object-store objects.
 
 ## Backup, restore, and upgrade
 
@@ -34,12 +34,14 @@ Restore is deliberately two-step:
    and checksums in a temporary staging directory and exits without mutation.
 2. Re-run with `--confirm-replace`, then type the database name when prompted.
 
-The restore mirrors bucket contents with removal, replaces the database from the
-validated dump, and restores local files. Run `mkb reconcile`,
-and the readiness probe afterward. Practice this against a disposable Compose
-project before depending on a backup. `make restore-drill` performs checksum/path
-validation; restores a disposable database, MinIO instance, and local root; then runs
-full object-checksummed inventory comparison, reconciliation, and representative
+The restore replaces the database from the validated dump and restores local files;
+under the default `sql` object-store backend the object bytes come back with the
+dump, and only the `s3` backend additionally mirrors bucket contents with removal.
+Run `mkb reconcile`, and the readiness probe afterward. Practice this against a
+disposable Compose project before depending on a backup. `make restore-drill`
+performs checksum/path validation; restores a disposable database and local root
+(plus a disposable MinIO instance when the backend is `s3`); then runs full
+object-checksummed inventory comparison, reconciliation, and representative
 content verification. It is suitable for a scheduled job or integration CI runner
 with Docker services and never enables the live replacement path.
 

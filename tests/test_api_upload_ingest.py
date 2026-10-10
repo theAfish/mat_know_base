@@ -27,7 +27,7 @@ def test_api_run_upload_ingest_moves_files_from_session_temp(tmp_path, monkeypat
         @staticmethod
         def ingest(path: Path, **_kwargs):
             ingested_dirs.append(Path(path))
-            return {"ingested": 1, "duplicates": 0}
+            return {"ingested": 1, "duplicates": 0, "project_id": f"id-{path.name}"}
 
     monkeypatch.setattr(mod, "_UPLOAD_TEMP", tmp_path / "_temp")
     monkeypatch.setattr(mod, "_create_unique_project_dir", fake_create_unique_project_dir)
@@ -67,6 +67,7 @@ def test_api_run_upload_ingest_moves_files_from_session_temp(tmp_path, monkeypat
     result = mod._run_upload_ingest(payload)
 
     assert result["created_projects"] == ["project-a", "project-b"]
+    assert result["project_ids"] == ["id-project-a", "id-project-b"]
     assert ingested_dirs == created_dirs
     assert (tmp_path / "uploads" / "project-a" / "paper.pdf").read_text() == "first"
     assert (tmp_path / "uploads" / "project-b" / "paper.pdf").read_text() == "second"

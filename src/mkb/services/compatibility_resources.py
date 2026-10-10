@@ -16,17 +16,28 @@ from mkb.services.frame_operations import FrameOperations
 from mkb.services.asset_operations import AssetOperations
 
 
+def _resources():
+    """Build one database and its configured object store."""
+    from mkb.adapters import SQLAlchemyDatabase, create_object_store
+
+    database = SQLAlchemyDatabase(settings.pg_dsn_sync)
+    object_store = create_object_store(
+        settings.object_store_backend,
+        database=database,
+        root=settings.object_store_root,
+        endpoint=settings.s3_endpoint,
+        access_key=settings.s3_access_key,
+        secret_key=settings.s3_secret_key,
+    )
+    return database, object_store
+
+
 @lru_cache(maxsize=1)
 def content_operations() -> ContentOperations:
-    from mkb.adapters import S3ObjectStore, SQLAlchemyDatabase
-
+    database, object_store = _resources()
     return ContentOperations(
-        SQLAlchemyDatabase(settings.pg_dsn_sync),
-        S3ObjectStore(
-            endpoint_url=settings.s3_endpoint,
-            access_key=settings.s3_access_key,
-            secret_key=settings.s3_secret_key,
-        ),
+        database,
+        object_store,
         raw_bucket=settings.s3_bucket_raw,
         processed_bucket=settings.s3_bucket_processed,
     )
@@ -34,38 +45,19 @@ def content_operations() -> ContentOperations:
 
 @lru_cache(maxsize=1)
 def workflow_operations() -> WorkflowOperations:
-    from mkb.adapters import S3ObjectStore, SQLAlchemyDatabase
-
-    return WorkflowOperations(
-        SQLAlchemyDatabase(settings.pg_dsn_sync),
-        S3ObjectStore(
-            endpoint_url=settings.s3_endpoint,
-            access_key=settings.s3_access_key,
-            secret_key=settings.s3_secret_key,
-        ),
-    )
+    return WorkflowOperations(*_resources())
 
 
 @lru_cache(maxsize=1)
 def frame_operations() -> FrameOperations:
-    from mkb.adapters import S3ObjectStore, SQLAlchemyDatabase
-
-    return FrameOperations(
-        SQLAlchemyDatabase(settings.pg_dsn_sync),
-        S3ObjectStore(
-            endpoint_url=settings.s3_endpoint,
-            access_key=settings.s3_access_key,
-            secret_key=settings.s3_secret_key,
-        ),
-    )
+    return FrameOperations(*_resources())
 
 
 @lru_cache(maxsize=1)
 def asset_operations() -> AssetOperations:
-    from mkb.adapters import S3ObjectStore, SQLAlchemyDatabase
-
+    database, object_store = _resources()
     return AssetOperations(
-        SQLAlchemyDatabase(settings.pg_dsn_sync),
-        S3ObjectStore(endpoint_url=settings.s3_endpoint, access_key=settings.s3_access_key, secret_key=settings.s3_secret_key),
+        database,
+        object_store,
         processed_bucket=settings.s3_bucket_processed,
     )

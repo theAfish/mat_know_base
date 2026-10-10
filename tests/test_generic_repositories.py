@@ -7,9 +7,15 @@ from sqlalchemy import delete, text
 from mkb import ConflictError, KnowledgeBase, NotFoundError, ValidationError
 from mkb.adapters.generic_repositories import (
     artifacts_table,
+    draft_revisions_table,
+    drafts_table,
     evidence_table,
+    fact_revisions_table,
+    fact_sets_table,
+    integration_outbox_table,
     jobs_table,
     projections_table,
+    review_decisions_table,
     schema_migrations_table,
     schema_versions_table,
 )
@@ -22,16 +28,31 @@ def _client(tmp_path, name="sdk.db"):
 def test_explicit_initialization_is_idempotent_and_enables_typed_writes(tmp_path):
     with _client(tmp_path) as kb:
         assert kb.schema_version() is None
-        assert kb.initialize() == 8
-        assert kb.initialize() == 8
-        assert kb.schema_version() == 8
+        assert kb.initialize() == 10
+        assert kb.initialize() == 10
+        assert kb.schema_version() == 10
         with kb.database.session() as session:
             versions = list(
                 session.scalars(
                     text("select version from mkb_schema_migrations order by version")
                 )
             )
-        assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        with kb.database.session() as session:
+            for table in (
+                drafts_table,
+                draft_revisions_table,
+                review_decisions_table,
+                fact_sets_table,
+                fact_revisions_table,
+                integration_outbox_table,
+            ):
+                assert session.execute(
+                    text(
+                        "select count(*) from "
+                        f"{table.name}"
+                    )
+                ).scalar_one() == 0
 
         collection = kb.collections.create(
             name="Experiment 42",
@@ -302,7 +323,7 @@ def test_external_uri_migration_backfills_without_removing_legacy_metadata(tmp_p
                 },
             )
 
-        assert kb.initialize() == 8
+        assert kb.initialize() == 10
         source = kb.sources.require(source_id)
 
         assert source.uri == "https://legacy.test/source"
@@ -505,12 +526,12 @@ def test_revision_one_database_upgrades_additively_without_losing_rows(tmp_path)
             schema_versions_table.drop(session.connection())
             session.execute(
                 delete(schema_migrations_table).where(
-                    schema_migrations_table.c.version.in_([2, 3, 4, 5, 6, 7, 8])
+                    schema_migrations_table.c.version.in_([2, 3, 4, 5, 6, 7, 8, 9, 10])
                 )
             )
 
         assert kb.schema_version() == 1
-        assert kb.initialize() == 8
+        assert kb.initialize() == 10
         assert kb.collections.require(collection.id).name == "Preserved during upgrade"
 
         with kb.database.session() as session:
@@ -530,3 +551,35 @@ def test_revision_one_database_upgrades_additively_without_losing_rows(tmp_path)
             "mkb_jobs",
             "mkb_extraction_schema_versions",
         }.issubset(tables)
+
+
+def test_version_nine_database_adds_correction_draft_columns(tmp_path):
+    with _client(tmp_path, "upgrade-v9.db") as kb:
+        kb.initialize()
+        collection = kb.collections.create(name="Preserved version nine draft")
+        draft, _ = kb.knowledge.create_draft(
+            collection.id,
+            {"claim": "preserved"},
+            actor="oaw:agent-1",
+        )
+
+        with kb.database.transaction() as session:
+            session.execute(text("ALTER TABLE mkb_drafts DROP COLUMN correction_context"))
+            session.execute(
+                text("ALTER TABLE mkb_drafts DROP COLUMN target_fact_revision_id")
+            )
+            session.execute(
+                delete(schema_migrations_table).where(
+                    schema_migrations_table.c.version == 10
+                )
+            )
+
+        assert kb.schema_version() == 9
+        assert kb.initialize() == 10
+        assert kb.knowledge.get_draft(draft.id).id == draft.id
+        with kb.database.session() as session:
+            columns = {
+                row[1]
+                for row in session.execute(text("PRAGMA table_info(mkb_drafts)"))
+            }
+        assert {"target_fact_revision_id", "correction_context"} <= columns
