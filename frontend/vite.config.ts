@@ -9,9 +9,10 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    strictPort: false,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8503',
+        target: `http://127.0.0.1:${process.env.API_PORT || '8000'}`,
         changeOrigin: true,
         proxyTimeout: 600_000,
         timeout: 600_000,

@@ -3,6 +3,7 @@
 PYTHON ?= .venv/bin/python
 BOOTSTRAP_PYTHON ?= python3
 NPM ?= npm
+export API_PORT ?= 8000
 export PYTHONPATH := $(CURDIR)/src$(if $(PYTHONPATH),:$(PYTHONPATH))
 
 # ── Clean-clone bootstrap ──────────────────────────────────────
@@ -72,7 +73,7 @@ restore-drill:
 
 # ── Server ──────────────────────────────────────────────────────
 server:
-	$(PYTHON) -m mkb.cli api --host 127.0.0.1 --port 8000
+	$(PYTHON) -m mkb.cli api --host 127.0.0.1 --port $(API_PORT)
 
 dev:
 	PYTHON="$(PYTHON)" NPM="$(NPM)" bash scripts/dev.sh

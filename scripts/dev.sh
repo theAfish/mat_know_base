@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Give each background job its own process group, including make/npm children.
+set -m
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -19,15 +21,21 @@ if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
   exit 1
 fi
 
+# Select once and share the result with both the API and Vite's proxy.
+API_PORT="$("$PYTHON" "$ROOT_DIR/scripts/dev_port.py" "${API_PORT:-8000}")"
+export API_PORT
+echo "Development API: http://127.0.0.1:$API_PORT"
+
 cleanup() {
   local exit_code=$?
+  trap - EXIT INT TERM
 
-  if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
+  if [[ -n "${SERVER_PID:-}" ]]; then
+    kill -TERM -- "-$SERVER_PID" 2>/dev/null || true
   fi
 
-  if [[ -n "${FRONTEND_PID:-}" ]] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
-    kill "$FRONTEND_PID" 2>/dev/null || true
+  if [[ -n "${FRONTEND_PID:-}" ]]; then
+    kill -TERM -- "-$FRONTEND_PID" 2>/dev/null || true
   fi
 
   wait "${SERVER_PID:-}" 2>/dev/null || true
@@ -35,9 +43,12 @@ cleanup() {
 
   exit "$exit_code"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-make server &
+# Explicit assignment also overrides a port inherited through MAKEFLAGS.
+make server API_PORT="$API_PORT" &
 SERVER_PID=$!
 
 (

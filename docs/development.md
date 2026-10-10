@@ -21,6 +21,21 @@ All Make targets use `PYTHON ?= .venv/bin/python` and Python modules (`python -m
 ...`) consistently. Override it explicitly for tooling or CI. `BOOTSTRAP_PYTHON`
 is used only to create the environment, and `NPM` can likewise be overridden.
 
+The API starts looking for a free port at 8000 and Vite at 5173. `make dev`
+automatically skips occupied API ports and passes the selected port to Vite's
+`/api` proxy. Use `make dev API_PORT=8001` to change the starting API port.
+The standalone `make server` command uses its specified port without searching.
+If 5173 is occupied, Vite automatically tries subsequent ports; use the Local
+URL printed at startup. Either service exiting, Ctrl+C, or SIGTERM to the dev
+launcher stops both services and their child processes, releasing their ports.
+SIGKILL (`kill -9`) cannot run cleanup handlers; use ordinary `kill` instead.
+
+To inspect processes left by older launchers, run
+`ss -ltnp | rg ':(8000|517[3-9])\b'` and stop only the PIDs you identify as stale
+MKB dev servers with `kill <pid>`, then run `make dev` again.
+When running Vite separately against the demo API below, use
+`cd frontend && API_PORT=8503 npm run dev`.
+
 ## Validation and build
 
 ```bash
