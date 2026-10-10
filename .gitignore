@@ -25,6 +25,7 @@ build/
 # Data
 data/
 migration-snapshots/
+backup-snapshots/
 
 # Docker volumes
 docker_volumes/

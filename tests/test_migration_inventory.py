@@ -82,3 +82,14 @@ def test_object_inventory_supports_the_backend_neutral_object_store(tmp_path):
     assert item["key"] == "notes.md"
     assert item["bytes"] == 5
     assert item["sha256"] == "ab5aa97074c454a0632057e704220d9a6678fbf773a0a5806fc09b8173b07309"
+
+
+def test_business_inventory_covers_skills_scripts_exports_and_excludes_settings(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    names = ['skills/example/SKILL.md', 'post_processor_scripts/example.py', 'exports/out.json', 'runtime_settings.json']
+    for name in names:
+        path = tmp_path / 'data' / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('content')
+    result = local_inventory()
+    assert {file['path'] for file in result['files']} == set(names) - {'runtime_settings.json'}

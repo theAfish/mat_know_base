@@ -15,11 +15,7 @@ from sqlalchemy import func, select, text
 from mkb.ports import Database, ObjectStore
 
 DEFAULT_LOCAL_PATHS = (
-    Path("data/papers"),
-    Path("data/processed"),
-    Path("data/uploads"),
-    Path("data/inbox"),
-    Path("data/runtime_settings.json"),
+    Path("data"),
 )
 
 
@@ -50,9 +46,16 @@ def _iter_local_files(paths: Iterable[Path]) -> Iterable[tuple[Path, Path]]:
                 yield path, child
 
 
-def local_inventory(paths: Iterable[Path] = DEFAULT_LOCAL_PATHS) -> dict[str, Any]:
+def local_inventory(
+    paths: Iterable[Path] = DEFAULT_LOCAL_PATHS,
+    *,
+    excluded_paths: Iterable[Path] = (Path("data/runtime_settings.json"),),
+) -> dict[str, Any]:
+    excluded = {path.resolve() for path in excluded_paths}
     files: list[dict[str, Any]] = []
     for root, path in _iter_local_files(paths):
+        if path.resolve() in excluded:
+            continue
         relative = path.name if root.is_file() else path.relative_to(root).as_posix()
         stat = path.stat()
         files.append({
@@ -280,6 +283,7 @@ def migration_inventory(
         include_checksums=include_object_checksums,
         object_store=object_store,
     )
+    configuration = safe_configuration()
     return {
         "format_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -288,9 +292,11 @@ def migration_inventory(
             "version": _package_version(),
             "git_commit": _git_commit(project_root),
         },
-        "configuration": safe_configuration(),
+        "configuration": configuration,
         "infrastructure": compose_manifest(project_root),
         "database": database_data,
         "object_storage": storage,
-        "local_files": local_inventory(local_paths),
+        "local_files": local_inventory(local_paths, excluded_paths=(
+            Path("data/runtime_settings.json"), Path(configuration["runtime_settings_path"]),
+        )),
     }

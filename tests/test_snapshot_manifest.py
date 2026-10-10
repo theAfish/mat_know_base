@@ -65,3 +65,47 @@ def test_manifest_enriches_historical_inventory_with_content_hashes():
         {"key": "recovered", "bytes": 4, "sha256": "new-sha"},
     ]
     assert "sha256" not in inventory["object_storage"]["buckets"]["raw"]["objects"][0]
+
+
+def test_nested_manifests_are_checksummed_and_extra_files_rejected(tmp_path):
+    source = tmp_path / 'source'
+    (source / 'local/data/skills').mkdir(parents=True)
+    nested = source / 'local/data/skills/manifest.json'
+    nested.write_text('{"business": true}')
+    write_manifest(source, 'head', 'test')
+    manifest = json.loads((source / 'manifest.json').read_text())
+    assert 'local/data/skills/manifest.json' in manifest['files']
+    (source / 'unexpected.txt').write_text('not checksummed')
+    archive = tmp_path / 'extra.tar.gz'
+    with tarfile.open(archive, 'w:gz') as bundle:
+        bundle.add(source, arcname='.')
+    with pytest.raises(ValueError, match='inventory'):
+        safe_extract(archive, tmp_path / 'extracted')
+
+
+def test_legacy_v1_manifest_still_restores(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    (source / 'dump.sql').write_text('select 1;')
+    write_manifest(source, 'head', 'test')
+    manifest = json.loads((source / 'manifest.json').read_text())
+    manifest['format_version'] = 1
+    (source / 'manifest.json').write_text(json.dumps(manifest))
+    archive = tmp_path / 'legacy.tar.gz'
+    with tarfile.open(archive, 'w:gz') as bundle:
+        bundle.add(source, arcname='.')
+    safe_extract(archive, tmp_path / 'extracted')
+    assert (tmp_path / 'extracted/dump.sql').read_text() == 'select 1;'
+
+
+def test_tampered_business_file_is_rejected(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    (source / 'file').write_text('original')
+    write_manifest(source, 'head', 'test')
+    (source / 'file').write_text('tampered')
+    archive = tmp_path / 'tampered.tar.gz'
+    with tarfile.open(archive, 'w:gz') as bundle:
+        bundle.add(source, arcname='.')
+    with pytest.raises(ValueError, match='checksum'):
+        safe_extract(archive, tmp_path / 'extracted')

@@ -9,33 +9,22 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
-MC_IMAGE="minio/mc:RELEASE.2025-04-16T18-13-26Z"
-MINIO_IMAGE="minio/minio:RELEASE.2025-04-22T22-12-26Z"
-
-if [ -f "$ROOT/.env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "$ROOT/.env"
-    set +a
-fi
-
-PG_USER="${MKB_PG_USER:-mkb}"
-PG_PORT="${MKB_PG_PORT:-5432}"
+MINIO_IMAGE="${MKB_RESTORE_DRILL_MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
+CONFIG=$(cd "$ROOT" && PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" "$SCRIPT_DIR/snapshot_payload.py" settings)
+eval "$CONFIG"
+export MKB_OBJECT_STORE_BACKEND="$OBJECT_STORE_BACKEND"
 RESTORE_DB="mkb_restore_drill_$$"
-# The .env sourced above already applied the file-level setting, so this is the
-# same precedence the application uses.
-OBJECT_STORE_BACKEND="${MKB_OBJECT_STORE_BACKEND:-sql}"
 MINIO_CONTAINER="mkb-restore-drill-minio-$$"
 DRILL_NETWORK="mkb-restore-drill-$$"
-MINIO_ACCESS_KEY="${MKB_S3_ACCESS_KEY:-minioadmin}"
-MINIO_SECRET_KEY="${MKB_S3_SECRET_KEY:-minioadmin}"
+MINIO_ACCESS_KEY="drill-access"
+MINIO_SECRET_KEY="drill-secret-$RANDOM-$RANDOM"
 DRILL_DIR=$(mktemp -d)
 EVIDENCE_DIR="${MKB_RESTORE_DRILL_OUT:-$DRILL_DIR/evidence}"
 mkdir -p "$EVIDENCE_DIR"
 EVIDENCE_DIR=$(realpath "$EVIDENCE_DIR")
 
 cleanup_drill() {
-    docker rm -f "$MINIO_CONTAINER" >/dev/null 2>&1 || true
+    docker rm -fv "$MINIO_CONTAINER" >/dev/null 2>&1 || true
     docker network rm "$DRILL_NETWORK" >/dev/null 2>&1 || true
     docker compose --project-directory "$ROOT" --file "$ROOT/docker-compose.yaml" \
         exec -T postgres \
@@ -91,6 +80,15 @@ EXTRACTED="$DRILL_DIR/extracted"
 echo "[restore-drill] Validating checksums and safely extracting snapshot…"
 "$PYTHON" "$SCRIPT_DIR/snapshot_manifest.py" extract "$ARCHIVE" "$EXTRACTED"
 cp "$EXTRACTED/manifest.json" "$EVIDENCE_DIR/snapshot-manifest.json"
+"$PYTHON" - "$EXTRACTED" "$OBJECT_STORE_BACKEND" <<'CHECK'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+metadata = root / "snapshot.json"
+backend = json.loads(metadata.read_text())["object_store_backend"] if metadata.exists() else ("s3" if (root / "minio").is_dir() else "sql")
+if backend != sys.argv[2]:
+    raise SystemExit(f"Set MKB_OBJECT_STORE_BACKEND={backend} for this restore drill")
+CHECK
 if [ -n "$BASELINE_SOURCE" ]; then
     "$PYTHON" "$SCRIPT_DIR/snapshot_manifest.py" enrich-inventory \
         "$BASELINE_SOURCE" "$EXTRACTED/manifest.json" \
@@ -131,24 +129,19 @@ if [ "$OBJECT_STORE_BACKEND" = "s3" ]; then
 
     MINIO_PORT=$(docker port "$MINIO_CONTAINER" 9000/tcp | sed -E 's/.*:([0-9]+)$/\1/' | head -n 1)
     MINIO_ENDPOINT="http://127.0.0.1:$MINIO_PORT"
-    MINIO_INTERNAL_ENDPOINT="http://$MINIO_CONTAINER:9000"
-    echo "[restore-drill] Restoring all four buckets into disposable MinIO…"
-    docker run --rm --network "$DRILL_NETWORK" \
-        --volume "$EXTRACTED/minio:/snapshot:ro" \
-        --env MC_CONFIG_DIR=/tmp/.mc \
-        --entrypoint /bin/sh \
-        "$MC_IMAGE" -c "
-            set -eu
-            mc alias set drill '$MINIO_INTERNAL_ENDPOINT' '$MINIO_ACCESS_KEY' '$MINIO_SECRET_KEY' --api s3v4 >/dev/null
-            for bucket in raw processed archive temp; do
-                mc mb --ignore-existing drill/\"\$bucket\" >/dev/null
-                mc mirror --overwrite /snapshot/\"\$bucket\"/ drill/\"\$bucket\"/ >/dev/null
-            done
-        "
+    echo "[restore-drill] Restoring archived buckets into disposable MinIO…"
+    (
+        cd "$ROOT"
+        MKB_S3_ENDPOINT="$MINIO_ENDPOINT" \
+        MKB_S3_ACCESS_KEY="$MINIO_ACCESS_KEY" \
+        MKB_S3_SECRET_KEY="$MINIO_SECRET_KEY" \
+        PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
+            "$PYTHON" "$SCRIPT_DIR/snapshot_payload.py" restore-s3 "$EXTRACTED/minio"
+    )
+elif [ "$OBJECT_STORE_BACKEND" = sql ]; then
+    echo "[restore-drill] SQL objects restored with the database."
 else
-    # The disposable database restored above already carries object_blobs, so the
-    # objects under test are the restored ones with no second service involved.
-    echo "[restore-drill] Object bytes restored with the database ('$OBJECT_STORE_BACKEND' backend)."
+    echo "[restore-drill] File objects will be restored with local business files."
 fi
 
 RESTORED_ROOT="$DRILL_DIR/restored-local"
@@ -166,15 +159,22 @@ echo "[restore-drill] Running SDK inventory and reconciliation on restored copie
 (
     cd "$RESTORED_ROOT"
     export MKB_PG_HOST=127.0.0.1
+    export MKB_PG_USER="$PG_USER"
+    export MKB_PG_PASSWORD="$PG_PASSWORD"
     export MKB_PG_PORT="$PG_PORT"
     export MKB_PG_DATABASE="$RESTORE_DB"
     export MKB_OBJECT_STORE_BACKEND="$OBJECT_STORE_BACKEND"
+    export MKB_S3_BUCKET_RAW="$BUCKET_RAW"
+    export MKB_S3_BUCKET_PROCESSED="$BUCKET_PROCESSED"
+    export MKB_S3_BUCKET_ARCHIVE="$BUCKET_ARCHIVE"
+    export MKB_S3_BUCKET_TEMP="$BUCKET_TEMP"
     if [ "$OBJECT_STORE_BACKEND" = "s3" ]; then
         export MKB_S3_ENDPOINT="$MINIO_ENDPOINT"
         export MKB_S3_ACCESS_KEY="$MINIO_ACCESS_KEY"
         export MKB_S3_SECRET_KEY="$MINIO_SECRET_KEY"
     fi
-    export MKB_PROCESSED_LOCAL_ROOT=data/processed
+    export MKB_PROCESSED_LOCAL_ROOT="$PROCESSED_LOCAL_ROOT"
+    export MKB_OBJECT_STORE_ROOT="$OBJECT_STORE_ROOT"
     export MKB_RUNTIME_SETTINGS_PATH=data/runtime_settings.json
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 

@@ -23,7 +23,11 @@ and orphaned PostgreSQL/object-store objects.
 
 ## Backup, restore, and upgrade
 
-`make pack` fails if PostgreSQL or any required bucket cannot be copied. The
+`make pack` fails if PostgreSQL or any required bucket cannot be copied, or if
+database file references are missing from the selected backend. It includes all
+local business data (including skills and post-processor files) and excludes
+application settings. See [backup and restore](backup-restore.md) for scope and
+legacy MinIO deployment instructions. The
 archive contains a versioned manifest, schema revision, application version,
 file sizes, and SHA-256 checksums. Store/encrypt the resulting archive with your
 organization's approved backup tooling.
@@ -31,7 +35,9 @@ organization's approved backup tooling.
 Restore is deliberately two-step:
 
 1. `bash scripts/unpack_data.sh snapshot.tar.gz` validates paths, types, manifest,
-   and checksums in a temporary staging directory and exits without mutation.
+   and checksums in a temporary staging directory, restores into a disposable
+   database, and checks business file references without replacing live data. Add
+   `--validate-only` for a successful exit after validation.
 2. Re-run with `--confirm-replace`, then type the database name when prompted.
 
 The restore replaces the database from the validated dump and restores local files;
