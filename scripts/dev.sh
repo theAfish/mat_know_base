@@ -11,13 +11,13 @@ NPM="${NPM:-npm}"
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "Missing Python virtual environment at .venv/."
-  echo "Run: make bootstrap"
+  echo "Run: make bootstrap && make install-app"
   exit 1
 fi
 
 if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
   echo "Missing frontend dependencies. Install them with:"
-  echo "  cd frontend && npm install"
+  echo "  make install-app"
   exit 1
 fi
 

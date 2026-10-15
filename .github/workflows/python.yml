@@ -18,9 +18,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade pip build
-      - run: python -m pip install ".[all,dev]"
-      - run: python -m pytest
+      - run: python -m pip install ".[dev]"
+      - run: make check PYTHON=python
       - run: python -m build
       - run: python -m venv /tmp/mkb-consumer
       - run: /tmp/mkb-consumer/bin/python -m pip install dist/*.whl
+      - run: cd /tmp && /tmp/mkb-consumer/bin/python "$GITHUB_WORKSPACE/examples/custom_storage.py"
+      - run: for wheel in dist/*.whl; do /tmp/mkb-consumer/bin/python -m pip install "$wheel[sql]"; done
+      - run: cd /tmp && /tmp/mkb-consumer/bin/python "$GITHUB_WORKSPACE/examples/extraction_quickstart.py"
       - run: cd /tmp && /tmp/mkb-consumer/bin/python "$GITHUB_WORKSPACE/examples/portable_quickstart.py"

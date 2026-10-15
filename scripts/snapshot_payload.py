@@ -269,7 +269,8 @@ def main() -> None:
         root = Path.cwd()
         object_root = (str(relative_path(settings.object_store_root, root))
                        if settings.object_store_backend == "file" else settings.object_store_root)
-        for name, value in {"PG_USER": settings.pg_user, "PG_DATABASE": settings.pg_database,
+        for name, value in {"PG_HOST": settings.pg_host,
+                            "PG_USER": settings.pg_user, "PG_DATABASE": settings.pg_database,
                             "PG_PASSWORD": settings.pg_password, "PG_PORT": settings.pg_port,
                             "OBJECT_STORE_BACKEND": settings.object_store_backend,
                             "OBJECT_STORE_ROOT": object_root,

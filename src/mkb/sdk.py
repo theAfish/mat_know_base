@@ -1,14 +1,9 @@
-"""Explicit application object for the evolving public Python SDK.
-
-This first boundary deliberately delegates to the existing, data-compatible service
-facade.  Later adapters can replace the bindings one subsystem at a time without
-changing callers or migrating the existing database prematurely.
-"""
+"""Explicit, backend-neutral application object for the public Python SDK."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
@@ -58,6 +53,7 @@ from mkb.repositories import (
 )
 from mkb.registries import Parsers, Steps
 from mkb.transactions import Transaction
+from mkb.storage import RepositoryBundle, SchemaManager
 
 
 class ServiceBindings(Protocol):
@@ -148,9 +144,9 @@ class MKBConfig:
 class KnowledgeBase:
     """Configured, non-global entry point for Python callers.
 
-    ``from_environment`` preserves all current PostgreSQL and object-store data by binding the
-    client to the existing supported service facade. Direct construction is intended
-    for tests and future independently configured adapters.
+    ``from_repositories`` composes host-owned storage without choosing a database.
+    ``from_url`` provides an optional SQLAlchemy adapter; ``from_environment``
+    preserves the legacy application configuration.
     """
 
     def __init__(
@@ -174,27 +170,27 @@ class KnowledgeBase:
         knowledge: Knowledge | None = None,
         materials: Materials | None = None,
         capabilities: frozenset[str] | None = None,
-        schema_manager: Any | None = None,
+        schema_manager: SchemaManager | None = None,
         knowledge_schema_manager: Any | None = None,
         transaction_factory: Callable[[Any], Transaction] | None = None,
         parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
-        pipeline_registry_factory: Callable[
-            ["KnowledgeBase", frozenset[str]], Pipelines
-        ]
+        pipeline_registry_factory: Callable[["KnowledgeBase", frozenset[str]], Pipelines]
         | None = None,
         steps: Steps | None = None,
         feedback: Feedback | None = None,
         skills: Skills | None = None,
         post_processors: PostProcessors | None = None,
         runtime_settings_reader: Callable[[], dict[str, Any]] | None = None,
-        runtime_settings_updater: (
-            Callable[[dict[str, Any]], dict[str, Any]] | None
-        ) = None,
+        runtime_settings_updater: (Callable[[dict[str, Any]], dict[str, Any]] | None) = None,
         startup_validator: Callable[..., list[str]] | None = None,
         migration_inventory_reader: Callable[..., dict[str, Any]] | None = None,
         cleanup_executor: Callable[..., dict[str, Any]] | None = None,
         content_operations: Any | None = None,
         project_operations: Any | None = None,
+        transaction_context_factory: Callable[[], AbstractContextManager[Transaction]]
+        | None = None,
+        close_resources: bool = True,
+        close_repositories: Callable[[], None] | None = None,
     ):
         self._services = services if services is not None else _UnavailableServiceBindings()
         self._content_operations = content_operations
@@ -204,9 +200,7 @@ class KnowledgeBase:
         self.object_store = object_store
         self.graph_store = graph_store
         self.graph = (
-            Graph(graph_store, model_provider=model_provider)
-            if graph_store is not None
-            else None
+            Graph(graph_store, model_provider=model_provider) if graph_store is not None else None
         )
         self.model_provider = model_provider
         self.job_backend = job_backend
@@ -241,6 +235,9 @@ class KnowledgeBase:
         self._schema_manager = schema_manager
         self._knowledge_schema_manager = knowledge_schema_manager
         self._transaction_factory = transaction_factory
+        self._transaction_context_factory = transaction_context_factory
+        self._close_resources = close_resources
+        self._close_repositories = close_repositories
         detected_capabilities = set(capabilities or ())
         if database is not None:
             detected_capabilities.update(
@@ -258,12 +255,15 @@ class KnowledgeBase:
             detected_capabilities.update(job_backend.capabilities)
         if vector_search is not None:
             detected_capabilities.update(vector_search.capabilities)
+        if transaction_context_factory is not None:
+            detected_capabilities.add(Capabilities.TRANSACTIONS)
         effective_capabilities = frozenset(detected_capabilities)
         self.parsers = (
-            parser_registry_factory(self)
-            if parser_registry_factory is not None
-            else Parsers(self)
+            parser_registry_factory(self) if parser_registry_factory is not None else Parsers(self)
         )
+        from mkb.extraction import ExtractionService
+
+        self.extraction = ExtractionService(self)
         self.steps = steps if steps is not None else Steps()
         self.pipelines = (
             pipeline_registry_factory(self, effective_capabilities)
@@ -274,6 +274,121 @@ class KnowledgeBase:
         if callable(bind_job_backend):
             bind_job_backend(job_backend)
         self._closed = False
+
+    @classmethod
+    def from_repositories(
+        cls,
+        repositories: RepositoryBundle,
+        *,
+        object_store: ObjectStore | None = None,
+        model_provider: ModelProvider | None = None,
+        config: MKBConfig | None = None,
+        graph_store: GraphStore | None = None,
+        job_backend: JobBackend | None = None,
+        vector_search: VectorSearch | None = None,
+        capabilities: frozenset[str] | None = None,
+        close_resources: bool = False,
+    ) -> "KnowledgeBase":
+        """Bind application repositories without importing persistence adapters.
+
+        No environment settings are read and no schema is created. Call
+        :meth:`initialize` explicitly if the bundle supplies a schema manager.
+        Resources remain owned by the caller unless ``close_resources=True``.
+        Source and artifact metadata remain available without an object store;
+        content reads and writes require one.
+        """
+        if not isinstance(repositories, RepositoryBundle):
+            raise ValidationError("repositories must be a RepositoryBundle")
+        config = config or MKBConfig(object_store_backend="external")
+
+        def services(bundle: RepositoryBundle, rollback_actions=None):
+            evidence = EvidenceLinks(bundle.evidence) if bundle.evidence is not None else None
+            sources = (
+                Sources(
+                    bundle.sources,
+                    object_store,
+                    default_bucket=config.raw_bucket,
+                    on_rollback=rollback_actions.append if rollback_actions is not None else None,
+                )
+                if bundle.sources is not None
+                else None
+            )
+            return {
+                "collections": (
+                    Collections(bundle.collections, CollectionGroups(bundle.collection_groups))
+                    if bundle.collections is not None
+                    else None
+                ),
+                "sources": sources,
+                "artifacts": (
+                    Artifacts(
+                        bundle.artifacts,
+                        object_store,
+                        sources=sources,
+                        default_bucket=config.processed_bucket,
+                        on_rollback=(
+                            rollback_actions.append if rollback_actions is not None else None
+                        ),
+                    )
+                    if bundle.artifacts is not None
+                    else None
+                ),
+                "records": Records(bundle.records, evidence)
+                if bundle.records is not None
+                else None,
+                "schemas": ExtractionSchemas(bundle.schemas)
+                if bundle.schemas is not None
+                else None,
+                "projections": (
+                    Projections(bundle.projections) if bundle.projections is not None else None
+                ),
+                "evidence": evidence,
+            }
+
+        @contextmanager
+        def transaction_context() -> Iterator[Transaction]:
+            rollback_actions: list[Callable[[], None]] = []
+            transaction = None
+            try:
+                with repositories.transaction() as scoped:
+                    if not isinstance(scoped, RepositoryBundle):
+                        raise ConflictError("Transaction must yield a RepositoryBundle")
+                    required = ["collections", "records", "schemas", "projections"]
+                    required.extend(
+                        name
+                        for name in ("sources", "artifacts", "evidence", "collection_groups")
+                        if getattr(repositories, name) is not None
+                    )
+                    missing = [name for name in required if getattr(scoped, name) is None]
+                    if missing:
+                        raise ConflictError(
+                            "Transaction bundle is missing repositories: " + ", ".join(missing)
+                        )
+                    grouped = services(scoped, rollback_actions)
+                    transaction = Transaction(**grouped, _rollback_actions=rollback_actions)
+                    yield transaction
+            except Exception:
+                if transaction is not None:
+                    transaction._compensate()
+                raise
+
+        return cls(
+            config=config,
+            object_store=object_store,
+            model_provider=model_provider,
+            graph_store=graph_store,
+            job_backend=job_backend,
+            vector_search=vector_search,
+            capabilities=capabilities,
+            schema_manager=repositories.schema_manager,
+            post_processors=PostProcessors(repositories.post_processors),
+            transaction_context_factory=(
+                transaction_context if repositories.transaction is not None else None
+            ),
+            close_resources=close_resources,
+            close_repositories=repositories.close,
+            **services(repositories),
+        )
 
     @classmethod
     def from_environment(cls) -> "KnowledgeBase":
@@ -315,9 +430,7 @@ class KnowledgeBase:
         job_backend: JobBackend | None = None,
         vector_search: VectorSearch | None = None,
         parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
-        pipeline_registry_factory: Callable[
-            ["KnowledgeBase", frozenset[str]], Pipelines
-        ]
+        pipeline_registry_factory: Callable[["KnowledgeBase", frozenset[str]], Pipelines]
         | None = None,
         steps: Steps | None = None,
     ) -> "KnowledgeBase":
@@ -340,7 +453,6 @@ class KnowledgeBase:
 
         if not database_url.strip():
             raise ValidationError("database_url must not be empty")
-        database = SQLAlchemyDatabase(database_url)
         object_store = None
         endpoint = None
         configured_raw_bucket = raw_bucket or "raw"
@@ -352,14 +464,14 @@ class KnowledgeBase:
         }.items():
             if not bucket.strip():
                 raise ValidationError(f"{field_name} must not be empty")
+        database = SQLAlchemyDatabase(database_url)
         try:
             if object_store_url is not None:
                 parsed = urlparse(object_store_url)
                 if parsed.scheme == "sql":
                     if parsed.netloc:
                         raise ValidationError(
-                            "sql object-store URL must not include a host; "
-                            "it reuses database_url"
+                            "sql object-store URL must not include a host; it reuses database_url"
                         )
                     object_store = SqlObjectStore(database)
                 elif parsed.scheme == "file":
@@ -381,9 +493,7 @@ class KnowledgeBase:
                         secret_key=object_store_secret_key,
                     )
                 else:
-                    raise ValidationError(
-                        "object_store_url must use the sql, file or s3 scheme"
-                    )
+                    raise ValidationError("object_store_url must use the sql, file or s3 scheme")
 
             config = MKBConfig(
                 database_url=database_url,
@@ -481,9 +591,7 @@ class KnowledgeBase:
             return skill_registry.create_skill_from_files(files)
 
         def update_runtime_settings(updates):
-            return runtime_settings.public_view(
-                runtime_settings.update_settings(updates)
-            )
+            return runtime_settings.public_view(runtime_settings.update_settings(updates))
 
         def execute_cleanup(*, older_than_days, job_days, apply, confirm):
             plan = retention_plan(older_than_days=older_than_days)
@@ -551,6 +659,7 @@ class KnowledgeBase:
 
         def read_extraction_history(project_id):
             return get_extraction_history(project_id, database=database)
+
         knowledge_base = cls(
             services=bound_services,
             config=config,
@@ -574,9 +683,7 @@ class KnowledgeBase:
                 SQLAlchemySkillRepository(database),
                 importer=import_skill_files,
             ),
-            post_processors=PostProcessors(
-                SQLAlchemyPostProcessorRepository(database)
-            ),
+            post_processors=PostProcessors(SQLAlchemyPostProcessorRepository(database)),
             runtime_settings_reader=runtime_settings.public_view,
             runtime_settings_updater=update_runtime_settings,
             startup_validator=application_settings.validate_startup,
@@ -649,13 +756,10 @@ class KnowledgeBase:
         job_backend: JobBackend | None = None,
         vector_search: VectorSearch | None = None,
         parser_registry_factory: Callable[["KnowledgeBase"], Parsers] | None = None,
-        pipeline_registry_factory: Callable[
-            ["KnowledgeBase", frozenset[str]], Pipelines
-        ]
+        pipeline_registry_factory: Callable[["KnowledgeBase", frozenset[str]], Pipelines]
         | None = None,
         steps: Steps | None = None,
     ) -> "KnowledgeBase":
-        from mkb.services.projection_operations import ProjectionOperations
         from mkb.adapters.generic_repositories import (
             GenericArtifactRepository,
             GenericCollectionGroupRepository,
@@ -676,9 +780,7 @@ class KnowledgeBase:
 
         def transaction_factory(session) -> Transaction:
             rollback_actions: list[Callable[[], None]] = []
-            transaction_evidence = EvidenceLinks(
-                GenericEvidenceRepository(database, session)
-            )
+            transaction_evidence = EvidenceLinks(GenericEvidenceRepository(database, session))
             transaction_sources = (
                 Sources(
                     GenericSourceRepository(database, session),
@@ -703,20 +805,14 @@ class KnowledgeBase:
             return Transaction(
                 collections=Collections(
                     GenericCollectionRepository(database, session),
-                    CollectionGroups(
-                        GenericCollectionGroupRepository(database, session)
-                    ),
+                    CollectionGroups(GenericCollectionGroupRepository(database, session)),
                 ),
                 records=Records(
                     GenericRecordRepository(database, session),
                     transaction_evidence,
                 ),
-                schemas=ExtractionSchemas(
-                    GenericExtractionSchemaRepository(database, session)
-                ),
-                projections=Projections(
-                    GenericProjectionRepository(database, session)
-                ),
+                schemas=ExtractionSchemas(GenericExtractionSchemaRepository(database, session)),
+                projections=Projections(GenericProjectionRepository(database, session)),
                 evidence=transaction_evidence,
                 knowledge=Knowledge(GenericKnowledgeRepository(database, session)),
                 sources=transaction_sources,
@@ -744,7 +840,6 @@ class KnowledgeBase:
             CollectionGroups(GenericCollectionGroupRepository(database)),
         )
         projection_services = Projections(GenericProjectionRepository(database))
-        projection_operations = ProjectionOperations(database, object_store)
 
         return cls(
             config=config,
@@ -773,16 +868,13 @@ class KnowledgeBase:
             knowledge=Knowledge(GenericKnowledgeRepository(database)),
             feedback=feedback_services,
             skills=Skills(GenericSkillRepository(database)),
-            post_processors=PostProcessors(
-                GenericPostProcessorRepository(database)
-            ),
+            post_processors=PostProcessors(GenericPostProcessorRepository(database)),
             materials=Materials(
                 frames=MaterialFrames(records=Records(GenericRecordRepository(database))),
                 spaces=MaterialSpaces(schemas=schema_services),
                 feedback=MaterialFeedback(feedback=feedback_services),
                 projections=MaterialProjections(
                     projections=projection_services,
-                    runner=projection_operations,
                 ),
                 projects=MaterialProjects(
                     collections=collection_services,
@@ -812,22 +904,37 @@ class KnowledgeBase:
         if self._closed:
             return
         self.pipelines._close()
-        close = getattr(self._services, "close", None)
-        if callable(close):
-            close()
-        if self.object_store is not None:
-            self.object_store.close()
-        if self.graph_store is not None:
-            self.graph_store.close()
-        if self.model_provider is not None:
-            self.model_provider.close()
-        if self.job_backend is not None:
-            self.job_backend.close()
-        if self.vector_search is not None:
-            self.vector_search.close()
-        if self.database is not None:
-            self.database.close()
-        self._closed = True
+        try:
+            if self._close_resources:
+                errors = []
+                closed_resources = set()
+                for resource in (
+                    self._services,
+                    self.object_store,
+                    self.graph_store,
+                    self.model_provider,
+                    self.job_backend,
+                    self.vector_search,
+                    self.database,
+                ):
+                    if resource is None or id(resource) in closed_resources:
+                        continue
+                    closed_resources.add(id(resource))
+                    close = getattr(resource, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception as exc:
+                            errors.append(exc)
+                if self._close_repositories is not None:
+                    try:
+                        self._close_repositories()
+                    except Exception as exc:
+                        errors.append(exc)
+                if errors:
+                    raise errors[0]
+        finally:
+            self._closed = True
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -855,8 +962,12 @@ class KnowledgeBase:
 
     @contextmanager
     def transaction(self) -> Iterator[Transaction]:
-        """Open one relational transaction for SDK-managed repositories."""
+        """Open one backend-provided unit of work for SDK repositories."""
         self._ensure_open()
+        if self._transaction_context_factory is not None:
+            with self._transaction_context_factory() as transaction:
+                yield transaction
+            return
         if self.database is None or self._transaction_factory is None:
             raise ConflictError("Transactions are unavailable for this client")
         transaction: Transaction | None = None
@@ -869,6 +980,13 @@ class KnowledgeBase:
                 transaction._compensate()
             raise
 
+    @property
+    def supports_transactions(self) -> bool:
+        """Whether a repository unit of work is configured for this client."""
+        return self._transaction_context_factory is not None or (
+            self.database is not None and self._transaction_factory is not None
+        )
+
     def _call(self, name: str, *args, **kwargs):
         self._ensure_open()
         operation = getattr(self._services, name)
@@ -876,9 +994,7 @@ class KnowledgeBase:
 
     def ingest(self, directory, label=None, *, user_named=False) -> dict:
         if self._content_operations is not None:
-            return self._content_operations.ingest(
-                directory, label=label, user_named=user_named
-            )
+            return self._content_operations.ingest(directory, label=label, user_named=user_named)
         return self._call("ingest", directory, label=label, user_named=user_named)
 
     def sync(self, root_dir) -> dict:
@@ -897,18 +1013,16 @@ class KnowledgeBase:
                 project_id=project_id,
                 progress_callback=progress_callback,
             )
-        return self._call(
-            "process", project_id=project_id, progress_callback=progress_callback
-        )
+        return self._call("process", project_id=project_id, progress_callback=progress_callback)
 
     def extract(self, project_id=None, **kwargs) -> dict:
         if self.database is not None and self.object_store is not None:
             from mkb.agents.operations import AgentOperations
             from mkb.agents.runtime import AgentRuntime
 
-            return AgentOperations(
-                AgentRuntime(self.database, self.object_store)
-            ).extract(project_id, **kwargs)
+            return AgentOperations(AgentRuntime(self.database, self.object_store)).extract(
+                project_id, **kwargs
+            )
         return self._call("extract", project_id=project_id, **kwargs)
 
     def list_projects(self, limit=50) -> list[dict]:

@@ -80,13 +80,13 @@ class RecordRepository(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> list[Record]: ...
+
+
 @runtime_checkable
 class ExtractionSchemaRepository(Protocol):
     def get(self, schema_id: str | uuid.UUID) -> ExtractionSchema | None: ...
     def get_by_name(self, name: str) -> ExtractionSchema | None: ...
-    def get_version(
-        self, schema_id: str | uuid.UUID, version: int
-    ) -> ExtractionSchema | None: ...
+    def get_version(self, schema_id: str | uuid.UUID, version: int) -> ExtractionSchema | None: ...
     def list_versions(
         self,
         schema_id: str | uuid.UUID,
@@ -95,6 +95,8 @@ class ExtractionSchemaRepository(Protocol):
         offset: int = 0,
     ) -> list[ExtractionSchema]: ...
     def list(self, *, limit: int = 100, offset: int = 0) -> list[ExtractionSchema]: ...
+
+
 @runtime_checkable
 class ProjectionRepository(Protocol):
     def get(self, projection_id: str | uuid.UUID) -> Projection | None: ...
@@ -138,6 +140,117 @@ class WorkflowRepository(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> list[WorkflowRecord]: ...
+
+
+@runtime_checkable
+class WritableCollectionRepository(CollectionRepository, Protocol):
+    """Collection persistence; raise domain errors for missing/conflicting IDs."""
+
+    def create(
+        self,
+        *,
+        name: str,
+        source_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        collection_id: uuid.UUID | None = None,
+    ) -> Collection: ...
+    def update(
+        self,
+        collection_id: uuid.UUID,
+        *,
+        name: str | None = None,
+        source_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Collection: ...
+    def delete(self, collection_id: uuid.UUID) -> None: ...
+
+
+@runtime_checkable
+class WritableSourceRepository(SourceRepository, Protocol):
+    def create(self, source: Source, *, collection_id: uuid.UUID) -> Source: ...
+
+
+@runtime_checkable
+class WritableArtifactRepository(ArtifactRepository, Protocol):
+    def create(self, artifact: Artifact) -> Artifact: ...
+
+
+@runtime_checkable
+class WritableRecordRepository(RecordRepository, Protocol):
+    def create(
+        self,
+        *,
+        collection_id: uuid.UUID,
+        data: Any,
+        status: str = "COMPLETED",
+        summary: str | None = None,
+        source_metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+        record_id: uuid.UUID | None = None,
+    ) -> Record: ...
+
+
+@runtime_checkable
+class WritableExtractionSchemaRepository(ExtractionSchemaRepository, Protocol):
+    """Persist immutable revisions on updates; projections retain their revision."""
+
+    def create(
+        self,
+        *,
+        name: str,
+        domain: str,
+        definition: dict[str, Any],
+        system_prompt: str,
+        description: str | None = None,
+        purpose: str = "freeform",
+        field_descriptions: dict[str, Any] | None = None,
+        schema_id: uuid.UUID | None = None,
+    ) -> ExtractionSchema: ...
+    def update(
+        self,
+        schema_id: uuid.UUID,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        domain: str | None = None,
+        definition: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+        purpose: str | None = None,
+        field_descriptions: dict[str, Any] | None = None,
+    ) -> ExtractionSchema: ...
+    def delete(self, schema_id: uuid.UUID) -> None: ...
+
+
+@runtime_checkable
+class WritableProjectionRepository(ProjectionRepository, Protocol):
+    def create(
+        self,
+        *,
+        schema_id: uuid.UUID,
+        record_id: uuid.UUID,
+        data: Any,
+        status: str = "COMPLETED",
+        source_type: str = "record",
+        validation: dict[str, Any] | None = None,
+        notes: str | None = None,
+        projection_id: uuid.UUID | None = None,
+    ) -> Projection: ...
+
+
+@runtime_checkable
+class WritableEvidenceRepository(EvidenceRepository, Protocol):
+    def create(
+        self,
+        *,
+        output_type: str,
+        output_id: uuid.UUID,
+        source_id: uuid.UUID | None = None,
+        artifact_id: uuid.UUID | None = None,
+        locator: dict[str, Any] | None = None,
+        excerpt: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        evidence_id: uuid.UUID | None = None,
+    ) -> Evidence: ...
 
 
 def _validate_page(limit: int, offset: int) -> None:
@@ -198,9 +311,7 @@ class Collections:
         if not clean_name:
             raise ValidationError("collection name must not be empty")
         identifier = (
-            _identifier(collection_id, "collection_id")
-            if collection_id is not None
-            else None
+            _identifier(collection_id, "collection_id") if collection_id is not None else None
         )
         return _writer(self._repository, "create")(
             name=clean_name,
@@ -251,9 +362,7 @@ class Collections:
         identifiers = [_identifier(item, "collection_id") for item in collection_ids]
         for identifier in identifiers:
             self.require(identifier)
-        group_identifier = (
-            _identifier(group_id, "group_id") if group_id is not None else None
-        )
+        group_identifier = _identifier(group_id, "group_id") if group_id is not None else None
         updated = self.groups.assign(identifiers, group_identifier)
         return OperationReceipt(
             operation="collection.assign_group",
@@ -363,7 +472,7 @@ class Sources:
     def __init__(
         self,
         repository: SourceRepository,
-        object_store: ObjectStore,
+        object_store: ObjectStore | None,
         *,
         default_bucket: str = "raw",
         on_rollback: Callable[[Callable[[], None]], None] | None = None,
@@ -372,6 +481,11 @@ class Sources:
         self._object_store = object_store
         self._default_bucket = default_bucket
         self._on_rollback = on_rollback
+
+    def _store(self) -> ObjectStore:
+        if self._object_store is None:
+            raise ConflictError("Source content requires an object store")
+        return self._object_store
 
     def get(self, source_id: str | uuid.UUID) -> Source | None:
         return self._repository.get(_identifier(source_id, "source_id"))
@@ -391,17 +505,13 @@ class Sources:
         clean_filename = filename.strip()
         if not clean_filename:
             raise ValidationError("filename must not be empty")
-        identifier = (
-            _identifier(source_id, "source_id")
-            if source_id is not None
-            else uuid.uuid4()
-        )
+        identifier = _identifier(source_id, "source_id") if source_id is not None else uuid.uuid4()
         collection_identifier = _identifier(collection_id, "collection_id")
         if self._repository.get(identifier) is not None:
             raise ConflictError(f"Source already exists: {identifier}")
         creator = _writer(self._repository, "create")
         key = f"sources/{identifier}"
-        if self._object_store.exists(self._default_bucket, key):
+        if self._store().exists(self._default_bucket, key):
             raise ConflictError(f"Source object already exists: {key}")
         now = datetime.now(timezone.utc)
         source = Source(
@@ -416,19 +526,17 @@ class Sources:
             created_at=now,
             updated_at=now,
         )
-        self._object_store.put_bytes(self._default_bucket, key, data)
+        self._store().put_bytes(self._default_bucket, key, data)
         try:
             created = creator(source, collection_id=collection_identifier)
         except Exception:
             try:
-                self._object_store.delete(self._default_bucket, key)
+                self._store().delete(self._default_bucket, key)
             except Exception:
                 pass
             raise
         if self._on_rollback is not None:
-            self._on_rollback(
-                lambda: self._object_store.delete(self._default_bucket, key)
-            )
+            self._on_rollback(lambda: self._store().delete(self._default_bucket, key))
         return created
 
     def add_text(
@@ -507,11 +615,7 @@ class Sources:
         clean_uri = uri.strip()
         if "://" not in clean_uri:
             raise ValidationError("external source URI must include a scheme")
-        identifier = (
-            _identifier(source_id, "source_id")
-            if source_id is not None
-            else uuid.uuid4()
-        )
+        identifier = _identifier(source_id, "source_id") if source_id is not None else uuid.uuid4()
         collection_identifier = _identifier(collection_id, "collection_id")
         if self._repository.get(identifier) is not None:
             raise ConflictError(f"Source already exists: {identifier}")
@@ -575,26 +679,24 @@ class Sources:
     ) -> list[Source]:
         _validate_page(limit, offset)
         identifier = (
-            _identifier(collection_id, "collection_id")
-            if collection_id is not None
-            else None
+            _identifier(collection_id, "collection_id") if collection_id is not None else None
         )
         return self._repository.list(collection_id=identifier, limit=limit, offset=offset)
 
     def read_bytes(self, source_id: str | uuid.UUID) -> bytes:
         source = self.require(source_id)
         storage = self._managed_storage(source)
-        return self._object_store.get_bytes(storage.bucket, storage.key)
+        return self._store().get_bytes(storage.bucket, storage.key)
 
     def open(self, source_id: str | uuid.UUID) -> BinaryIO:
         source = self.require(source_id)
         storage = self._managed_storage(source)
-        return self._object_store.open(storage.bucket, storage.key)
+        return self._store().open(storage.bucket, storage.key)
 
     def content_exists(self, source_id: str | uuid.UUID) -> bool:
         source = self.require(source_id)
         storage = self._managed_storage(source)
-        return self._object_store.exists(storage.bucket, storage.key)
+        return self._store().exists(storage.bucket, storage.key)
 
     @staticmethod
     def _managed_storage(source: Source) -> StorageReference:
@@ -611,7 +713,7 @@ class Artifacts:
     def __init__(
         self,
         repository: ArtifactRepository,
-        object_store: ObjectStore,
+        object_store: ObjectStore | None,
         *,
         default_bucket: str = "processed",
         sources: Sources | None = None,
@@ -622,6 +724,11 @@ class Artifacts:
         self._default_bucket = default_bucket
         self._sources = sources
         self._on_rollback = on_rollback
+
+    def _store(self) -> ObjectStore:
+        if self._object_store is None:
+            raise ConflictError("Artifact content requires an object store")
+        return self._object_store
 
     def get(self, artifact_id: str | uuid.UUID) -> Artifact | None:
         return self._repository.get(_identifier(artifact_id, "artifact_id"))
@@ -648,15 +755,13 @@ class Artifacts:
             raise ConflictError("Artifact registration requires a source service")
         source = self._sources.require(source_identifier)
         identifier = (
-            _identifier(artifact_id, "artifact_id")
-            if artifact_id is not None
-            else uuid.uuid4()
+            _identifier(artifact_id, "artifact_id") if artifact_id is not None else uuid.uuid4()
         )
         if self._repository.get(identifier) is not None:
             raise ConflictError(f"Artifact already exists: {identifier}")
         creator = _writer(self._repository, "create")
         key = f"artifacts/{identifier}"
-        if self._object_store.exists(self._default_bucket, key):
+        if self._store().exists(self._default_bucket, key):
             raise ConflictError(f"Artifact object already exists: {key}")
         now = datetime.now(timezone.utc)
         artifact = Artifact(
@@ -673,19 +778,17 @@ class Artifacts:
             created_at=now,
             updated_at=now,
         )
-        self._object_store.put_bytes(self._default_bucket, key, data)
+        self._store().put_bytes(self._default_bucket, key, data)
         try:
             created = creator(artifact)
         except Exception:
             try:
-                self._object_store.delete(self._default_bucket, key)
+                self._store().delete(self._default_bucket, key)
             except Exception:
                 pass
             raise
         if self._on_rollback is not None:
-            self._on_rollback(
-                lambda: self._object_store.delete(self._default_bucket, key)
-            )
+            self._on_rollback(lambda: self._store().delete(self._default_bucket, key))
         return created
 
     def require(self, artifact_id: str | uuid.UUID) -> Artifact:
@@ -714,13 +817,11 @@ class Artifacts:
             raise ConflictError("Artifact registration requires a source service")
         source = self._sources.require(source_id)
         identifier = (
-            _identifier(artifact_id, "artifact_id")
-            if artifact_id is not None
-            else uuid.uuid4()
+            _identifier(artifact_id, "artifact_id") if artifact_id is not None else uuid.uuid4()
         )
         if size < 0:
             raise ValidationError("artifact size must be non-negative")
-        if verify_content and not self._object_store.exists(bucket, key):
+        if verify_content and not self._store().exists(bucket, key):
             raise NotFoundError(f"Artifact object not found: {bucket}/{key}")
         now = datetime.now(timezone.utc)
         artifact = Artifact(
@@ -752,15 +853,15 @@ class Artifacts:
 
     def read_bytes(self, artifact_id: str | uuid.UUID) -> bytes:
         artifact = self.require(artifact_id)
-        return self._object_store.get_bytes(artifact.storage.bucket, artifact.storage.key)
+        return self._store().get_bytes(artifact.storage.bucket, artifact.storage.key)
 
     def open(self, artifact_id: str | uuid.UUID) -> BinaryIO:
         artifact = self.require(artifact_id)
-        return self._object_store.open(artifact.storage.bucket, artifact.storage.key)
+        return self._store().open(artifact.storage.bucket, artifact.storage.key)
 
     def content_exists(self, artifact_id: str | uuid.UUID) -> bool:
         artifact = self.require(artifact_id)
-        return self._object_store.exists(artifact.storage.bucket, artifact.storage.key)
+        return self._store().exists(artifact.storage.bucket, artifact.storage.key)
 
 
 class Records:
@@ -791,9 +892,7 @@ class Records:
         clean_status = status.strip()
         if not clean_status:
             raise ValidationError("record status must not be empty")
-        identifier = (
-            _identifier(record_id, "record_id") if record_id is not None else None
-        )
+        identifier = _identifier(record_id, "record_id") if record_id is not None else None
         return _writer(self._repository, "create")(
             collection_id=_identifier(collection_id, "collection_id"),
             data=data,
@@ -824,9 +923,7 @@ class Records:
     ) -> list[Record]:
         _validate_page(limit, offset)
         identifier = (
-            _identifier(collection_id, "collection_id")
-            if collection_id is not None
-            else None
+            _identifier(collection_id, "collection_id") if collection_id is not None else None
         )
         return self._repository.list(
             collection_id=identifier,
@@ -847,9 +944,7 @@ class Records:
         """Query records using exact top-level data-field matches."""
         _validate_page(limit, offset)
         identifier = (
-            _identifier(collection_id, "collection_id")
-            if collection_id is not None
-            else None
+            _identifier(collection_id, "collection_id") if collection_id is not None else None
         )
         query = getattr(self._repository, "query", None)
         if callable(query):
@@ -914,9 +1009,7 @@ class ExtractionSchemas:
             raise ValidationError("schema name must not be empty")
         if not domain.strip():
             raise ValidationError("schema domain must not be empty")
-        identifier = (
-            _identifier(schema_id, "schema_id") if schema_id is not None else None
-        )
+        identifier = _identifier(schema_id, "schema_id") if schema_id is not None else None
         return _writer(self._repository, "create")(
             name=clean_name,
             domain=domain.strip(),
@@ -986,9 +1079,7 @@ class ExtractionSchemas:
             return None
         return self._repository.get_version(current.id, version)
 
-    def require_version(
-        self, schema_id_or_name: str | uuid.UUID, version: int
-    ) -> ExtractionSchema:
+    def require_version(self, schema_id_or_name: str | uuid.UUID, version: int) -> ExtractionSchema:
         schema = self.get_version(schema_id_or_name, version)
         if schema is None:
             raise NotFoundError(
@@ -1006,9 +1097,7 @@ class ExtractionSchemas:
         """List immutable revisions, newest first."""
         _validate_page(limit, offset)
         current = self.require(schema_id_or_name)
-        return self._repository.list_versions(
-            current.id, limit=limit, offset=offset
-        )
+        return self._repository.list_versions(current.id, limit=limit, offset=offset)
 
     def list(self, *, limit: int = 100, offset: int = 0) -> list[ExtractionSchema]:
         _validate_page(limit, offset)
@@ -1081,9 +1170,7 @@ class Projections:
         if not clean_source_type:
             raise ValidationError("projection source_type must not be empty")
         identifier = (
-            _identifier(projection_id, "projection_id")
-            if projection_id is not None
-            else None
+            _identifier(projection_id, "projection_id") if projection_id is not None else None
         )
         return _writer(self._repository, "create")(
             schema_id=_identifier(schema_id, "schema_id"),
@@ -1117,16 +1204,10 @@ class Projections:
     ) -> list[Projection]:
         _validate_page(limit, offset)
         identifiers = {
-            "schema_id": (
-                _identifier(schema_id, "schema_id") if schema_id is not None else None
-            ),
-            "record_id": (
-                _identifier(record_id, "record_id") if record_id is not None else None
-            ),
+            "schema_id": (_identifier(schema_id, "schema_id") if schema_id is not None else None),
+            "record_id": (_identifier(record_id, "record_id") if record_id is not None else None),
             "collection_id": (
-                _identifier(collection_id, "collection_id")
-                if collection_id is not None
-                else None
+                _identifier(collection_id, "collection_id") if collection_id is not None else None
             ),
         }
         return self._repository.list(
@@ -1194,21 +1275,15 @@ class EvidenceLinks:
         return _writer(self._repository, "create")(
             output_type=clean_output_type,
             output_id=_identifier(output_id, "output_id"),
-            source_id=(
-                _identifier(source_id, "source_id") if source_id is not None else None
-            ),
+            source_id=(_identifier(source_id, "source_id") if source_id is not None else None),
             artifact_id=(
-                _identifier(artifact_id, "artifact_id")
-                if artifact_id is not None
-                else None
+                _identifier(artifact_id, "artifact_id") if artifact_id is not None else None
             ),
             locator=locator,
             excerpt=excerpt,
             metadata=metadata,
             evidence_id=(
-                _identifier(evidence_id, "evidence_id")
-                if evidence_id is not None
-                else None
+                _identifier(evidence_id, "evidence_id") if evidence_id is not None else None
             ),
         )
 
@@ -1232,16 +1307,10 @@ class EvidenceLinks:
     ) -> list[Evidence]:
         _validate_page(limit, offset)
         return self._repository.list(
-            output_id=(
-                _identifier(output_id, "output_id") if output_id is not None else None
-            ),
-            source_id=(
-                _identifier(source_id, "source_id") if source_id is not None else None
-            ),
+            output_id=(_identifier(output_id, "output_id") if output_id is not None else None),
+            source_id=(_identifier(source_id, "source_id") if source_id is not None else None),
             artifact_id=(
-                _identifier(artifact_id, "artifact_id")
-                if artifact_id is not None
-                else None
+                _identifier(artifact_id, "artifact_id") if artifact_id is not None else None
             ),
             limit=limit,
             offset=offset,
@@ -1274,9 +1343,7 @@ class Workflows:
         _validate_page(limit, offset)
         return self._repository.list(
             collection_id=(
-                _identifier(collection_id, "collection_id")
-                if collection_id is not None
-                else None
+                _identifier(collection_id, "collection_id") if collection_id is not None else None
             ),
             status=status,
             limit=limit,

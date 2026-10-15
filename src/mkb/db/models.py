@@ -9,6 +9,8 @@ from sqlalchemy import Boolean, DateTime, Enum, Index, Integer, String, Text, Un
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from mkb.processors.types import ProcessingType as ProcessingType
+
 
 class Base(DeclarativeBase):
     pass
@@ -22,13 +24,6 @@ class ProcessingStatus(str, enum.Enum):
     STORED = "STORED"
     PROCESSED = "PROCESSED"
     FAILED = "FAILED"
-
-
-class ProcessingType(str, enum.Enum):
-    MARKDOWN = "MARKDOWN"
-    DATAFRAME = "DATAFRAME"
-    IMAGE = "IMAGE"
-    UNPROCESSABLE = "UNPROCESSABLE"
 
 
 class FrameStatus(str, enum.Enum):

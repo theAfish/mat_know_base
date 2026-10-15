@@ -1,18 +1,26 @@
 # Upgrade and migration guide
 
-Before upgrading, read release notes, finish or cancel active jobs, run `make doctor`,
+For the Python package, upgrade the package with the extras your host uses, run
+your integration tests, and apply any database changes through the host's normal
+migration process. The package does not start services or migrate application
+schemas automatically.
+
+The following steps apply to the optional legacy application. Before upgrading,
+read release notes, finish or cancel active jobs, run `make doctor-app`,
 and create a verified snapshot. Stop the API and frontend while leaving PostgreSQL
 available for migration.
 
 ```bash
 git pull --ff-only
 make bootstrap
+make install-app
 make check
-make doctor
+make test-app
+make doctor-app
 make dev
 ```
 
-`make bootstrap` preserves an existing `.env`. Compare it manually with
+`make install-app` preserves an existing `.env`. Compare it manually with
 `.env.example` for newly introduced settings. The legacy schema migration chain is
 retired; use a verified current database snapshot and roll back by restoring the
 pre-upgrade snapshot with its matching application version.

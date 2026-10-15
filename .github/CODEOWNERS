@@ -9,6 +9,7 @@
 /src/mkb/web/uploads.py @theAfish
 /src/mkb/config.py @theAfish
 /src/mkb/post_processors/ @theAfish
-/docker-compose.yaml @theAfish
+/scripts/pack_data.sh @theAfish
+/scripts/unpack_data.sh @theAfish
 /SECURITY.md @theAfish
 /docs/security.md @theAfish

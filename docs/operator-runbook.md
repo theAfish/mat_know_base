@@ -1,13 +1,13 @@
 # MKB operator runbook
 
-MKB defaults to loopback-only operation. Before startup, run `make up` and
-`curl http://127.0.0.1:8503/health/ready`. Liveness only confirms
+This runbook covers the optional legacy HTTP application. Provision PostgreSQL
+externally, configure its connection and run `make doctor-app`. Start the API before
+checking `curl http://127.0.0.1:8000/health/ready`. The server binds to loopback by default. Liveness only confirms
 the API process; readiness categorizes database, schema, object-storage, and
 worker failures without returning credentials.
 
 For a clean shutdown, stop accepting work, check `/api/jobs` for active jobs,
-cancel them through the API, wait for terminal states, then stop the API and run
-`make down`. A crash or forced restart marks leftover jobs `INTERRUPTED`; inspect
+cancel them through the API, wait for terminal states, then stop the API. Manage the database lifecycle through the host deployment. A crash or forced restart marks leftover jobs `INTERRUPTED`; inspect
 their `request_id`, events, and error category before retrying the originating
 action. Active-key constraints prevent duplicate work across API processes.
 
@@ -43,13 +43,11 @@ Restore is deliberately two-step:
 The restore replaces the database from the validated dump and restores local files;
 under the default `sql` object-store backend the object bytes come back with the
 dump, and only the `s3` backend additionally mirrors bucket contents with removal.
-Run `mkb reconcile`, and the readiness probe afterward. Practice this against a
-disposable Compose project before depending on a backup. `make restore-drill`
-performs checksum/path validation; restores a disposable database and local root
-(plus a disposable MinIO instance when the backend is `s3`); then runs full
-object-checksummed inventory comparison, reconciliation, and representative
-content verification. It is suitable for a scheduled job or integration CI runner
-with Docker services and never enables the live replacement path.
+Run `mkb reconcile` and the readiness probe afterward. `make restore-drill`
+validates the archive and restores into a temporary database on the configured
+PostgreSQL server. It checks business file references without replacing live data
+or provisioning any infrastructure. Use the host project's deployment tooling for
+full isolated service rehearsals.
 
 Before an application upgrade, create and verify a snapshot, stop job starts,
 upgrade the code, then verify readiness and reconciliation.

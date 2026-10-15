@@ -37,11 +37,15 @@ cd "$WORKSPACE_ROOT"
 export PYTHONPATH="$WORKSPACE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 CONFIG=$("$PYTHON" "$SCRIPT_DIR/snapshot_payload.py" settings)
 eval "$CONFIG"
+source "$SCRIPT_DIR/snapshot_postgres.sh"
+if $DO_PG; then
+    snapshot_postgres createdb psql dropdb
+fi
 STAGING=$(mktemp -d)
 RESTORE_TEST_DB=""
 cleanup_staging() {
     if [ -n "$RESTORE_TEST_DB" ]; then
-        docker compose exec -T postgres dropdb --username="$PG_USER" --if-exists "$RESTORE_TEST_DB" >/dev/null 2>&1 || true
+        dropdb --no-password --if-exists "$RESTORE_TEST_DB" >/dev/null 2>&1 || true
     fi
     rm -rf "$STAGING"
 }
@@ -81,14 +85,16 @@ fi
 if $DO_PG; then
     DUMP_FILE="$EXTRACTED/postgres/dump.sql"
     test -s "$DUMP_FILE"
-    RESTORE_TEST_DB="mkb_restore_test_$$"
-    echo "[unpack] Restoring dump into disposable database '$RESTORE_TEST_DB'…"
-    docker compose exec -T postgres createdb --username="$PG_USER" "$RESTORE_TEST_DB"
-    docker compose exec -T postgres psql --no-psqlrc --username="$PG_USER" \
+    candidate="mkb_restore_test_$$_$RANDOM"
+    echo "[unpack] Restoring dump into disposable database '$candidate'…"
+    createdb --no-password "$candidate"
+    # Only clean up databases successfully created by this invocation.
+    RESTORE_TEST_DB="$candidate"
+    psql --no-password --no-psqlrc \
         --dbname="$RESTORE_TEST_DB" --set=ON_ERROR_STOP=1 --quiet < "$DUMP_FILE"
     MKB_OBJECT_STORE_BACKEND="$ARCHIVE_BACKEND" "$PYTHON" "$SCRIPT_DIR/snapshot_payload.py" \
         verify "$EXTRACTED" --database "$RESTORE_TEST_DB"
-    docker compose exec -T postgres dropdb --username="$PG_USER" "$RESTORE_TEST_DB"
+    dropdb --no-password "$RESTORE_TEST_DB"
     RESTORE_TEST_DB=""
     echo "[unpack] Disposable database restore and business file validation passed."
 fi
@@ -110,7 +116,7 @@ if $DO_PG; then
     echo "[unpack] This replaces tables in '$PG_DATABASE'."
     read -r -p "[unpack] Type database name '$PG_DATABASE' to confirm: " confirm
     if [ "$confirm" != "$PG_DATABASE" ]; then exit 2; fi
-    docker compose exec -T postgres psql --no-psqlrc --username="$PG_USER" \
+    psql --no-password --no-psqlrc \
         --dbname="$PG_DATABASE" --set=ON_ERROR_STOP=1 --single-transaction --quiet < "$DUMP_FILE"
 fi
 if $DO_BUCKETS; then

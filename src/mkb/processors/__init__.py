@@ -8,6 +8,13 @@ This module provides processors for different file types:
 """
 
 from mkb.processors.base import ProcessingResult, Processor
-from mkb.processors.coordinator import process_asset
 
 __all__ = ["Processor", "ProcessingResult", "process_asset"]
+
+
+def __getattr__(name: str):
+    if name == "process_asset":
+        from mkb.processors.coordinator import process_asset
+
+        return process_asset
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -7,4 +7,4 @@ receive best-effort compatibility support only.
 
 Upgrade to the latest supported release before reporting a defect when practical. A
 deployment that cannot upgrade should include its exact commit, migration revision,
-Python/Node/Docker versions, and sanitized `make doctor` output in a private report.
+Python and any optional integration versions, and sanitized `make doctor` output in a private report.

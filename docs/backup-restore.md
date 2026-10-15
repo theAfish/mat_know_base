@@ -1,5 +1,8 @@
 # Backup and restore
 
+These tools are for the optional legacy PostgreSQL application. Embedded SDK
+consumers use their host database and object-store backup procedures.
+
 `make pack` creates a **business data** snapshot. It includes the entire PostgreSQL
 database (spaces, schemas, prompts, projections, skill registrations, feedback,
 jobs, graphs, and other tables), object storage, and local business files.
@@ -18,9 +21,9 @@ owner-only archive mode. Business content itself is not redacted.
 
 Use the matching project version and its Python environment (`.venv/bin/python`
 by default, or `PYTHON=/path/to/python`). S3 snapshots require the project's
-optional `boto3` dependency. PostgreSQL dump/restore uses the project's Docker
-Compose `postgres` service. S3 copying uses the configured endpoint directly and
-no longer requires an `mc` image or a Compose service named `minio`.
+optional `boto3` dependency. PostgreSQL dump/restore uses local `pg_dump`, `pg_restore`, `psql`,
+`createdb` and `dropdb` clients against an explicitly configured server. S3 copying uses the configured endpoint directly and
+does not require container tools.
 
 ## Create
 
@@ -85,25 +88,17 @@ Backend mismatches block full replacement instead of silently skipping buckets.
 Partial restore flags remain available: `--pg-only`, `--buckets-only`,
 `--local-only`, `--no-pg`, `--no-buckets`, and `--no-local`.
 
-## Full disposable drill
+## Disposable validation drill
 
-For a stronger test, restore into a disposable database, local directory, and
-(for S3) MinIO instance; then compare inventories and run SDK reconciliation and
-content verification:
+`make restore-drill file=backup-snapshots/mkb-business.tar.gz` runs the same
+`--validate-only` checks against a temporary database on the configured PostgreSQL
+server. The account needs permission to create and drop that temporary database.
+It does not provision servers or restore objects into the live object store.
 
-```bash
-MKB_OBJECT_STORE_BACKEND=s3 \
-MKB_RESTORE_DRILL_OUT=backup-snapshots/restore-evidence \
-make restore-drill file=backup-snapshots/mkb-business.tar.gz
-```
+Container provisioning and the former inventory-diff drill are no longer part of
+this package. For a full deployment rehearsal, use the host project's integration
+environment and its storage lifecycle tooling.
 
-`MKB_RESTORE_DRILL_MINIO_IMAGE` can select an already installed MinIO image. The
-drill never enables live replacement. Without a supplied historical baseline it
-compares against current live data, so run it before live data changes.
-`MKB_RESTORE_DRILL_BASELINE=/path/to/inventory.json` supplies a saved baseline;
-use a baseline from the same inventory version and local-path layout. New
-inventories include all `data/` business files and exclude runtime settings.
-
-After a real restore, run `make doctor`, `mkb reconcile`, and application readiness
+After a real restore, run `make doctor-app`, `mkb reconcile`, and application readiness
 checks before reopening the service. Investigate missing-object and checksum
 failures; do not edit a manifest to bypass validation.

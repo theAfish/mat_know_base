@@ -6,9 +6,6 @@ import sys
 
 from mkb.logging_setup import setup_logging
 
-# Configure logging as early as possible so subsequent imports inherit it.
-setup_logging()
-
 
 def _json_dump(obj):
     print(json.dumps(obj, indent=2, default=str))
@@ -687,7 +684,6 @@ def cmd_restore_missing_artifact(args):
 def main():
     from mkb import MKBConfig
 
-    application_config = MKBConfig.from_environment()
     parser = argparse.ArgumentParser(prog="mkb", description="Materials Knowledge Base")
     sub = parser.add_subparsers(dest="command")
 
@@ -836,8 +832,8 @@ def main():
 
     # ── API ──
     p = sub.add_parser("api", help="Launch the FastAPI backend for the React UI")
-    p.add_argument("--host", default=application_config.api_host)
-    p.add_argument("--port", type=int, default=application_config.api_port)
+    p.add_argument("--host", default=None)
+    p.add_argument("--port", type=int, default=None)
     p.add_argument("--reload", action="store_true")
 
     # processed
@@ -967,6 +963,17 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    if args.command == "api":
+        application_config = MKBConfig.from_environment()
+        if args.host is None:
+            args.host = application_config.api_host
+        if args.port is None:
+            args.port = application_config.api_port
+
+    # CLI execution opts into application settings; importing this module and
+    # displaying --help must work in a base-package installation.
+    setup_logging()
 
     cmd_map = {
         "ingest": cmd_ingest,

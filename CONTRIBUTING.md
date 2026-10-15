@@ -1,13 +1,14 @@
 # Contributing
 
-Start with `make bootstrap`, review `.env`, then run `make up`, `make doctor`, and
-`make check`. Keep adapters thin: domain behavior belongs in `src/mkb/services/`, HTTP
-mapping in `src/mkb/web/`, CLI parsing in `src/mkb/cli.py`, and current UI work in
-`frontend/`. Canonical-workflow compatibility paths are legacy.
+Start with `make bootstrap` and `make check`. The default workflow develops the
+Python package without provisioning services or installing the frontend. Keep
+storage adapters behind `mkb.repositories` / `mkb.ports`, extraction behavior in
+`mkb.extraction`, and app-specific code in the optional compatibility surfaces.
+See [development](docs/development.md) for the full application workflow.
 
-Use a focused branch and include tests for behavior changes. Before opening a pull
-request, run `make lint`, `make test`, and `make test-frontend`. Update the Python API,
-HTTP contract, operator, or security docs whenever their observable behavior changes.
+Use a focused branch and include tests for behavior changes. Update the Python API
+and examples whenever public behavior changes. Run app/frontend checks when those
+surfaces change.
 
 Database migrations require review from the database/migrations owner. Never edit a
 published migration; add a new one and test upgrade plus restore. Changes involving

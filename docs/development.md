@@ -1,88 +1,107 @@
-# Developer setup
+# Package development
 
-## Clean clone
-
-Install Python 3.10+, Node.js 20+, npm, Docker Compose, and `libmagic`, then run:
+Python 3.10+ is sufficient for the default development workflow:
 
 ```bash
 make bootstrap
-```
-
-This creates `.venv`, upgrades its pip, installs `.[all,dev]`, runs `npm ci` from the
-committed lockfile, and creates `.env` only if absent. Edit `.env`, then:
-
-```bash
-make up       # waits for healthy PostgreSQL/MinIO
-make doctor   # verifies the whole local environment
-make dev      # FastAPI and Vite; Ctrl+C stops both
-```
-
-All Make targets use `PYTHON ?= .venv/bin/python` and Python modules (`python -m
-...`) consistently. Override it explicitly for tooling or CI. `BOOTSTRAP_PYTHON`
-is used only to create the environment, and `NPM` can likewise be overridden.
-
-The API starts looking for a free port at 8000 and Vite at 5173. `make dev`
-automatically skips occupied API ports and passes the selected port to Vite's
-`/api` proxy. Use `make dev API_PORT=8001` to change the starting API port.
-The standalone `make server` command uses its specified port without searching.
-If 5173 is occupied, Vite automatically tries subsequent ports; use the Local
-URL printed at startup. Either service exiting, Ctrl+C, or SIGTERM to the dev
-launcher stops both services and their child processes, releasing their ports.
-SIGKILL (`kill -9`) cannot run cleanup handlers; use ordinary `kill` instead.
-
-To inspect processes left by older launchers, run
-`ss -ltnp | rg ':(8000|517[3-9])\b'` and stop only the PIDs you identify as stale
-MKB dev servers with `kill <pid>`, then run `make dev` again.
-When running Vite separately against the demo API below, use
-`cd frontend && API_PORT=8503 npm run dev`.
-
-## Validation and build
-
-```bash
-make lint
-make test-python
-make test-frontend
+make doctor
 make check
 make build
 ```
 
-`make build` writes a Python wheel under `build/wheels/` and builds the production
-React bundle. CI should begin with `make bootstrap` (or reproduce its pinned npm
-install and editable dev install) before invoking these targets.
+`bootstrap` creates `.venv` and installs the editable package with development
+tools. It does not create application configuration or start external services.
+`install`, `lint`, `test`, `check`, and `build` operate on the Python package.
+The wheel is written under `build/wheels/`. Override `PYTHON` to use an existing
+environment; `BOOTSTRAP_PYTHON` selects the interpreter used to create `.venv`.
 
-The base wheel depends only on Pydantic and SQLAlchemy. Backend and application
-dependencies are opt-in through `postgres`, `s3`, `pdf`, `server`, `materials`,
-`neo4j`, or `all`. Distribution CI builds both wheel and sdist, installs the wheel
-into a separate environment, and runs `examples/portable_quickstart.py` without the
-repository on its import path.
+The base package has no database driver or web server dependency. Install `.[sql]`
+to use the SQLAlchemy adapter; SQLite needs no separate service. Database-specific,
+object storage, and application integrations have their own optional extras.
+An embedding application chooses and supplies its storage interfaces, parsers,
+agent callbacks, spaces, and post-processors. See [Python API](python-api.md).
 
-## Database provisioning
+## Validation
 
-The historical Alembic chain was retired after the local database reached its final
-supported revision. This repository does not provision or upgrade the legacy materials
-schema. Start from a verified current database snapshot; explicit SDK clients create
-only their portable `mkb_*` tables with `kb.initialize()`.
+`make test` / `make test-python` run the portable SDK, storage, and extraction
+contracts listed in `CORE_TESTS` in the Makefile. `make check` also runs Python
+linting. These checks need neither model credentials nor a database server.
+Development dependencies include SQLAlchemy to exercise the SQL adapter locally.
 
-For isolated local UI acceptance when no snapshot is available, use the disposable
-demo schema instead. It creates the existing ORM tables in a separate database,
-not a production migration or a substitute for a verified snapshot:
+Distribution CI builds a wheel and sdist, installs the base wheel into a separate
+environment, and exercises the custom-storage example outside the repository.
+It then installs the SQL extra and runs the extraction and SQLite examples.
+
+The full legacy application suite remains available with `make test-app` after
+installing `.[all,dev]`. Frontend checks are explicit: `make lint-frontend` and
+`make test-frontend` (which builds the bundle). Frontend CI runs only when its
+files or workflow change, or when manually requested.
+
+## Optional legacy application
+
+The existing FastAPI/React application remains as an optional integration. Its
+PostgreSQL schema, model providers, and any object storage services are managed
+by the embedding/deployment environment. This repository does not start or stop
+those services.
 
 ```bash
-docker compose up -d postgres minio minio-init
-MKB_PG_DATABASE=mkb_demo_acceptance .venv/bin/python scripts/bootstrap_demo_schema.py
-MKB_PG_DATABASE=mkb_demo_acceptance .venv/bin/python -m mkb.cli api --host 127.0.0.1 --port 8503
+make install-app       # installs application extras and npm dependencies
+# Review .env and point it at externally managed services.
+make doctor-app        # read-only application dependency and endpoint checks
+make dev               # starts FastAPI and Vite
 ```
 
-The bootstrap refuses any database name other than `mkb_demo_acceptance` or a
-non-local PostgreSQL host. It is additive and repeatable; it never drops tables.
-Pass the same `MKB_PG_DATABASE` override to any launcher used for the MKB API.
-The demo database starts empty, so extraction still requires an available model
-and document processing dependencies. Do not treat demo results as production data.
+The frontend requires Node.js 20+ and npm. Some document parsers also need system
+libraries such as `libmagic` and Tesseract. `make server` starts just the API;
+`make build-frontend` builds just React. `NPM` can be overridden.
 
-## Runtime files and legacy surfaces
+`make dev` searches for an available API port starting at 8000 and shares it with
+the Vite proxy. Override the starting port with `API_PORT=8001`. Vite starts at
+5173 and tries subsequent ports when occupied. Ctrl+C or either service exiting
+stops both process groups. The standalone `make server` uses its specified port.
 
-Local artifacts live under `data/`, `.debug/`, `logs/`, and Docker volumes. Treat
-exports as generated unless deliberately promoted to `examples/` or `tests/fixtures/`.
+The retired historical Alembic chain is not a database provisioning mechanism.
+Use a verified current snapshot for the legacy application. For isolated local
+UI testing against an already provisioned PostgreSQL server, the optional helper
+creates tables only in the fixed local demo database:
 
-React (`frontend/`) is the only bundled UI. Legacy canonical-workflow adapters remain
-read-compatible while their retained records are exported or retired.
+```bash
+MKB_PG_DATABASE=mkb_demo_acceptance .venv/bin/python scripts/bootstrap_demo_schema.py
+MKB_PG_DATABASE=mkb_demo_acceptance make server API_PORT=8503
+```
+
+The helper refuses other database names and non-local hosts. It never drops
+tables. Portable SDK clients initialize only their own `mkb_*` tables when
+explicitly requested by the caller.
+
+## Legacy snapshots
+
+Snapshot scripts remain for existing PostgreSQL application data. They are
+optional operational tools, not a package-wide persistence requirement. Install
+the application extras and PostgreSQL client programs (`pg_dump`, `psql`,
+`createdb`, `dropdb`), then configure `MKB_PG_HOST`, `MKB_PG_PORT`, `MKB_PG_USER`,
+`MKB_PG_PASSWORD`, and `MKB_PG_DATABASE` through the normal application settings.
+No container engine is used. Standard libpq options such as `PGSSLMODE` and
+`PGPASSFILE` are preserved.
+
+```bash
+make pack out=backup.tar.gz
+make restore-drill file=backup.tar.gz
+make unpack file=backup.tar.gz flags=--validate-only
+# Explicit live replacement still requires typing the target database name:
+make unpack file=backup.tar.gz flags=--confirm-replace
+```
+
+Validation checks archive checksums, restores SQL into a temporary database,
+checks references against archived object/file payloads, and removes the
+temporary database. The configured PostgreSQL role must be able to create and
+drop its temporary databases. Validation leaves live objects and files unchanged.
+`--local-only --validate-only` can check local payloads without PostgreSQL tools.
+
+`restore-drill` now requires an existing archive and uses this same validation
+path. It no longer provisions a separate object storage service or generates
+live/restored SDK inventory comparisons. Snapshot checksums and object-reference
+validation remain; deployments can add their own end-to-end restore exercises.
+
+Local artifacts under `data/`, `.debug/`, and `logs/` are generated files unless
+deliberately promoted to `examples/` or `tests/fixtures/`.

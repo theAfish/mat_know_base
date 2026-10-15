@@ -1,60 +1,61 @@
 # Architecture and ownership
 
-This map names the main ownership areas in the repository so refactors can move
-code toward clearer boundaries without changing behavior accidentally.
+MKB's reusable core consists of storage contracts and an extraction workflow.
+Applications supply their infrastructure and own deployment.
 
-## Runtime Surfaces
+```text
+Host Python application
+        │
+        ▼
+KnowledgeBase.from_repositories(RepositoryBundle, ObjectStore, ModelProvider)
+        │
+        ├── collections / sources / artifacts / schemas / records / projections / evidence
+        │       └── repository protocols → host database or optional SQL adapters
+        │
+        └── extraction
+                source bytes → parser / OCR → agent projection
+                  → ordered post-processors → JSON Schema validation → persistence
+```
 
-- `src/mkb/api.py` is the Python compatibility facade used by scripts, tests,
-  routers, and legacy UI code.
-- `src/mkb/web/` owns the FastAPI app, REST routers, request/response models,
-  upload handling, and background job state.
-- `frontend/src/` owns the React application.
-- `src/mkb/agents/` owns agent construction, prompts, tool adapters, and runner
-  integration.
-- `src/mkb/cli.py` owns command-line entry points and should call service/API
-  functions rather than duplicating behavior.
+## Core ownership
 
-## Domain Areas
+| Module | Responsibility |
+| --- | --- |
+| `mkb.models` | Serializable public data models |
+| `mkb.repositories` | Read/write repository protocols and validated operations |
+| `mkb.storage` | Repository composition, optional schema and transaction lifecycle |
+| `mkb.ports` | Object storage, model, parser, graph, jobs and vector capabilities |
+| `mkb.sdk` | Client composition and resource ownership |
+| `mkb.extraction` | Space definitions, parsing/projection workflow and callable post-processing |
+| `mkb.registries`, `mkb.pipelines` | Per-client parser and reusable step registration/execution |
+| `mkb.adapters` | Optional integrations, loaded on request |
 
-- Ingestion: `src/mkb/ingest/`, `src/mkb/api.py`, and upload entry points under
-  `src/mkb/web/`.
-- Processing: `src/mkb/processors/`, processed asset models, and S3 helpers.
-- Projects and assets: `ResearchProject`, `Asset`, and `ProjectAsset` models,
-  plus project routers and frontend project views.
-- Frames: `KnowledgeFrame` storage, frame agent code, frame routers, and React
-  frame/project detail tabs.
-- Spaces and projections: `src/mkb/spaces/`, projection agents/tools, projection
-  routers, and projection table components.
-- Workflows: `src/mkb/services/workflows/`, workflow extraction/canonicalization agents,
-  schema curator tools, and workflow tabs.
-- Knowledge graph: `src/mkb/knowledge_graph.py`, graph agent/tools, graph review
-  tools, graph router, and graph frontend page.
-- Feedback: `src/mkb/feedback/`, feedback agent/tools, feedback router, and
-  frontend feedback page.
-- Jobs: `src/mkb/web/_state.py`, job routers, and job polling hooks/stores.
+Core modules do not read `.env`, import database models, instantiate agent runtimes
+or provision infrastructure. Repositories exchange public models and UUIDs. The
+`Database` session interface is an implementation detail of SQL adapters; custom
+storage integrates at the repository boundary, including document/remote stores.
+`from_url` explicitly selects SQLAlchemy. It is a convenience adapter factory, not
+a default storage choice.
 
-## Boundary Direction
+Parsed source text and provider outputs are processed before persistence. SQL
+writes use one transaction; new object writes register rollback compensation.
+A custom bundle can supply a transaction context with equivalent semantics. Without
+it, persistence can leave partial writes on failure. Providers and parsers execute
+outside the database transaction.
 
-Adapters should stay thin:
+## Optional compatibility application
 
-- Web routers validate HTTP input and map service errors to HTTP responses.
-- CLI commands parse arguments and print results.
-- Agent tools parse tolerant user/agent inputs and call strict domain helpers.
-- React components call typed client functions and avoid backend policy logic.
+`mkb.api`, `KnowledgeBase.from_environment`, `mkb.materials`, `mkb.services`,
+`mkb.agents`, `mkb.web`, legacy CLI commands, `mkb.db`, maintenance scripts and
+`frontend/` retain the prior materials application. Its PostgreSQL schema differs
+from the generic `mkb_*` schema. Use its own configuration and lifecycle; do not
+point generic repositories at legacy tables or silently migrate existing data.
+The frontend and deployment tools are not required to install or use the package.
 
-Shared behavior belongs in domain services or pure helpers before it is reused
-by routers, CLI commands, agent tools, and legacy compatibility surfaces.
+The previous application remains available for existing consumers. New embeddings
+should use `kb.extraction` and repository interfaces. Graph review, UI assistant,
+canonical workflow management and uploaded executable scripts are not part of the
+core extraction contract.
 
-## Review ownership
-
-`CODEOWNERS` records the enforceable GitHub review routing. Changes under
-`src/mkb/db/` need database review. Authentication,
-uploads, executable post-processors, deployment configuration, Compose exposure, and
-security documentation need security review. Until dedicated teams exist, the
-repository owner fills both roles; split these entries into teams as maintainership
-grows.
-
-Cross-boundary changes should name the owning service in the pull request and keep
-transport/UI adapters free of duplicated domain policy. API compatibility changes also
-require updates to `docs/python-api.md` or `docs/api-contract.md` as applicable.
+Review routing remains in `CODEOWNERS`. Public API changes need documentation and
+contract coverage; persistence changes need adapter and transaction coverage.

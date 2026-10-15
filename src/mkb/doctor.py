@@ -1,9 +1,10 @@
-"""Read-only local development and deployment diagnostics."""
+"""Read-only package diagnostics, with opt-in legacy application checks."""
 
 from __future__ import annotations
 
+import argparse
+import importlib
 import importlib.util
-import json
 import re
 import shutil
 import socket
@@ -63,30 +64,10 @@ def tcp_status(host: str, port: int) -> bool:
         return False
 
 
-def compose_status() -> str:
-    result = subprocess.run(
-        ["docker", "compose", "ps", "--format", "json"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    if result.returncode:
-        raise RuntimeError((result.stderr or result.stdout).strip())
-    if not result.stdout.strip():
-        return "services are not started (run make up when needed)"
-    rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    unhealthy = [row.get("Service", "unknown") for row in rows if row.get("Health") == "unhealthy"]
-    if unhealthy:
-        raise RuntimeError("unhealthy: " + ", ".join(unhealthy))
-    return ", ".join(
-        f"{row.get('Service')}={row.get('State')}" +
-        (f"/{row.get('Health')}" if row.get("Health") else "") for row in rows
-    )
-
-
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--app", action="store_true", help="check the optional legacy application")
+    args = parser.parse_args(argv)
     report = Report()
     print("MKB doctor (read-only)\n")
 
@@ -96,13 +77,22 @@ def main() -> int:
         "Python",
         f"{version.major}.{version.minor}.{version.micro} ({sys.executable}); requires >=3.10",
     )
+    for name in ("pydantic", "jsonschema", "referencing", "mkb"):
+        report.check(name, lambda name=name: f"import available: {importlib.import_module(name).__name__}")
+
+    if args.app:
+        application_checks(report)
+
+    print(f"\nSummary: {report.failures} failure(s), {report.warnings} warning(s)")
+    return 1 if report.failures else 0
+
+
+def application_checks(report: Report) -> None:
     report.check("Node.js", node_version)
     report.check("npm", lambda: command_version(["npm", "--version"]))
-    report.check("Docker", lambda: command_version(["docker", "--version"]))
-    report.check("Docker Compose", lambda: command_version(["docker", "compose", "version"]))
 
     env_file = ROOT / ".env"
-    report.emit("OK" if env_file.is_file() else "FAIL", "Configuration", ".env exists" if env_file.is_file() else "missing .env; copy .env.example")
+    report.emit("OK", "Configuration", ".env exists" if env_file.is_file() else "using environment/configuration defaults")
 
     from mkb.config import settings
 
@@ -128,8 +118,6 @@ def main() -> int:
     for name, (host, port) in endpoints.items():
         open_ = tcp_status(host, port)
         report.emit("OK" if open_ else "WARN", name, f"{host}:{port} is {'reachable' if open_ else 'not listening'}")
-
-    report.check("Compose services", compose_status)
 
     from mkb.web.diagnostics import check_database, check_object_storage
 
@@ -161,10 +149,6 @@ def main() -> int:
     report.emit("OK" if tesseract else "WARN", "Image OCR", tesseract or "tesseract executable not found; image OCR is unavailable")
     credentials = bool(settings.openai_api_key or settings.llm_api_key or settings.google_api_key)
     report.emit("OK" if credentials else "WARN", "LLM processor", f"credentials present for {settings.extraction_model}" if credentials else "no LLM API credential detected")
-
-    print(f"\nSummary: {report.failures} failure(s), {report.warnings} warning(s)")
-    return 1 if report.failures else 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

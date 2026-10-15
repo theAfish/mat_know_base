@@ -29,3 +29,20 @@ remain protected by tests and migration gates.
   checksum-gated missing-object repair tooling.
 - Split PostgreSQL, S3, PDF, server, materials, Neo4j, and full application support
   into optional installation extras.
+
+## Infrastructure package refactor (unreleased)
+
+- Add backend-neutral `RepositoryBundle`, writable repository protocols and
+  `KnowledgeBase.from_repositories` with explicit transaction/resource ownership.
+- Add `kb.extraction`: versioned Space definitions, parser/OCR integration, injected
+  model providers, ordered post-processors, JSON Schema validation and persisted
+  artifacts/projections/evidence. Add Tesseract and document-processor bridges.
+- Move SQLAlchemy to `[sql]`; separate OCR/agent/local-PDF extras and lazy-load
+  storage/document adapters. Existing SQL consumers now install `[sql]` or
+  `[postgres]`. Add `py.typed` to the distribution.
+- Remove bundled Compose and Docker execution. Default Make/CI workflows target
+  the Python package; the existing materials/Web application remains opt-in.
+- Snapshot scripts use external PostgreSQL clients. `restore-drill` validates an
+  existing archive against a temporary database; it no longer provisions services
+  or produces inventory comparisons.
+- Add storage and extraction examples, API documentation and import-boundary tests.

@@ -1,13 +1,16 @@
 """
-Basic usage of the Materials Knowledge Base Python API.
+Legacy Materials application workflow.
+
+For portable package integration, start with extraction_quickstart.py or
+custom_storage.py instead. This example uses the optional compatibility API.
 
 Prerequisites:
-  - Docker services running: `make up`
+  - Externally managed PostgreSQL with a verified current application schema
   - Package installed: `pip install -e ".[dev,materials,server]"`
   - .env configured with LLM credentials (see README.md)
 
 This example walks through the full pipeline:
-  1. Setup database
+  1. Connect to an existing application database
   2. Ingest files
   3. Process into LLM-readable formats
   4. Extract knowledge frames via LLM (with multi-pass review)
@@ -19,8 +22,8 @@ This example walks through the full pipeline:
 from mkb import api
 
 # ── 1. Setup ─────────────────────────────────────────────────────
-# Create database tables (idempotent — safe to call multiple times)
-api.setup()
+# Configure the existing database through MKB_PG_* settings before running.
+# This legacy workflow does not provision or migrate application tables.
 
 # ── 2. Ingest ────────────────────────────────────────────────────
 # Ingest a directory containing a paper and its supplementary files.

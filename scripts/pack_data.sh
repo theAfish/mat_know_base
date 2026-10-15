@@ -16,6 +16,8 @@ export PYTHONPATH="$WORKSPACE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 # Use the same environment/.env/config.yaml precedence as the application.
 CONFIG=$("$PYTHON" "$SCRIPT_DIR/snapshot_payload.py" settings)
 eval "$CONFIG"
+source "$SCRIPT_DIR/snapshot_postgres.sh"
+snapshot_postgres pg_dump
 "$PYTHON" - "$ARCHIVE_NAME" <<'PY'
 import sys
 from pathlib import Path
@@ -36,9 +38,8 @@ PARTIAL="${ARCHIVE_NAME}.partial.$$"
 trap 'rm -rf "$STAGING"; rm -f "$PARTIAL"' EXIT
 mkdir -p "$STAGING/postgres" "$(dirname "$ARCHIVE_NAME")"
 echo "[pack] Dumping PostgreSQL database '$PG_DATABASE'…"
-docker compose exec -T postgres pg_dump \
-    --username="$PG_USER" --clean --if-exists --no-owner --no-acl \
-    "$PG_DATABASE" > "$STAGING/postgres/dump.sql"
+pg_dump --no-password --clean --if-exists --no-owner --no-acl \
+    --dbname="$PG_DATABASE" > "$STAGING/postgres/dump.sql"
 
 if [ "$OBJECT_STORE_BACKEND" = s3 ]; then
     echo "[pack] Copying S3 objects…"

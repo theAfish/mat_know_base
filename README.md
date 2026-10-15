@@ -1,146 +1,107 @@
 # mat-know-base
 
-Materials Knowledge Base (MKB) is a local-first application for ingesting scientific
-papers and supplementary files, processing them into LLM-readable artifacts, and
-building structured knowledge frames, domain projections, workflows, and graphs.
+MKB is embeddable Python infrastructure for storing source material and turning it
+into structured knowledge. Its core has two parts:
 
-The React application is the user interface. Canonical-workflow paths remain a limited
-compatibility surface; see the [workflow lifecycle policy](docs/workflow-lifecycle-policy.md).
+- **Storage contracts** for collections, sources, parsed artifacts, records, spaces,
+  projections and evidence. Supply repositories backed by your existing database.
+- **Extraction workflows** for parsing/OCR, agent projection against a versioned
+  Space, schema validation and ordered Python post-processors.
 
-## Install during development
+The base package depends on Pydantic and JSON Schema validation. It does not select
+a database, read application settings, start services or require Docker, Node.js,
+SQLAlchemy or an agent framework. SQL storage and the previous materials/Web
+application are optional integrations.
 
-MKB is not yet published on PyPI. Install it directly from this repository instead.
-The `dev` branch is the current shared development build:
+## Install
 
-```bash
-python -m pip install --upgrade --force-reinstall \
-  "mat-know-base @ git+https://github.com/theAfish/mat_know_base.git@dev"
-```
-
-Install optional integrations only when they are needed. For example, the full
-materials application and HTTP server require:
+Python 3.10+ is required. From a checkout:
 
 ```bash
-python -m pip install --upgrade --force-reinstall \
-  "mat-know-base[materials,server] @ git+https://github.com/theAfish/mat_know_base.git@dev"
+python -m pip install .          # core; bring your own repositories and model
+python -m pip install '.[sql]'   # optional SQLite / SQLAlchemy adapter
 ```
 
-`--force-reinstall` is intentional while the package version remains `0.1.0`; it makes
-pip replace an older build from the moving development branch. For a reproducible bug
-report, replace `dev` with the commit SHA being tested. Git must be installed and the
-repository must be accessible to the user.
-
-To develop or debug with the maintainers, use an editable checkout instead. Python code
-changes then take effect without reinstalling:
+The package is not published on PyPI. For another project, install from a tested
+commit of this repository:
 
 ```bash
-git clone https://github.com/theAfish/mat_know_base.git
-cd mat_know_base
-python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+python -m pip install \
+  'mat-know-base[sql] @ git+https://github.com/theAfish/mat_know_base.git@<commit>'
 ```
 
-Use `-e ".[dev,materials,server]"` when working on the complete application. Rerun the
-install command after changing dependencies or package metadata.
+Extras include `postgres`, `s3`, `neo4j`, `ocr`, `pdf`, and `pdf-local`.
+`agents` enables the legacy ADK integration; `materials,server` enables the previous
+application. Local MinerU is isolated in `pdf-local` (also included by the full
+application extras). The core accepts your own OCR and agent callables.
 
-## Local quickstart
+## Python API
 
-Requirements: Python 3.10+, Node.js 20+, npm, Docker with Compose, and `libmagic`.
-For image OCR, install Tesseract. On macOS, `brew install libmagic tesseract`.
+Use `KnowledgeBase.from_repositories(RepositoryBundle(...), ...)` to connect your
+own storage. Repository protocols are in `mkb.repositories`; object storage and
+model protocols are in `mkb.ports`. No ORM/session interface is required.
+
+For a runnable example, explicitly choose SQLite and a filesystem object store:
+
+```python
+from pathlib import Path
+from mkb import CallableModelProvider, KnowledgeBase, SpaceDefinition
+
+# Replace this demo handler with your model or agent call.
+provider = CallableModelProvider(
+    lambda prompt, *, parameters: {"formula": "CaCO3"},
+    identity="demo",
+)
+
+with KnowledgeBase.from_url(
+    database_url="sqlite:///knowledge.db",
+    object_store_url=Path("objects").resolve().as_uri(),
+    model_provider=provider,
+) as kb:
+    kb.initialize()  # explicit, additive SQL schema creation
+    collection = kb.collections.create(name="Paper")
+    source = kb.sources.add_text(collection.id, "Calcite is CaCO3.")
+    space = kb.extraction.register_space(SpaceDefinition(
+        name="composition",
+        schema={
+            "type": "object",
+            "properties": {"formula": {"type": "string"}},
+            "required": ["formula"],
+            "additionalProperties": False,
+        },
+        system_prompt="Extract the chemical formula supported by the source.",
+    ))
+    result = kb.extraction.extract_source(source.id, space=space.id)
+    print(result.data)
+```
+
+This persists parsed text, a source record, a validated projection and evidence
+links. Register OCR with `kb.parsers.register(...)` or `register_adapter(...)`;
+register transformations with `kb.extraction.register_post_processor(...)` and
+reference their names in `SpaceDefinition.post_processors`.
+
+See [Python API](docs/python-api.md) for custom storage, OCR, models, post-processing,
+transactions and lifecycle. Runnable examples:
 
 ```bash
-git clone https://github.com/theAfish/mat_know_base.git
-cd mat_know_base
-make bootstrap
+python examples/custom_storage.py        # base package; no SQL
+python examples/extraction_quickstart.py # requires [sql]; no network/model account
+python examples/portable_quickstart.py   # requires [sql]; generic pipelines
 ```
 
-Review `.env` and set an LLM credential. For an OpenAI-compatible provider:
-
-```dotenv
-MKB_EXTRACTION_MODEL=openai/qwen-plus
-OPENAI_API_KEY=replace-me
-OPENAI_API_BASE=https://provider.example/v1
-```
-
-Then start the infrastructure and application:
+## Development
 
 ```bash
-make up
-make doctor
-make dev
+make bootstrap  # package development dependencies only
+make check      # package lint and portable tests
+make build      # Python wheel
 ```
 
-Open the React UI at <http://127.0.0.1:5173>. The API is at
-<http://127.0.0.1:8503> and its interactive OpenAPI documentation at
-<http://127.0.0.1:8503/docs>. PostgreSQL is the only infrastructure container:
-uploaded and processed bytes are stored in it too. Stop application servers with
-`Ctrl+C` and infrastructure with `make down`.
+The existing React application, HTTP server, CLI application commands and historical
+workflows remain compatibility features. They are excluded from the default
+development workflow. `make install-app`, `make dev`, and `make test-app` opt into
+them; provision their PostgreSQL server externally. No bundled container lifecycle
+is required or provided. Existing data is not migrated by this change.
 
-`make bootstrap` creates `.venv`, installs Python and locked frontend dependencies,
-and copies `.env.example` to `.env` without overwriting an existing file. Override
-tools when necessary, for example `make bootstrap BOOTSTRAP_PYTHON=python3.12` or
-`make test PYTHON=/path/to/python`.
-
-## First workflow
-
-Put a paper and its supplementary files in one directory:
-
-```text
-data/papers/smith2024/
-  paper.pdf
-  supplement.csv
-  notes.txt
-```
-
-Run the commands through the project interpreter:
-
-```bash
-.venv/bin/python -m mkb.cli ingest data/papers/smith2024 --label "Smith 2024"
-.venv/bin/python -m mkb.cli process
-.venv/bin/python -m mkb.cli extract --max-passes 2
-.venv/bin/python -m mkb.cli projects
-```
-
-The same workflow is available in the React UI. For library use, start with the
-[detailed Python API guide](docs/python-api.md) and
-[examples/basic_usage.py](examples/basic_usage.py).
-
-For a Docker-free library project, install the lightweight base package and use
-SQLite plus filesystem storage. The reusable example is in the Python API guide; from a
-source checkout, it can also be run directly:
-
-```bash
-python -m pip install --upgrade --force-reinstall \
-  "mat-know-base @ git+https://github.com/theAfish/mat_know_base.git@dev"
-# From this repository checkout:
-python examples/portable_quickstart.py
-```
-
-For backend integrations, install extras from Git as well, such as
-`"mat-know-base[postgres,s3] @ git+https://github.com/theAfish/mat_know_base.git@dev"`.
-
-When MKB is released on PyPI, the Git URLs above will be replaced by normal package
-installs.
-
-## Common development commands
-
-```bash
-make doctor       # read-only environment and dependency diagnostics
-make lint         # Ruff and TypeScript checks
-make test         # Python tests
-make build        # Python wheel and production React bundle
-make check        # complete local validation
-```
-
-## Documentation
-
-Documentation is organized by role in the [documentation index](docs/README.md):
-
-- Users and automation authors: [Python API](docs/python-api.md) and
-  [HTTP API contract](docs/api-contract.md)
-- Contributors: [developer setup](docs/development.md),
-  [architecture and ownership](docs/architecture-map.md), and
-  [contribution guide](CONTRIBUTING.md)
-- Operators and security reviewers: [operator runbook](docs/operator-runbook.md),
-  [backup and restore](docs/backup-restore.md), [upgrades](docs/upgrades.md), and
-  [security model](docs/security.md)
+Start with the [documentation index](docs/README.md),
+[architecture](docs/architecture-map.md) and [development guide](docs/development.md).

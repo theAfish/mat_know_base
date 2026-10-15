@@ -1,4 +1,4 @@
-"""mat-know-base: Scientific knowledge extraction and knowledge graph construction."""
+"""Composable storage and extraction infrastructure; optional adapters load on demand."""
 
 from mkb.exceptions import (
     BackendUnavailableError,
@@ -10,6 +10,17 @@ from mkb.exceptions import (
     ValidationError,
 )
 from mkb.sdk import KnowledgeBase, MKBConfig
+from mkb.storage import RepositoryBundle, SchemaManager
+from mkb.extraction import (
+    CallableModelProvider,
+    ExtractionContext,
+    ExtractionResult,
+    ExtractionService,
+    ParsedContent,
+    PostProcessorDefinition,
+    PostProcessorRegistry,
+    SpaceDefinition,
+)
 from mkb.application_services import AssistantService
 from mkb.materials import (
     MaterialFeedback,
@@ -76,6 +87,16 @@ from mkb.registries import Parser, ParserContext, Parsers, Steps
 __version__ = "0.1.0"
 
 __all__ = [
+    "CallableModelProvider",
+    "ExtractionContext",
+    "ExtractionResult",
+    "ExtractionService",
+    "ParsedContent",
+    "PostProcessorDefinition",
+    "PostProcessorRegistry",
+    "RepositoryBundle",
+    "SchemaManager",
+    "SpaceDefinition",
     "Artifact",
     "AssistantService",
     "BackendUnavailableError",

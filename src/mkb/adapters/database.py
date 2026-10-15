@@ -5,9 +5,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
+try:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import Engine
+    from sqlalchemy.orm import Session, sessionmaker
+except ModuleNotFoundError as exc:
+    if exc.name != "sqlalchemy":
+        raise
+    raise ImportError(
+        "SQL persistence requires the optional dependency: pip install 'mat-know-base[sql]'"
+    ) from exc
 
 from mkb.ports import Capabilities
 

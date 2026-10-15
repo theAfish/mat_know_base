@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from mkb.db.models import ProcessingType
+from mkb.processors.types import ProcessingType
 
 logger = logging.getLogger(__name__)
 

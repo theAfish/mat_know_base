@@ -11,8 +11,6 @@ import logging
 import tempfile
 from pathlib import Path
 
-from mineru.cli.common import do_parse
-
 from mkb import runtime_settings
 from mkb.processors.base import ProcessingResult, TextualProcessor
 
@@ -73,6 +71,8 @@ class PDFProcessor(TextualProcessor):
 
     def _process_with_mineru(self, data: bytes, filename: str) -> ProcessingResult:
         """Process using MinerU's local VLM backend."""
+        from mineru.cli.common import do_parse
+
         stem = Path(filename).stem
 
         with tempfile.TemporaryDirectory() as output_dir:

@@ -1,9 +1,10 @@
 # Security model
 
-MKB defaults to trusted, single-user, localhost-only operation. Development and
-local modes reject non-loopback API binds. PostgreSQL — which also holds object
-bytes under the default `sql` object-store backend — is published on loopback only
-by the supplied Compose file.
+This document covers the optional legacy HTTP application. It defaults to trusted,
+single-user, localhost-only operation. Development and local modes reject
+non-loopback API binds. The host deployment owns database/network access controls;
+MKB no longer provisions or exposes database services. Embedded package consumers
+apply their host application's authorization at the repository boundary.
 
 ## Authentication and roles
 

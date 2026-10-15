@@ -5,7 +5,8 @@ Describe the user-visible change and why it is needed.
 ## Validation
 
 - [ ] `make lint`
-- [ ] `make test`
+- [ ] `make test` (portable package contracts)
+- [ ] `make test-app` (if legacy application behavior changed)
 - [ ] `make test-frontend` (or not applicable, explained below)
 - [ ] Documentation updated for observable API/operator behavior
 
