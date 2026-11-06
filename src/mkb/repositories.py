@@ -396,6 +396,8 @@ class Sources:
         source_id: str | uuid.UUID | None = None,
         max_bytes: int | None = None,
         chunk_size: int = 256 * 1024,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
     ) -> Source:
         """Store bounded input chunks without taking ownership of the handle."""
         clean_filename = filename.strip()
@@ -414,7 +416,8 @@ class Sources:
         if self._object_store.exists(self._default_bucket, key):
             raise ConflictError(f"Source object already exists: {key}")
         info = self._object_store.put_stream(self._default_bucket, key, stream,
-            max_bytes=max_bytes, chunk_size=chunk_size)
+            max_bytes=max_bytes, chunk_size=chunk_size,
+            expected_size=expected_size, expected_sha256=expected_sha256)
         try:
             now = datetime.now(timezone.utc)
             source = Source(
@@ -655,6 +658,8 @@ class Artifacts:
         artifact_id: str | uuid.UUID | None = None,
         max_bytes: int | None = None,
         chunk_size: int = 256 * 1024,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
     ) -> Artifact:
         """Store bounded input chunks without taking ownership of the handle."""
         clean_processing_type = processing_type.strip()
@@ -677,7 +682,8 @@ class Artifacts:
         if self._object_store.exists(self._default_bucket, key):
             raise ConflictError(f"Artifact object already exists: {key}")
         info = self._object_store.put_stream(self._default_bucket, key, stream,
-            max_bytes=max_bytes, chunk_size=chunk_size)
+            max_bytes=max_bytes, chunk_size=chunk_size,
+            expected_size=expected_size, expected_sha256=expected_sha256)
         try:
             now = datetime.now(timezone.utc)
             artifact = Artifact(

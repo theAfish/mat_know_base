@@ -2,6 +2,7 @@ import hashlib
 import io
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import insert, select
@@ -110,3 +111,33 @@ def test_source_add_file_and_artifact_stream_use_canonical_io_without_read_bytes
         assert source.size == artifact.size == path.stat().st_size
         assert source.sha256 == artifact.sha256
         assert kb.sources.get(source.id).storage.key == f"sources/{source.id}"
+
+
+@pytest.mark.parametrize('resource', ['sources', 'artifacts'])
+@pytest.mark.parametrize('mismatch', ['size', 'checksum'])
+def test_stream_registration_verifies_before_publish_and_allows_same_id_retry(tmp_path, resource, mismatch):
+    with KnowledgeBase.from_url(database_url=f"sqlite:///{tmp_path / 'knowledge.db'}", object_store_url="sql:") as kb:
+        kb.initialize()
+        collection = kb.collections.create(name="Verified import")
+        identifier = uuid4()
+        content = b'original retained file'
+        expected_size = len(content)
+        expected_sha256 = hashlib.sha256(content).hexdigest()
+        service = getattr(kb, resource)
+        if resource == 'sources':
+            parent = collection.id
+            arguments = {'filename': 'input.bin', 'source_id': identifier}
+        else:
+            parent = kb.sources.add_bytes(collection.id, b'source', filename='source.bin').id
+            arguments = {'processing_type': 'COPY', 'format': 'bin', 'artifact_id': identifier}
+        with pytest.raises(ValueError, match='size|checksum'):
+            service.add_stream(parent, io.BytesIO(content), **arguments,
+                expected_size=expected_size + 1 if mismatch == 'size' else expected_size,
+                expected_sha256='0' * 64 if mismatch == 'checksum' else expected_sha256)
+        assert service.get(identifier) is None
+        assert not kb.object_store.exists(service._default_bucket, f'{resource}/{identifier}')
+        stored = service.add_stream(parent, io.BytesIO(content), **arguments,
+            expected_size=expected_size, expected_sha256=expected_sha256)
+        assert stored.id == identifier and stored.size == expected_size and stored.sha256 == expected_sha256
+        with service.open(identifier) as stream:
+            assert stream.read() == content

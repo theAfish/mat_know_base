@@ -128,6 +128,8 @@ Use `kb.sources.add_stream(collection_id, binary_file, filename="data.xlsx")` or
 `kb.artifacts.add_stream(source_id, binary_file, processing_type=..., format=...)`
 for file uploads. Both borrow the input handle and leave it open. `max_bytes` and
 `chunk_size` are optional; MKB does not impose a hosting-specific file-size limit.
+Supply `expected_size` and `expected_sha256` when copying a verified retained file;
+both are checked before its object or Source/Artifact record is published.
 `add_file` opens a file directly, and the existing `add_bytes` helpers remain
 available for callers that already hold bytes. Use `kb.sources.open(source_id)`
 and `kb.artifacts.open(artifact_id)` with a context manager to read stored files.
