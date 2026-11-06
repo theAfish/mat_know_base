@@ -122,6 +122,30 @@ For backend integrations, install extras from Git as well, such as
 When MKB is released on PyPI, the Git URLs above will be replaced by normal package
 installs.
 
+### Streaming files in library integrations
+
+Use `kb.sources.add_stream(collection_id, binary_file, filename="data.xlsx")` or
+`kb.artifacts.add_stream(source_id, binary_file, processing_type=..., format=...)`
+for file uploads. Both borrow the input handle and leave it open. `max_bytes` and
+`chunk_size` are optional; MKB does not impose a hosting-specific file-size limit.
+`add_file` opens a file directly, and the existing `add_bytes` helpers remain
+available for callers that already hold bytes. Use `kb.sources.open(source_id)`
+and `kb.artifacts.open(artifact_id)` with a context manager to read stored files.
+
+The filesystem, SQL and S3 adapters implement `put_stream` with bounded reads and
+verify optional `expected_size` / `expected_sha256` before publishing a write.
+The SQL adapter adds an `object_chunks` table while preserving existing object
+URIs and legacy blob rows. New readers support both formats, but old binaries
+cannot read newly written chunked objects. Upgrade every reader before writing
+new objects; an older binary is not a compatible rollback target for those files.
+
+Processors accept paths or binary handles through `process_file`. Nonseekable
+inputs spool to disk. Excel conversion reads the original workbook through a
+seekable handle, and MinerU API uploads stream from a file. Conversion results
+and analytical dataframes still occupy memory. The native MinerU backend retains
+its upstream `pdf_bytes_list` allocation requirement and materializes the PDF;
+the streaming transport does not remove that converter-specific limitation.
+
 ## Common development commands
 
 ```bash

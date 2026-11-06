@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+import asyncio
+import io
 from uuid import uuid4
 
 import pytest
@@ -15,8 +17,14 @@ class _FakeContentService:
     def get(self, _identifier):
         return self.row
 
-    def read_bytes(self, _identifier):
-        return self.content
+    def open(self, _identifier):
+        return io.BytesIO(self.content)
+
+
+def _body(response):
+    async def consume():
+        return b"".join([chunk async for chunk in response.body_iterator])
+    return asyncio.run(consume())
 
 
 def _kb(*, source=None, artifact=None, content=b""):
@@ -42,7 +50,7 @@ def test_get_project_asset_content_returns_inline_pdf(monkeypatch):
 
     response = projects.get_project_asset_content(str(project_id), str(row.id))
 
-    assert response.body == b"%PDF-test"
+    assert _body(response) == b"%PDF-test"
     assert response.media_type == "application/pdf"
     assert response.headers["content-disposition"].startswith('inline; filename=".pdf"')
     assert "filename*=UTF-8''" in response.headers["content-disposition"]
@@ -67,7 +75,7 @@ def test_get_project_processed_asset_content_returns_markdown(monkeypatch):
         str(project_id), str(artifact.id)
     )
 
-    assert response.body == b"# Paper\n"
+    assert _body(response) == b"# Paper\n"
     assert response.media_type == "text/markdown"
     assert response.charset == "utf-8"
 

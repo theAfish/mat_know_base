@@ -83,10 +83,27 @@ class _Paginator:
 class _S3Client:
     def __init__(self):
         self.values = {}
+        self.uploads = {}
         self.closed = False
 
     def put_object(self, *, Bucket, Key, Body):
         self.values[(Bucket, Key)] = bytes(Body)
+
+    def create_multipart_upload(self, *, Bucket, Key):
+        identifier = str(uuid.uuid4())
+        self.uploads[identifier] = {}
+        return {"UploadId": identifier}
+
+    def upload_part(self, *, Bucket, Key, UploadId, PartNumber, Body):
+        self.uploads[UploadId][PartNumber] = bytes(Body)
+        return {"ETag": str(PartNumber)}
+
+    def complete_multipart_upload(self, *, Bucket, Key, UploadId, MultipartUpload):
+        parts = self.uploads.pop(UploadId)
+        self.values[(Bucket, Key)] = b"".join(parts[part["PartNumber"]] for part in MultipartUpload["Parts"])
+
+    def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        self.uploads.pop(UploadId, None)
 
     def get_object(self, *, Bucket, Key):
         return {"Body": io.BytesIO(self.values[(Bucket, Key)])}

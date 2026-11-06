@@ -69,8 +69,8 @@ def _http_json(
         raise MinerUApiError(f"Non-JSON response from {url}: {raw[:200]!r}") from e
 
 
-def _http_put_bytes(url: str, data: bytes, timeout: int = 300) -> None:
-    """Upload raw bytes to a MinerU pre-signed URL.
+def _http_put_stream(url: str, stream, timeout: int = 300) -> None:
+    """Upload a seekable file to a MinerU pre-signed URL.
 
     Uses ``requests`` so we get a clean PUT without urllib's default
     ``Accept-Encoding``/``User-Agent``/``Connection`` headers, which can
@@ -79,8 +79,9 @@ def _http_put_bytes(url: str, data: bytes, timeout: int = 300) -> None:
     Per the MinerU docs, the request must NOT set ``Content-Type``.
     """
     try:
-        # `requests` sends Content-Length but not Content-Type when `data` is bytes.
-        resp = requests.put(url, data=data, timeout=timeout)
+        # requests determines Content-Length using seek/tell and reads fixed
+        # blocks. It does not add Content-Type for an ordinary binary file.
+        resp = requests.put(url, data=stream, timeout=timeout)
     except requests.RequestException as e:
         raise MinerUApiError(f"Upload network error: {e}") from e
     if resp.status_code >= 400:
@@ -192,9 +193,9 @@ class MinerUApiPDFProcessor(TextualProcessor):
 
     # ─────────────────────────────────────────────────────────────────────────
 
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
         try:
-            return self._process(data, filename)
+            return self._process(stream, filename)
         except Exception as e:  # noqa: BLE001
             logger.warning("MinerU API processing failed for %s: %s", filename, e)
             return ProcessingResult(
@@ -204,12 +205,12 @@ class MinerUApiPDFProcessor(TextualProcessor):
                 error=f"MinerU API processing failed: {e}",
             )
 
-    def _process(self, data: bytes, filename: str) -> ProcessingResult:
+    def _process(self, stream, filename: str) -> ProcessingResult:
         stem = Path(filename).stem
 
         # 1+2. Get upload URL and PUT bytes
         batch_id, upload_url = self._request_upload_url(filename)
-        _http_put_bytes(upload_url, data, timeout=max(60, self.timeout))
+        _http_put_stream(upload_url, stream, timeout=max(60, self.timeout))
 
         # 3. Poll until done
         zip_url = self._poll_until_done(batch_id)

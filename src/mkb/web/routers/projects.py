@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+
+from mkb.file_io import stream_chunks
 
 from mkb.web._helpers import (
     _parse_uuid,
@@ -23,6 +26,11 @@ from mkb.web._models import (
 )
 
 router = APIRouter()
+
+
+def _content(open_file):
+    with open_file() as stream:
+        yield from stream_chunks(stream)
 
 
 _asset_media_type = asset_media_type
@@ -100,8 +108,8 @@ def get_project_asset_content(project_id: str, asset_id: str):
             status_code=415,
             detail="Preview is only available for PDF and Markdown files",
         )
-    return Response(
-        content=kb.sources.read_bytes(source.id),
+    return StreamingResponse(
+        _content(lambda: kb.sources.open(source.id)),
         media_type=media_type,
         headers=_inline_headers(source.filename),
     )
@@ -126,8 +134,8 @@ def get_project_processed_asset_content(project_id: str, processed_asset_id: str
             status_code=415,
             detail="Preview is only available for PDF and Markdown files",
         )
-    return Response(
-        content=kb.artifacts.read_bytes(artifact.id),
+    return StreamingResponse(
+        _content(lambda: kb.artifacts.open(artifact.id)),
         media_type=media_type,
         headers=_inline_headers(Path(filename).name),
     )

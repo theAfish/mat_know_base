@@ -3,7 +3,7 @@ Processor for text-based files: TXT, DOCX, MARKDOWN, etc.
 Converts them to normalized Markdown format.
 """
 
-import io
+import codecs
 import logging
 
 from mkb.processors.base import ProcessingResult, TextualProcessor
@@ -29,16 +29,16 @@ class TextProcessor(TextualProcessor):
             or mime_type.startswith("text/")
         )
     
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
         """Convert text or document to Markdown."""
         try:
             lower_name = filename.lower()
             
             if lower_name.endswith(".docx"):
-                return self._process_docx(data)
+                return self._process_docx(stream)
             else:
                 # Plain text is already markdown-compatible
-                return self._process_plain_text(data, filename)
+                return self._process_plain_text(stream, filename)
         except Exception as e:
             return ProcessingResult(
                 processing_type=self.get_processing_type(),
@@ -47,14 +47,20 @@ class TextProcessor(TextualProcessor):
                 error=f"Text processing failed: {str(e)}"
             )
     
-    def _process_plain_text(self, data: bytes, filename: str) -> ProcessingResult:
+    def _process_plain_text(self, stream, filename: str) -> ProcessingResult:
         """Process plain text files."""
+        from mkb.file_io import stream_chunks
+        start = stream.tell()
+        def decode(encoding):
+            decoder = codecs.getincrementaldecoder(encoding)()
+            parts = [decoder.decode(chunk) for chunk in stream_chunks(stream)]
+            parts.append(decoder.decode(b'', final=True))
+            return ''.join(parts)
         try:
-            # Try UTF-8 first
-            text = data.decode('utf-8')
+            text = decode('utf-8')
         except UnicodeDecodeError:
-            # Fallback to latin-1
-            text = data.decode('latin-1', errors='replace')
+            stream.seek(start)
+            text = decode('latin-1')
         
         # Add filename as header if not markdown
         if not filename.lower().endswith(".md"):
@@ -70,7 +76,7 @@ class TextProcessor(TextualProcessor):
             }
         )
     
-    def _process_docx(self, data: bytes) -> ProcessingResult:
+    def _process_docx(self, stream) -> ProcessingResult:
         """Process DOCX files using python-docx."""
         try:
             from docx import Document
@@ -79,9 +85,7 @@ class TextProcessor(TextualProcessor):
                 "python-docx not installed. Install with: pip install python-docx"
             )
         
-        # Parse DOCX from bytes
-        docx_file = io.BytesIO(data)
-        doc = Document(docx_file)
+        doc = Document(stream)
         
         # Extract text while preserving structure
         markdown_parts = []

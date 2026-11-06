@@ -76,7 +76,6 @@ def _inspect_manual_processed_dir(
         primary_path = sorted(files, key=_priority)[0]
 
     primary_relpath = primary_path.relative_to(root).as_posix()
-    primary_bytes = primary_path.read_bytes()
 
     ext = primary_path.suffix.lower()
     if ext in {".md", ".markdown", ".txt"}:
@@ -95,11 +94,16 @@ def _inspect_manual_processed_dir(
     )
 
     bundle_hash = hashlib.sha256()
-    bundle_hash.update(primary_bytes)
+    with primary_path.open("rb") as stream:
+        while chunk := stream.read(256 * 1024):
+            bundle_hash.update(chunk)
     for relpath in artifact_files:
-        data = (root / relpath).read_bytes()
+        digest = hashlib.sha256()
+        with (root / relpath).open("rb") as stream:
+            while chunk := stream.read(256 * 1024):
+                digest.update(chunk)
         bundle_hash.update(relpath.encode("utf-8"))
-        bundle_hash.update(_sha256_bytes(data).encode("utf-8"))
+        bundle_hash.update(digest.hexdigest().encode("utf-8"))
 
     from mkb.db.models import ProcessingType
 
@@ -110,7 +114,7 @@ def _inspect_manual_processed_dir(
         "processing_type": ProcessingType(processing_type),
         "output_format": primary_path.suffix.lstrip(".") or "bin",
         "artifact_files": artifact_files,
-        "size_bytes": len(primary_bytes),
+        "size_bytes": primary_path.stat().st_size,
         "sha256": bundle_hash.hexdigest(),
     }
 

@@ -66,15 +66,16 @@ class CSVProcessor(DataframeProcessor):
             mime_type.startswith("text/")
         )
     
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
         """Convert CSV to Parquet with metadata."""
         try:
             # Detect delimiter
-            text = data.decode('utf-8')
+            position = stream.tell()
+            text = stream.read(8192).decode('utf-8', errors='replace')
             delimiter = self._detect_delimiter(text)
-            
+            stream.seek(position)
             # Parse with pandas
-            df = pd.read_csv(io.StringIO(text), delimiter=delimiter)
+            df = pd.read_csv(stream, delimiter=delimiter)
             
             return dataframe_to_result(df, "csv")
         except Exception as e:
@@ -116,26 +117,23 @@ class ExcelProcessor(DataframeProcessor):
             or mime_type in self.supported_mime_types
         )
     
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
         """Convert Excel to Parquet with metadata about all sheets."""
         try:
             # Read all sheets
-            excel_file = io.BytesIO(data)
-            xls = pd.ExcelFile(excel_file)
-            
-            # For MVP, combine first sheet (or could store metadata about all)
-            first_sheet = xls.sheet_names[0] if xls.sheet_names else None
-            if not first_sheet:
-                raise ValueError("Excel file has no sheets")
-            
-            df = pd.read_excel(excel_file, sheet_name=first_sheet)
-            
-            metadata = {
-                "method": "excel",
-                "num_sheets": len(xls.sheet_names),
-                "sheet_names": xls.sheet_names,
-                "primary_sheet": first_sheet,
-            }
+            with pd.ExcelFile(stream) as xls:
+                # The engine reads the seekable ZIP directly, without a second
+                # in-memory copy of embedded workbook images.
+                first_sheet = xls.sheet_names[0] if xls.sheet_names else None
+                if not first_sheet:
+                    raise ValueError("Excel file has no sheets")
+                df = pd.read_excel(xls, sheet_name=first_sheet)
+                metadata = {
+                    "method": "excel",
+                    "num_sheets": len(xls.sheet_names),
+                    "sheet_names": xls.sheet_names,
+                    "primary_sheet": first_sheet,
+                }
             
             return dataframe_to_result(df, "excel", extra_metadata=metadata)
         except Exception as e:
@@ -158,11 +156,14 @@ class JSONProcessor(DataframeProcessor):
             or mime_type == "application/json"
         )
     
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
         """Convert JSON to Parquet if it has tabular structure."""
         try:
-            text = data.decode('utf-8')
-            parsed = json.loads(text)
+            text = io.TextIOWrapper(stream, encoding='utf-8')
+            try:
+                parsed = json.load(text)
+            finally:
+                text.detach()
             
             # Try to convert to DataFrame
             df = self._parse_to_dataframe(parsed)
