@@ -57,6 +57,7 @@ SUPPORTED_METHODS = {
         "add_directory",
         "add_file",
         "add_records",
+        "add_stream",
         "add_text",
         "add_uri",
         "content_exists",
@@ -68,6 +69,7 @@ SUPPORTED_METHODS = {
     },
     Artifacts: {
         "add_bytes",
+        "add_stream",
         "content_exists",
         "get",
         "list",

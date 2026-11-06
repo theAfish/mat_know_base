@@ -8,12 +8,10 @@ MinerU (https://github.com/opendatalab/MinerU) is specialized for:
 """
 
 import logging
+import io
 import tempfile
 from pathlib import Path
 
-from mineru.cli.common import do_parse
-
-from mkb import runtime_settings
 from mkb.processors.base import ProcessingResult, TextualProcessor
 
 logger = logging.getLogger(__name__)
@@ -34,12 +32,13 @@ class PDFProcessor(TextualProcessor):
     def can_process(self, mime_type: str, filename: str) -> bool:
         return mime_type in self.supported_mime_types or filename.lower().endswith(".pdf")
 
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
+        from mkb import runtime_settings
         backend = runtime_settings.get_setting("pdf_backend")
         try:
             if backend == "mineru_api":
-                return self._process_with_mineru_api(data, filename)
-            return self._process_with_mineru(data, filename)
+                return self._process_with_mineru_api(stream, filename)
+            return self._process_with_mineru(stream, filename)
         except Exception as e:
             return ProcessingResult(
                 processing_type=self.get_processing_type(),
@@ -48,7 +47,8 @@ class PDFProcessor(TextualProcessor):
                 error=f"PDF processing failed: {str(e)}"
             )
 
-    def _process_with_mineru_api(self, data: bytes, filename: str) -> ProcessingResult:
+    def _process_with_mineru_api(self, stream, filename: str) -> ProcessingResult:
+        from mkb import runtime_settings
         # Imported lazily so installations without API usage incur no cost.
         from mkb.processors.pdf_mineru_api import MinerUApiPDFProcessor
 
@@ -57,7 +57,7 @@ class PDFProcessor(TextualProcessor):
             logger.warning(
                 "pdf_backend=mineru_api but no token set; falling back to local backend"
             )
-            return self._process_with_mineru(data, filename)
+            return self._process_with_mineru(stream, filename)
 
         proc = MinerUApiPDFProcessor(
             api_base=runtime_settings.get_setting("mineru_api_base"),
@@ -69,17 +69,26 @@ class PDFProcessor(TextualProcessor):
             enable_table=bool(runtime_settings.get_setting("mineru_api_enable_table")),
             timeout=int(runtime_settings.get_setting("mineru_api_timeout")),
         )
-        return proc.process(data, filename)
+        return proc.process_file(stream, filename)
 
-    def _process_with_mineru(self, data: bytes, filename: str) -> ProcessingResult:
+    def _process_with_mineru(self, stream, filename: str) -> ProcessingResult:
         """Process using MinerU's local VLM backend."""
+        from mineru.cli.common import do_parse
+        from mkb.file_io import stream_chunks
         stem = Path(filename).stem
+
+        # This legacy native API requires pdf_bytes_list. Its document allocation
+        # is a converter limitation, not the object transport contract; the cloud
+        # backend below accepts seekable files without this materialization.
+        data = io.BytesIO()
+        for chunk in stream_chunks(stream):
+            data.write(chunk)
 
         with tempfile.TemporaryDirectory() as output_dir:
             do_parse(
                 output_dir=output_dir,
                 pdf_file_names=[stem],
-                pdf_bytes_list=[data],
+                pdf_bytes_list=[data.getvalue()],
                 p_lang_list=["en"],
                 backend="vlm-transformers",
                 f_draw_layout_bbox=False,

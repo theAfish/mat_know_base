@@ -3,7 +3,6 @@ Processor for image files.
 Extracts metadata and optionally performs OCR.
 """
 
-import io
 import json
 import logging
 
@@ -34,15 +33,17 @@ class BasicImageProcessor(ImageProcessor):
             or lower_name.endswith((".jpg", ".jpeg", ".png", ".gif", ".tiff", ".bmp", ".webp"))
         )
     
-    def process(self, data: bytes, filename: str) -> ProcessingResult:
+    def process_stream(self, stream, filename: str) -> ProcessingResult:
         """Extract image metadata and optionally perform OCR."""
         try:
-            metadata = self._extract_metadata(data)
+            position = stream.tell()
+            metadata = self._extract_metadata(stream)
             
             # Try OCR if available
             ocr_text = None
             try:
-                ocr_text = self._extract_text_with_ocr(data)
+                stream.seek(position)
+                ocr_text = self._extract_text_with_ocr(stream)
             except Exception as e:
                 logger.warning(f"OCR failed for {filename}: {e}")
             
@@ -71,7 +72,7 @@ class BasicImageProcessor(ImageProcessor):
             )
     
     @staticmethod
-    def _extract_metadata(data: bytes) -> dict:
+    def _extract_metadata(stream) -> dict:
         """Extract basic image metadata using PIL."""
         try:
             from PIL import Image
@@ -79,7 +80,7 @@ class BasicImageProcessor(ImageProcessor):
         except ImportError:
             raise ImportError("Pillow not installed. Install with: pip install Pillow")
         
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(stream)
         
         metadata = {
             "format": img.format,
@@ -103,7 +104,7 @@ class BasicImageProcessor(ImageProcessor):
         return metadata
     
     @staticmethod
-    def _extract_text_with_ocr(data: bytes) -> str | None:
+    def _extract_text_with_ocr(stream) -> str | None:
         """
         Extract text using Tesseract OCR.
         Returns None if OCR is not available or fails.
@@ -116,7 +117,7 @@ class BasicImageProcessor(ImageProcessor):
             return None
         
         try:
-            img = Image.open(io.BytesIO(data))
+            img = Image.open(stream)
             text = pytesseract.image_to_string(img)
             return text if text.strip() else None
         except Exception as e:

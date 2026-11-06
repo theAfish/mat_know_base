@@ -523,7 +523,9 @@ class MaintenanceService:
             status = "already_present"
             applied = False
         elif apply:
-            kb.object_store.put_bytes(bucket, key, path.read_bytes())
+            with path.open("rb") as stream:
+                kb.object_store.put_stream(bucket, key, stream,
+                    expected_size=expected_size, expected_sha256=expected_sha256)
             with kb.object_store.open(bucket, key) as stream:
                 stored_sha256 = digest(stream)
             if stored_sha256 != expected_sha256:

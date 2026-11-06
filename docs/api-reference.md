@@ -667,6 +667,10 @@ Typed source metadata and content access for one SDK instance.
 
 
 
+#### `add_stream(collection_id: 'str | uuid.UUID', stream: 'BinaryIO', *, filename: 'str', media_type: 'str' = 'application/octet-stream', metadata: 'dict[str, Any] | None' = None, source_id: 'str | uuid.UUID | None' = None, max_bytes: 'int | None' = None, chunk_size: 'int' = 262144, expected_size: 'int | None' = None, expected_sha256: 'str | None' = None) -> 'Source'`
+
+Store bounded input chunks without taking ownership of the handle.
+
 #### `add_text(collection_id: 'str | uuid.UUID', text: 'str', *, filename: 'str' = 'text.txt', media_type: 'str' = 'text/plain; charset=utf-8', metadata: 'dict[str, Any] | None' = None, source_id: 'str | uuid.UUID | None' = None) -> 'Source'`
 
 
@@ -706,6 +710,10 @@ Typed processed-artifact metadata and content access.
 #### `add_bytes(source_id: 'str | uuid.UUID', data: 'bytes', *, processing_type: 'str', format: 'str', primary_path: 'str | None' = None, metadata: 'dict[str, Any] | None' = None, artifact_id: 'str | uuid.UUID | None' = None) -> 'Artifact'`
 
 
+
+#### `add_stream(source_id: 'str | uuid.UUID', stream: 'BinaryIO', *, processing_type: 'str', format: 'str', primary_path: 'str | None' = None, metadata: 'dict[str, Any] | None' = None, artifact_id: 'str | uuid.UUID | None' = None, max_bytes: 'int | None' = None, chunk_size: 'int' = 262144, expected_size: 'int | None' = None, expected_sha256: 'str | None' = None) -> 'Artifact'`
+
+Store bounded input chunks without taking ownership of the handle.
 
 #### `content_exists(artifact_id: 'str | uuid.UUID') -> 'bool'`
 

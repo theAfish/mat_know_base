@@ -87,13 +87,14 @@ def _ingest_file(
         return existing, False
 
     mime = detect_mime(path)
-    data = path.read_bytes()
 
     bucket = raw_bucket
     s3_key = f"{file_hash[:2]}/{file_hash[2:4]}/{file_hash}"
 
     if not object_store.exists(bucket, s3_key):
-        object_store.put_bytes(bucket, s3_key, data)
+        with path.open("rb") as stream:
+            object_store.put_stream(bucket, s3_key, stream,
+                expected_sha256=file_hash, expected_size=fingerprint.size_bytes)
         logger.info("Uploaded %s -> s3://%s/%s", path.name, bucket, s3_key)
 
     asset = Asset(

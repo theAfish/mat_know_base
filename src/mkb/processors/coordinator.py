@@ -4,8 +4,10 @@ Manages routing to appropriate processors, deduplication, and metadata tracking.
 """
 
 import logging
+import tempfile
 import uuid
 from dataclasses import dataclass
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable
 
@@ -15,6 +17,7 @@ from mkb.processors.image_processor import BasicImageProcessor
 from mkb.processors.pdf_processor import PDFProcessor
 from mkb.processors.text_processor import TextProcessor
 from mkb.ports import Database, ObjectStore
+from mkb.file_io import stream_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +286,7 @@ def process_asset(
         if progress_callback:
             progress_callback({"message": message, **extra})
 
-    with database.session() as session:
+    with ExitStack() as inputs, database.session() as session:
         # Fetch the asset
         asset = session.query(Asset).filter_by(asset_id=asset_id).first()
         if not asset:
@@ -303,7 +306,13 @@ def process_asset(
         
         # Download raw file from S3
         try:
-            raw_data = object_store.get_bytes(asset.s3_bucket, asset.s3_key)
+            # A temporary seekable file supports ZIP/PDF engines while keeping
+            # original bytes out of a whole-file Python buffer.
+            raw_file = inputs.enter_context(tempfile.TemporaryFile("w+b"))
+            with object_store.open(asset.s3_bucket, asset.s3_key) as source:
+                for chunk in stream_chunks(source):
+                    raw_file.write(chunk)
+            raw_file.seek(0)
             _emit(f"Downloaded {asset.filename}", asset_id=str(asset_id), filename=asset.filename, stage="downloaded")
         except Exception as e:
             logger.error(f"Failed to download raw asset {asset_id}: {e}")
@@ -323,7 +332,9 @@ def process_asset(
                 "reason": f"Failed to download raw asset: {e}",
             }
 
-        processor = _select_processor(asset, raw_data)
+        sample = raw_file.read(8192)
+        raw_file.seek(0)
+        processor = _select_processor(asset, sample)
         if not processor:
             _emit(f"Skipped {asset.filename}: no processor", asset_id=str(asset_id), filename=asset.filename, stage="skipped")
             logger.info(f"No processor found for {asset.filename} ({asset.mime_type})")
@@ -355,7 +366,7 @@ def process_asset(
         # Process the file
         try:
             _emit(f"Converting {asset.filename}", asset_id=str(asset_id), filename=asset.filename, stage="converting")
-            result = processor.process(raw_data, asset.filename)
+            result = processor.process_file(raw_file, asset.filename)
             
             if not result.is_success():
                 # Processing failed

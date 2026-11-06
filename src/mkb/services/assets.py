@@ -206,16 +206,12 @@ def link_manual_processed_data(
 
         # Upload primary file + artifacts through the configured object store so
         # downstream consumers can fetch the bundle whichever backend is configured.
-        object_store.put_bytes(
-            processed_bucket,
-            s3_key,
-            (bundle_root / bundle["primary_relpath"]).read_bytes(),
-        )
+        with (bundle_root / bundle["primary_relpath"]).open("rb") as stream:
+            object_store.put_stream(processed_bucket, s3_key, stream)
         for relpath in bundle["artifact_files"]:
             artifact_key = f"{project.project_id}/{target_asset.asset_id}/{relpath}"
-            object_store.put_bytes(
-                processed_bucket, artifact_key, (bundle_root / relpath).read_bytes()
-            )
+            with (bundle_root / relpath).open("rb") as stream:
+                object_store.put_stream(processed_bucket, artifact_key, stream)
 
         metadata = {
             "project_id": str(project.project_id),

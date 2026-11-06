@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import hashlib
 import mimetypes
@@ -376,18 +377,29 @@ class Sources:
     def get(self, source_id: str | uuid.UUID) -> Source | None:
         return self._repository.get(_identifier(source_id, "source_id"))
 
-    def add_bytes(
+    def add_bytes(self, collection_id: str | uuid.UUID, data: bytes, *, filename: str,
+                  media_type: str = "application/octet-stream", metadata: dict[str, Any] | None = None,
+                  source_id: str | uuid.UUID | None = None) -> Source:
+        if not isinstance(data, bytes):
+            raise ValidationError("data must be bytes")
+        return self.add_stream(collection_id, io.BytesIO(data), filename=filename,
+            media_type=media_type, metadata=metadata, source_id=source_id)
+
+    def add_stream(
         self,
         collection_id: str | uuid.UUID,
-        data: bytes,
+        stream: BinaryIO,
         *,
         filename: str,
         media_type: str = "application/octet-stream",
         metadata: dict[str, Any] | None = None,
         source_id: str | uuid.UUID | None = None,
+        max_bytes: int | None = None,
+        chunk_size: int = 256 * 1024,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
     ) -> Source:
-        if not isinstance(data, bytes):
-            raise ValidationError("data must be bytes")
+        """Store bounded input chunks without taking ownership of the handle."""
         clean_filename = filename.strip()
         if not clean_filename:
             raise ValidationError("filename must not be empty")
@@ -403,23 +415,25 @@ class Sources:
         key = f"sources/{identifier}"
         if self._object_store.exists(self._default_bucket, key):
             raise ConflictError(f"Source object already exists: {key}")
-        now = datetime.now(timezone.utc)
-        source = Source(
-            id=identifier,
-            filename=clean_filename,
-            media_type=media_type,
-            size=len(data),
-            sha256=hashlib.sha256(data).hexdigest(),
-            status="STORED",
-            storage={"bucket": self._default_bucket, "key": key},
-            metadata=metadata or {},
-            created_at=now,
-            updated_at=now,
-        )
-        self._object_store.put_bytes(self._default_bucket, key, data)
+        info = self._object_store.put_stream(self._default_bucket, key, stream,
+            max_bytes=max_bytes, chunk_size=chunk_size,
+            expected_size=expected_size, expected_sha256=expected_sha256)
         try:
+            now = datetime.now(timezone.utc)
+            source = Source(
+                id=identifier,
+                filename=clean_filename,
+                media_type=media_type,
+                size=info.size,
+                sha256=info.sha256,
+                status="STORED",
+                storage={"bucket": self._default_bucket, "key": key},
+                metadata=metadata or {},
+                created_at=now,
+                updated_at=now,
+            )
             created = creator(source, collection_id=collection_identifier)
-        except Exception:
+        except BaseException:
             try:
                 self._object_store.delete(self._default_bucket, key)
             except Exception:
@@ -465,14 +479,12 @@ class Sources:
         if not file_path.is_file():
             raise ValidationError(f"source file does not exist: {file_path}")
         detected_type = media_type or mimetypes.guess_type(file_path.name)[0]
-        return self.add_bytes(
-            collection_id,
-            file_path.read_bytes(),
-            filename=file_path.name,
-            media_type=detected_type or "application/octet-stream",
-            metadata=metadata,
-            source_id=source_id,
-        )
+        with file_path.open("rb") as stream:
+            return self.add_stream(
+                collection_id, stream, filename=file_path.name,
+                media_type=detected_type or "application/octet-stream",
+                metadata=metadata, source_id=source_id,
+            )
 
     def add_directory(
         self,
@@ -626,19 +638,30 @@ class Artifacts:
     def get(self, artifact_id: str | uuid.UUID) -> Artifact | None:
         return self._repository.get(_identifier(artifact_id, "artifact_id"))
 
-    def add_bytes(
+    def add_bytes(self, source_id: str | uuid.UUID, data: bytes, *, processing_type: str,
+                  format: str, primary_path: str | None = None, metadata: dict[str, Any] | None = None,
+                  artifact_id: str | uuid.UUID | None = None) -> Artifact:
+        if not isinstance(data, bytes):
+            raise ValidationError("data must be bytes")
+        return self.add_stream(source_id, io.BytesIO(data), processing_type=processing_type,
+            format=format, primary_path=primary_path, metadata=metadata, artifact_id=artifact_id)
+
+    def add_stream(
         self,
         source_id: str | uuid.UUID,
-        data: bytes,
+        stream: BinaryIO,
         *,
         processing_type: str,
         format: str,
         primary_path: str | None = None,
         metadata: dict[str, Any] | None = None,
         artifact_id: str | uuid.UUID | None = None,
+        max_bytes: int | None = None,
+        chunk_size: int = 256 * 1024,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
     ) -> Artifact:
-        if not isinstance(data, bytes):
-            raise ValidationError("data must be bytes")
+        """Store bounded input chunks without taking ownership of the handle."""
         clean_processing_type = processing_type.strip()
         clean_format = format.strip()
         if not clean_processing_type or not clean_format:
@@ -658,25 +681,27 @@ class Artifacts:
         key = f"artifacts/{identifier}"
         if self._object_store.exists(self._default_bucket, key):
             raise ConflictError(f"Artifact object already exists: {key}")
-        now = datetime.now(timezone.utc)
-        artifact = Artifact(
-            id=identifier,
-            source_id=source_identifier,
-            processing_type=clean_processing_type,
-            format=clean_format,
-            size=len(data),
-            sha256=hashlib.sha256(data).hexdigest(),
-            source_sha256=source.sha256,
-            storage={"bucket": self._default_bucket, "key": key},
-            primary_path=primary_path,
-            metadata=metadata or {},
-            created_at=now,
-            updated_at=now,
-        )
-        self._object_store.put_bytes(self._default_bucket, key, data)
+        info = self._object_store.put_stream(self._default_bucket, key, stream,
+            max_bytes=max_bytes, chunk_size=chunk_size,
+            expected_size=expected_size, expected_sha256=expected_sha256)
         try:
+            now = datetime.now(timezone.utc)
+            artifact = Artifact(
+                id=identifier,
+                source_id=source_identifier,
+                processing_type=clean_processing_type,
+                format=clean_format,
+                size=info.size,
+                sha256=info.sha256,
+                source_sha256=source.sha256,
+                storage={"bucket": self._default_bucket, "key": key},
+                primary_path=primary_path,
+                metadata=metadata or {},
+                created_at=now,
+                updated_at=now,
+            )
             created = creator(artifact)
-        except Exception:
+        except BaseException:
             try:
                 self._object_store.delete(self._default_bucket, key)
             except Exception:
